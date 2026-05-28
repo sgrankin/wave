@@ -62,3 +62,12 @@ wave/config/wave.conf
 
 ### Server running
 **/*.log.*
+### Go
+/waved
+/wavectl
+/bin/
+/dist/
+/wavedata/
+*.test
+*.out
+coverage.out

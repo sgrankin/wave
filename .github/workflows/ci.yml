@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      # The race detector requires cgo; CI runners have a C toolchain, so this
+      # job runs with cgo enabled (the release build below is cgo-free).
+      - run: go test -race ./...
+
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Cgo-free cross-compile sanity check (single-binary goal). Once
+      # internal/storage depends on modernc.org/sqlite (Phase 4), add a step
+      # that asserts the FTS5 build tag is present.
+      - run: GOOS=linux GOARCH=amd64 go build ./...
+      - run: GOOS=darwin GOARCH=arm64 go build ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
