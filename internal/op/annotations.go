@@ -104,6 +104,16 @@ func (m AnnotationBoundaryMap) Changes() []AnnotationChange {
 	return append([]AnnotationChange(nil), m.changes...)
 }
 
+// swap returns the boundary with each change's old and new values exchanged,
+// used to invert an operation. End keys are unaffected.
+func (m AnnotationBoundaryMap) swap() AnnotationBoundaryMap {
+	changes := make([]AnnotationChange, len(m.changes))
+	for i, c := range m.changes {
+		changes[i] = AnnotationChange{Key: c.Key, OldValue: c.NewValue, NewValue: c.OldValue}
+	}
+	return AnnotationBoundaryMap{endKeys: m.endKeys, changes: changes}
+}
+
 // Equal reports whether m and other describe the same boundary.
 func (m AnnotationBoundaryMap) Equal(other AnnotationBoundaryMap) bool {
 	if len(m.endKeys) != len(other.endKeys) || len(m.changes) != len(other.changes) {

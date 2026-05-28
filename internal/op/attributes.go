@@ -167,3 +167,85 @@ func ptrEqual(a, b *string) bool {
 		return *a == *b
 	}
 }
+
+// attributesFromMap builds an Attributes from a name→value map, sorted by name,
+// without re-validating (callers pass values that came from already-validated
+// operations). Internal use only.
+func attributesFromMap(m map[string]string) Attributes {
+	if len(m) == 0 {
+		return Attributes{}
+	}
+	attrs := make([]Attribute, 0, len(m))
+	for name, value := range m {
+		attrs = append(attrs, Attribute{Name: name, Value: value})
+	}
+	sort.Slice(attrs, func(i, j int) bool { return attrs[i].Name < attrs[j].Name })
+	return Attributes{attrs: attrs}
+}
+
+// updateWith returns the attributes after applying u: each change sets its
+// attribute to NewValue, or removes it when NewValue is nil. Attributes not
+// named by u are unchanged. (Ports AttributesImpl.updateWith.)
+func (a Attributes) updateWith(u AttributesUpdate) Attributes {
+	m := make(map[string]string, len(a.attrs))
+	for _, at := range a.attrs {
+		m[at.Name] = at.Value
+	}
+	for _, c := range u.updates {
+		// The update's expected old value must match the current state
+		// (ImmutableStateMap.updateWith with compatibility checking, as used by
+		// the Composer). A mismatch is an illegal composition.
+		cur, present := m[c.Name]
+		if present {
+			if c.OldValue == nil || *c.OldValue != cur {
+				panic(composeError("updateWith: old value mismatch for attribute " + c.Name))
+			}
+		} else if c.OldValue != nil {
+			panic(composeError("updateWith: attribute " + c.Name + " expected present but absent"))
+		}
+		if c.NewValue == nil {
+			delete(m, c.Name)
+		} else {
+			m[c.Name] = *c.NewValue
+		}
+	}
+	return attributesFromMap(m)
+}
+
+// composeWith returns the update equivalent to applying u then u2. For a key
+// changed by both, the result is (u's old value, u2's new value); keys changed
+// by only one side pass through. (Ports ImmutableUpdateMap.composeWith.)
+func (u AttributesUpdate) composeWith(u2 AttributesUpdate) AttributesUpdate {
+	type pair struct{ old, new *string }
+	m := make(map[string]pair, len(u.updates)+len(u2.updates))
+	for _, c := range u.updates {
+		m[c.Name] = pair{old: c.OldValue, new: c.NewValue}
+	}
+	for _, c := range u2.updates {
+		if p, ok := m[c.Name]; ok {
+			// For a shared key, u2's expected old value must equal u1's new value
+			// (ImmutableUpdateMap.composeWith); otherwise the composition is illegal.
+			if !ptrEqual(p.new, c.OldValue) {
+				panic(composeError("composeWith: old value mismatch for attribute " + c.Name))
+			}
+			m[c.Name] = pair{old: p.old, new: c.NewValue} // first's old, second's new
+		} else {
+			m[c.Name] = pair{old: c.OldValue, new: c.NewValue}
+		}
+	}
+	changes := make([]AttributeChange, 0, len(m))
+	for name, p := range m {
+		changes = append(changes, AttributeChange{Name: name, OldValue: p.old, NewValue: p.new})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Name < changes[j].Name })
+	return AttributesUpdate{updates: changes}
+}
+
+// invert returns the update that reverses u, swapping each (old, new) pair.
+func (u AttributesUpdate) invert() AttributesUpdate {
+	inv := make([]AttributeChange, len(u.updates))
+	for i, c := range u.updates {
+		inv[i] = AttributeChange{Name: c.Name, OldValue: c.NewValue, NewValue: c.OldValue}
+	}
+	return AttributesUpdate{updates: inv}
+}
