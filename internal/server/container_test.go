@@ -62,6 +62,12 @@ func blipDelta(author id.ParticipantID, target version.HashedVersion, blipID str
 
 func chars(s string) op.DocOp { return op.NewDocOp([]op.Component{op.Characters{Text: s}}) }
 
+// appendText retains `retain` items then inserts s (an edit that appends to an
+// existing document of length `retain`).
+func appendText(retain int, s string) op.DocOp {
+	return op.NewDocOp([]op.Component{op.Retain{Count: retain}, op.Characters{Text: s}})
+}
+
 // creationDelta is a realistic wave-creation first delta: it adds the author as a
 // participant and edits a blip — exercising that the creator is added by the
 // delta (not pre-added), so no duplicate-add occurs.

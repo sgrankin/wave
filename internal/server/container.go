@@ -38,7 +38,8 @@ type WaveletContainer struct {
 	mu        sync.Mutex
 	wavelet   *wavelet.Data // nil until the first delta creates the wavelet
 	history   *cc.MemoryHistory
-	corrupted bool // set if in-memory state diverged from storage; requires reload
+	corrupted bool                       // set if in-memory state diverged from storage; requires reload
+	subs      map[*Subscription]struct{} // update subscribers (fan-out)
 }
 
 // SubmitResult reports the outcome of a successful submit. A transformed-away
@@ -61,6 +62,7 @@ func Load(name id.WaveletName, deltas storage.DeltasAccess, clk clock.Clock) (*W
 		clk:     clk,
 		zero:    zero,
 		history: cc.NewMemoryHistory(zero),
+		subs:    map[*Subscription]struct{}{},
 	}
 	records, err := deltas.ReadAll()
 	if err != nil {
@@ -175,8 +177,12 @@ func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, erro
 		c.corrupted = true
 		return SubmitResult{}, &cc.Error{Code: cc.InternalError, Msg: "persisting delta (wavelet corrupted; reload required)", Err: err}
 	}
-	c.history.Append(cc.TransformedWaveletDelta{
+	applied := cc.TransformedWaveletDelta{
 		Author: rec.Author, ResultingVersion: resulting, Timestamp: ts, Ops: rec.Ops,
-	})
+	}
+	c.history.Append(applied)
+	// Fan out to subscribers in version order (still under the lock, so concurrent
+	// submits deliver their deltas in order).
+	c.publish(WaveletUpdate{Delta: applied, ResultingVersion: resulting})
 	return SubmitResult{OpsApplied: len(rec.Ops), ResultingVersion: resulting, Timestamp: ts}, nil
 }
