@@ -14,20 +14,42 @@ import (
 // layer beneath the frontend: Open/Submit for a wavelet name resolve to a
 // container here.
 type WaveMap struct {
-	store storage.DeltaStore
-	clk   clock.Clock
+	store     storage.DeltaStore
+	clk       clock.Clock
+	snapshots storage.SnapshotStore // nil unless WithSnapshots is set
+	snapEvery int                   // ops between snapshots (0 = disabled)
 
 	mu         sync.Mutex
 	containers map[string]*WaveletContainer
 }
 
+// Option configures a WaveMap.
+type Option func(*WaveMap)
+
+// WithSnapshots enables the snapshot cache: containers load via the latest
+// snapshot + tail replay (falling back to full replay on any inconsistency),
+// write a snapshot every `every` ops, and serve joins from a current-state
+// snapshot rather than the full delta history. Disabled by default — the
+// snapshot-based join requires the snapshot-aware client (which the transport
+// client supports), so enable it only against snapshot-aware clients.
+func WithSnapshots(store storage.SnapshotStore, every int) Option {
+	return func(m *WaveMap) {
+		m.snapshots = store
+		m.snapEvery = every
+	}
+}
+
 // NewWaveMap creates a wave map backed by the given delta store and clock.
-func NewWaveMap(store storage.DeltaStore, clk clock.Clock) *WaveMap {
-	return &WaveMap{
+func NewWaveMap(store storage.DeltaStore, clk clock.Clock, opts ...Option) *WaveMap {
+	m := &WaveMap{
 		store:      store,
 		clk:        clk,
 		containers: map[string]*WaveletContainer{},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Count returns the number of currently loaded (cached) wavelet containers. It
@@ -60,7 +82,7 @@ func (m *WaveMap) Container(name id.WaveletName) (*WaveletContainer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: open wavelet %s: %w", name, err)
 	}
-	c, err := Load(name, access, m.clk)
+	c, err := loadContainer(name, access, m.snapshots, m.snapEvery, m.clk)
 	if err != nil {
 		return nil, err
 	}

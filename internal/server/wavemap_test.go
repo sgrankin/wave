@@ -164,7 +164,7 @@ func TestOpenJoinThenFollow(t *testing.T) {
 	}
 
 	// B joins.
-	history, sub := c.Open()
+	_, history, sub := c.Open()
 	defer sub.Close()
 	if len(history) != 2 {
 		t.Fatalf("history length %d, want 2", len(history))

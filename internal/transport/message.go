@@ -10,7 +10,7 @@ import (
 // is the evolvable wire layer — not the frozen hash-feeding encoding (codec).
 const (
 	mOpen           uint64 = iota // client→server: bind the connection to a wavelet
-	mOpenResponse                 // server→client: the applied-delta history snapshot
+	mOpenResponse                 // server→client: starting view (state snapshot or delta history)
 	mSubmit                       // client→server: a client delta to apply
 	mSubmitResponse               // server→client: ack/nack for a submit
 	mUpdate                       // server→client: a newly applied delta (live stream)
@@ -77,17 +77,25 @@ func decodeOpen(raw []cbor.RawMessage) (string, error) {
 	return name, err
 }
 
-// --- open response: [mOpenResponse, [storedDeltaBytes...]] ---
+// --- open response: [mOpenResponse, snapshotBlob, [storedDeltaBytes...]] ---
+// snapshotBlob is empty for a history-based join (history is the full log from
+// version 0); non-empty for a snapshot-based join (history is then empty).
 
-func encodeOpenResponse(history [][]byte) []byte { return marshal([]any{mOpenResponse, history}) }
+func encodeOpenResponse(snapshotBlob []byte, history [][]byte) []byte {
+	return marshal([]any{mOpenResponse, snapshotBlob, history})
+}
 
-func decodeOpenResponse(raw []cbor.RawMessage) ([][]byte, error) {
-	if err := need(raw, 2); err != nil {
-		return nil, err
+func decodeOpenResponse(raw []cbor.RawMessage) (snapshotBlob []byte, history [][]byte, err error) {
+	if err := need(raw, 3); err != nil {
+		return nil, nil, err
 	}
-	var history [][]byte
-	err := cbor.Unmarshal(raw[1], &history)
-	return history, err
+	if err := cbor.Unmarshal(raw[1], &snapshotBlob); err != nil {
+		return nil, nil, err
+	}
+	if err := cbor.Unmarshal(raw[2], &history); err != nil {
+		return nil, nil, err
+	}
+	return snapshotBlob, history, nil
 }
 
 // --- submit: [mSubmit, clientDeltaBytes] ---

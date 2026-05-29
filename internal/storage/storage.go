@@ -47,6 +47,18 @@ type DeltaStore interface {
 	Close() error
 }
 
+// SnapshotStore persists materialized wavelet snapshots — a derivable load-time
+// cache (latest snapshot + tail replay), never the authority. Snapshots can be
+// dropped and rebuilt from the delta log at any time. It is keyed by wavelet
+// name and version.
+type SnapshotStore interface {
+	// GetLatestSnapshot returns the highest-versioned snapshot for the wavelet:
+	// its version, the opaque encoded state, and whether one exists.
+	GetLatestSnapshot(name id.WaveletName) (snapshotVersion uint64, blob []byte, ok bool, err error)
+	// PutSnapshot stores (or replaces) the snapshot for the wavelet at version.
+	PutSnapshot(name id.WaveletName, snapshotVersion uint64, blob []byte) error
+}
+
 // DeltasAccess is per-wavelet access to the delta log.
 type DeltasAccess interface {
 	// Append atomically and durably appends a batch of contiguous records. The
@@ -55,6 +67,9 @@ type DeltasAccess interface {
 	Append(records []DeltaRecord) error
 	// ReadAll returns every record in application order (for replay).
 	ReadAll() ([]DeltaRecord, error)
+	// ReadFrom returns records with appliedAtVersion >= from, in application order
+	// (the tail replayed on top of a snapshot).
+	ReadFrom(from uint64) ([]DeltaRecord, error)
 	// GetDelta returns the record applied at the given version, and whether it
 	// exists.
 	GetDelta(appliedAtVersion uint64) (DeltaRecord, bool, error)

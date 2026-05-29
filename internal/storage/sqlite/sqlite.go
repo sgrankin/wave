@@ -60,7 +60,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	// Each store contributes its own DDL (delta log, accounts, …). All are
 	// CREATE TABLE IF NOT EXISTS, so running them on every open is idempotent.
-	for _, ddl := range []string{schema, accountsSchema} {
+	for _, ddl := range []string{schema, accountsSchema, snapshotsSchema} {
 		if _, err := db.Exec(ddl); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: init schema: %w", err)
@@ -71,8 +71,9 @@ func Open(path string) (*Store, error) {
 
 // Compile-time assertions that Store implements the storage contracts.
 var (
-	_ storage.DeltaStore   = (*Store)(nil)
-	_ storage.AccountStore = (*Store)(nil)
+	_ storage.DeltaStore    = (*Store)(nil)
+	_ storage.AccountStore  = (*Store)(nil)
+	_ storage.SnapshotStore = (*Store)(nil)
 )
 
 // Checkpoint forces a WAL checkpoint (TRUNCATE), folding the write-ahead log
@@ -254,6 +255,34 @@ func (a *deltasAccess) ReadAll() ([]storage.DeltaRecord, error) {
 		a.waveID, a.waveletID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: read all: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []storage.DeltaRecord
+	for rows.Next() {
+		var appliedAt int64
+		var blob []byte
+		if err := rows.Scan(&appliedAt, &blob); err != nil {
+			return nil, fmt.Errorf("sqlite: scan: %w", err)
+		}
+		rec, err := recordFrom(uint64(appliedAt), blob)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// ReadFrom returns records with applied_at_version >= from, in application order.
+func (a *deltasAccess) ReadFrom(from uint64) ([]storage.DeltaRecord, error) {
+	rows, err := a.db.Query(
+		`SELECT applied_at_version, transformed_blob FROM deltas
+		 WHERE wave_id = ? AND wavelet_id = ? AND applied_at_version >= ?
+		 ORDER BY applied_at_version`,
+		a.waveID, a.waveletID, from)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: read from %d: %w", from, err)
 	}
 	defer func() { _ = rows.Close() }()
 

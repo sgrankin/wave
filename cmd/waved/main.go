@@ -33,13 +33,14 @@ import (
 const shutdownGrace = 5 * time.Second
 
 type config struct {
-	network     string // unix | tcp | stdio
-	addr        string // unix socket path or host:port
-	dbPath      string
-	httpAddr    string // operability HTTP address; "" disables
-	logFormat   string // text | json
-	logLevel    string // debug | info | warn | error
-	showVersion bool
+	network       string // unix | tcp | stdio
+	addr          string // unix socket path or host:port
+	dbPath        string
+	httpAddr      string // operability HTTP address; "" disables
+	logFormat     string // text | json
+	logLevel      string // debug | info | warn | error
+	snapshotEvery int    // write a snapshot every N ops (0 disables)
+	showVersion   bool
 }
 
 func main() {
@@ -78,6 +79,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.httpAddr, "http", "127.0.0.1:8099", "operability HTTP address (\"\" to disable)")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
+	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
 	fs.BoolVar(&c.showVersion, "version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -95,7 +97,12 @@ func run(ctx context.Context, cfg config) error {
 	}
 	defer store.Close()
 
-	wm := server.NewWaveMap(store, clock.System{})
+	var opts []server.Option
+	if cfg.snapshotEvery > 0 {
+		opts = append(opts, server.WithSnapshots(store, cfg.snapshotEvery))
+		logger.Info("snapshots enabled", "every", cfg.snapshotEvery)
+	}
+	wm := server.NewWaveMap(store, clock.System{}, opts...)
 	srv := &transport.Server{WaveMap: wm, Logger: logger}
 
 	// stdio mode serves exactly one session over stdin/stdout (for pipe pairing,

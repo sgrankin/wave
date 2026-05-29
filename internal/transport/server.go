@@ -232,7 +232,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		s.push(encodeError("open: " + err.Error()))
 		return nil
 	}
-	history, sub := c.Open()
+	snapshotBlob, history, sub := c.Open()
 	s.container = c
 	s.sub = sub
 
@@ -240,8 +240,8 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 	for i, u := range history {
 		hist[i] = encodeStored(u.Delta)
 	}
-	s.push(encodeOpenResponse(hist))
-	s.srv.logger().Debug("wavelet opened", "wavelet", nameStr, "history", len(hist))
+	s.push(encodeOpenResponse(snapshotBlob, hist))
+	s.srv.logger().Debug("wavelet opened", "wavelet", nameStr, "snapshot", len(snapshotBlob) > 0, "history", len(hist))
 
 	s.wg.Add(1)
 	go s.forward(sub)

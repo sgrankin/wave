@@ -10,6 +10,7 @@ import (
 	"github.com/sgrankin/wave/internal/codec"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/op"
+	"github.com/sgrankin/wave/internal/snapshot"
 	"github.com/sgrankin/wave/internal/version"
 	"github.com/sgrankin/wave/internal/wavelet"
 	"github.com/sgrankin/wave/internal/waveop"
@@ -272,11 +273,11 @@ func (c *Client) handle(data []byte) error {
 	}
 	switch kind {
 	case mOpenResponse:
-		history, err := decodeOpenResponse(raw)
+		snapshotBlob, history, err := decodeOpenResponse(raw)
 		if err != nil {
 			return err
 		}
-		return c.applyOpen(history)
+		return c.applyOpen(snapshotBlob, history)
 	case mUpdate:
 		db, err := decodeUpdate(raw)
 		if err != nil {
@@ -304,11 +305,25 @@ func (c *Client) handle(data []byte) error {
 	}
 }
 
-func (c *Client) applyOpen(history [][]byte) error {
+func (c *Client) applyOpen(snapshotBlob []byte, history [][]byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opened {
 		return fmt.Errorf("transport: duplicate open response")
+	}
+	if len(snapshotBlob) > 0 {
+		// Snapshot-based join: initialize the replica from the current-state
+		// snapshot, then apply any tail history on top. (The current server sends
+		// an empty history with a snapshot — the loop below is a no-op there — but
+		// the client stays general in case a future server combines the two.)
+		// Live deltas follow from this version (the server took the snapshot and
+		// subscribed atomically).
+		if err := c.initFromSnapshotLocked(snapshotBlob); err != nil {
+			c.openErr = err
+			c.opened = true
+			c.cond.Broadcast()
+			return err
+		}
 	}
 	for _, db := range history {
 		if err := c.applyStoredLocked(db); err != nil {
@@ -321,6 +336,22 @@ func (c *Client) applyOpen(history [][]byte) error {
 	c.opened = true
 	c.cond.Broadcast()
 	c.signal()
+	return nil
+}
+
+// initFromSnapshotLocked reconstructs the replica from a current-state snapshot.
+// Must be called with c.mu held, before any delta is applied.
+func (c *Client) initFromSnapshotLocked(blob []byte) error {
+	state, err := snapshot.Decode(blob)
+	if err != nil {
+		return err
+	}
+	w, err := wavelet.FromState(state)
+	if err != nil {
+		return err
+	}
+	c.replica = w
+	c.cur = w.HashedVersion()
 	return nil
 }
 

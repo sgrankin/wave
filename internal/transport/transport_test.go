@@ -189,6 +189,49 @@ func TestConcurrentClientsConverge(t *testing.T) {
 	}
 }
 
+// TestSnapshotJoinConverges: with snapshots enabled, a client joining after some
+// edits bootstraps from a current-state snapshot (not history replay), then
+// converges with the existing client.
+func TestSnapshotJoinConverges(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	// Snapshot every op, so history is pruned and the join must use a snapshot.
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithSnapshots(store, 1))
+	name := waveletName(t)
+	alice := pid(t, "alice@example.com")
+	bob := pid(t, "bob@example.com")
+
+	a := connect(t, wm, name, alice)
+	if _, err := a.Submit(writeBlip(alice, "b", chars("hi"))); err != nil {
+		t.Fatalf("alice create: %v", err)
+	}
+
+	// Bob joins after the edit → snapshot-based bootstrap.
+	b := connect(t, wm, name, bob)
+	if err := b.WaitVersion(1); err != nil {
+		t.Fatalf("bob wait: %v", err)
+	}
+	if got, _ := b.BlipContent("b"); !got.Equal(chars("hi")) {
+		t.Errorf("joiner content = %v, want hi (snapshot bootstrap failed)", got.Components())
+	}
+
+	// Bob edits; Alice sees it; they converge.
+	if _, err := b.Submit(writeBlip(bob, "b", appendText(2, " there"))); err != nil {
+		t.Fatalf("bob edit: %v", err)
+	}
+	if err := a.WaitVersion(2); err != nil {
+		t.Fatalf("alice wait: %v", err)
+	}
+	ca, _ := a.BlipContent("b")
+	cb, _ := b.BlipContent("b")
+	if !ca.Equal(cb) || !ca.Equal(chars("hi there")) {
+		t.Errorf("divergence: alice %v vs bob %v", ca.Components(), cb.Components())
+	}
+}
+
 // TestServerGracefulDrain: a Server over a real listener counts metrics, and on
 // context cancellation stops accepting, drains the active session, and returns.
 func TestServerGracefulDrain(t *testing.T) {

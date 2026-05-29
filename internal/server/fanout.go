@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/sgrankin/wave/internal/cc"
+	"github.com/sgrankin/wave/internal/snapshot"
 	"github.com/sgrankin/wave/internal/version"
 )
 
@@ -48,19 +49,27 @@ func (c *WaveletContainer) subscribeLocked() *Subscription {
 	return s
 }
 
-// Open is the join flow: it atomically returns the wavelet's applied-delta
-// history (so a joining client can build its view) and a live subscription for
-// subsequent deltas, with no gap or overlap between them. A delta either appears
-// in history (it was applied before Open) or arrives on the subscription (after),
-// never both — because both Open and Submit hold the lock.
-func (c *WaveletContainer) Open() (history []WaveletUpdate, sub *Subscription) {
+// Open is the join flow: it atomically returns a starting view of the wavelet
+// plus a live subscription for subsequent deltas, with no gap or overlap (both
+// Open and Submit hold the lock, so a delta is either in the starting view or on
+// the subscription, never both).
+//
+// The starting view is either a current-state snapshot (when snapshots are
+// enabled — the client reconstructs state and follows live deltas from the
+// snapshot version) or the full applied-delta history from version zero (the
+// client replays it). snapshotBlob is non-nil in the former case and history is
+// then empty; in the latter snapshotBlob is nil.
+func (c *WaveletContainer) Open() (snapshotBlob []byte, history []WaveletUpdate, sub *Subscription) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.snapshots != nil && c.wavelet != nil {
+		return snapshot.Encode(c.wavelet.State()), nil, c.subscribeLocked()
+	}
 	history = make([]WaveletUpdate, len(c.applied))
 	for i, d := range c.applied {
 		history[i] = WaveletUpdate{Delta: d, ResultingVersion: d.ResultingVersion}
 	}
-	return history, c.subscribeLocked()
+	return nil, history, c.subscribeLocked()
 }
 
 // removeSub closes and deregisters a subscription if still present (idempotent).
