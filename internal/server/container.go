@@ -208,6 +208,18 @@ func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, erro
 		return SubmitResult{}, &cc.Error{Code: cc.InternalError, Msg: "wavelet corrupted; reload required"}
 	}
 
+	// Double-submit dedup (spec 03 §"Double-submit / ghost delta"): a delta
+	// resent after a reconnect targets the version its original was applied at.
+	// If the delta already applied there matches by author + ops (ignoring
+	// re-stamped context), this is a duplicate — return the original result
+	// idempotently rather than applying it again.
+	if len(delta.Ops()) > 0 {
+		if prior, ok := c.history.DeltaStartingAt(delta.TargetVersion().Version()); ok &&
+			prior.Author == delta.Author() && waveop.EqualOps(prior.Ops, delta.Ops()) {
+			return SubmitResult{OpsApplied: 0, ResultingVersion: prior.ResultingVersion, Timestamp: prior.Timestamp}, nil
+		}
+	}
+
 	// Validate (target version/hash) and transform to head against the history.
 	// This works whether or not the wavelet exists yet — the history is seeded
 	// with the version-0 signature, so a valid first delta must target version 0.

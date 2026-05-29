@@ -60,13 +60,13 @@ func TransformToHead(h DeltaHistory, delta waveop.WaveletDelta) (waveop.WaveletD
 // special-cased here: server transform-to-head consumes only the client side,
 // for which the pairwise transform of distinct concurrent deltas is correct.
 //
-// Double-submit dedup (a client resending a delta already in history) must NOT
-// be added here — it is an author+ops equality check the submission handler
-// performs against each server delta DURING the walk (per Java
-// WaveletContainerImpl.transformSubmittedDelta), returning the original applied
+// Double-submit dedup (a client resending a delta already in history) is NOT
+// done here — it is an author+ops equality check the submission handler performs
+// (server.WaveletContainer.Submit, via waveop.EqualOps against the delta already
+// applied at the resend's target version), returning the original applied
 // version idempotently. Bolting it onto transformOpLists would be wrong: by the
-// time a duplicate reaches here it would already be transformed past its twin
-// and the identity lost. That handler is a later increment (above this layer).
+// time a duplicate reached here it would already be transformed past its twin
+// and the identity lost.
 func transformOpLists(client, server []waveop.Operation) (clientPrime, serverPrime []waveop.Operation, err error) {
 	serverOps := append([]waveop.Operation(nil), server...)
 	for _, c := range client {

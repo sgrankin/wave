@@ -217,6 +217,60 @@ func TestNoOpSubmit(t *testing.T) {
 	}
 }
 
+// A delta resent at the version its original was applied at (same author + ops)
+// is a double-submit: it must return the original result idempotently, not be
+// applied again.
+func TestDoubleSubmitDedup(t *testing.T) {
+	c, access, name := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	zero := version.Zero(name)
+
+	first := blipDelta(alice, zero, "b", chars("hi"))
+	r1, err := c.Submit(first)
+	if err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+
+	// Resubmit the identical delta targeting the same (still-valid) version.
+	r2, err := c.Submit(blipDelta(alice, zero, "b", chars("hi")))
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if r2.ResultingVersion.Compare(r1.ResultingVersion) != 0 {
+		t.Errorf("resubmit version v%d, want the original v%d", r2.ResultingVersion.Version(), r1.ResultingVersion.Version())
+	}
+	if r2.OpsApplied != 0 {
+		t.Errorf("resubmit applied %d ops, want 0 (idempotent)", r2.OpsApplied)
+	}
+	// History/storage must hold exactly one delta — the duplicate was not applied.
+	if all, _ := access.ReadAll(); len(all) != 1 {
+		t.Errorf("storage has %d deltas after a double-submit, want 1", len(all))
+	}
+	if c.Version().Compare(r1.ResultingVersion) != 0 {
+		t.Errorf("version advanced past v%d on a double-submit", r1.ResultingVersion.Version())
+	}
+}
+
+// A DIFFERENT delta targeting an old (superseded) version is NOT a duplicate —
+// it must be transformed to head and applied (not deduped away).
+func TestNonDuplicateAtOldVersionApplies(t *testing.T) {
+	c, _, name := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	zero := version.Zero(name)
+
+	if _, err := c.Submit(blipDelta(alice, zero, "b", chars("X"))); err != nil {
+		t.Fatal(err)
+	}
+	// A different delta still targeting v0 (stale) → transformed to head, applied.
+	r, err := c.Submit(blipDelta(alice, zero, "b", chars("Y")))
+	if err != nil {
+		t.Fatalf("stale distinct submit: %v", err)
+	}
+	if r.OpsApplied != 1 || r.ResultingVersion.Version() != 2 {
+		t.Errorf("distinct stale delta = %+v, want 1 op @ v2 (applied, not deduped)", r)
+	}
+}
+
 func TestVersionMismatchRejected(t *testing.T) {
 	c, _, name := newContainer(t)
 	alice := pid(t, "alice@example.com")
