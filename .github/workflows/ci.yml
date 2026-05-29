@@ -29,11 +29,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # Cgo-free cross-compile sanity check (single-binary goal). Once
-      # internal/storage depends on modernc.org/sqlite (Phase 4), add a step
-      # that asserts the FTS5 build tag is present.
+      # Cgo-free cross-compile sanity check (single-binary goal).
       - run: GOOS=linux GOARCH=amd64 go build ./...
       - run: GOOS=darwin GOARCH=arm64 go build ./...
+      # Assert the cgo-free SQLite (modernc.org/sqlite) bundles FTS5 + JSON1 —
+      # TestFTS5AndJSON1Available fails here if a driver bump ever drops them.
+      - run: go test ./internal/storage/...
 
   lint:
     runs-on: ubuntu-latest
