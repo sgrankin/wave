@@ -97,6 +97,31 @@ risk, so they come first after the primitives. Note **auth depends on account**
 Each phase lists deliverable + the tests that define "done". Phases 0–6 reach a
 **working headless wave server**; 7+ broaden and then tackle UI.
 
+### Progress & decisions (live, as of 2026-05-28)
+
+What's on the fork's `main`, and how execution deviated from the plan above:
+
+- **Done & pushed:** Phase 0; 1a (`op` + transform); 1b (`waveop` + transform);
+  2 (`wavelet` apply, `conv` manifest, `doc` reader, worthiness); 3 *server side*
+  (`cc` transform-to-head + `MemoryHistory`); 4 *delta log* (`storage` + `sqlite`);
+  5 *logic* (`server`: container apply pipeline, wave map, fan-out, join flow).
+- **`internal/codec` — added between 3 and 4 (not its own line above).** Canonical
+  CBOR (fxamacker/cbor, RFC 8949 Core Deterministic) for the hash chain + storage
+  blobs (+ later the wire). Chosen over reproducing Java's `ProtocolAppliedWaveletDelta`:
+  federation is dropped, so there's no byte-compat need. See architecture invariant #2.
+- **Phase 3 is server-side only so far.** `cc.TransformToHead` + the error
+  taxonomy are done; **client-side CC** (in-flight/queue/ack/nack, reconnection)
+  and the **ported `concurrencycontrol` Java suite** are deferred — the
+  convergence contract is currently held by the in-process container tests +
+  the OT fuzz. Double-submit dedup is deferred to the submission handler.
+- **Phase 4 = delta log only.** Snapshots, the accounts store, attachment blobs,
+  and `WaveletStore` lookup/iterator/delete are **deferred**; full replay covers
+  the vertical slice, so snapshots wait until load time warrants them.
+- **`internal/doc` is a read projection, not the indexed model** (the lean
+  `Apply = Compose` decision — see Phase 2 below and Deferred).
+- **Remaining in Phase 5:** the stdio byte-transport + `wavectl` (tangible
+  two-client demo); the in-process serving logic is complete and proven.
+
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
   release binaries with `CGO_ENABLED=0`, asserting the FTS5 build**), injectable
@@ -161,6 +186,9 @@ Each phase lists deliverable + the tests that define "done". Phases 0–6 reach 
   simulation in-process; version/hash math under reordering.
 - **Done when:** simulated concurrent clients converge; error codes are produced
   for the right conditions (VERSION_ERROR on hash/version mismatch, etc.).
+- **Status:** server CC (`TransformToHead`, `MemoryHistory`, error taxonomy +
+  TOO_OLD) done & pushed. Client-side CC, reconnection, and the ported
+  `concurrencycontrol` suite are deferred (see Progress & decisions).
 
 ### Phase 4 — Storage
 - `internal/storage` interfaces + `sqlite` impl: delta log (**full
@@ -173,6 +201,10 @@ Each phase lists deliverable + the tests that define "done". Phases 0–6 reach 
   JSON-column round-trips.
 - **Done when:** a wavelet persists, reloads via snapshot+tail to identical
   state, survives restart.
+- **Status:** delta log done & pushed (`transformed_blob` = canonical CBOR via
+  `internal/codec`; the federation `applied_blob` column dropped, re-addable).
+  Snapshots, accounts, attachment blobs, and `WaveletStore` lookup/iterator/delete
+  are deferred (full replay covers the slice for now).
 
 ### Phase 5 — Server core + stdio transport (first vertical slice)
 - `internal/server`: wavelet container (load via snapshot+tail), apply pipeline

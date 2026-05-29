@@ -52,15 +52,19 @@ to redesign — a "clean" rewrite that breaks any of them is wrong:
 
 1. Version counts **operations applied**, not deltas: `resultingVersion =
    appliedAt + opCount`.
-2. **History hash chain.** `hash(0) = UTF-8(wavelet URI)` (raw bytes, no digest);
-   `hash(n>0) = SHA-256(prevHash ‖ appliedDeltaBytes)[0:20]`, where
-   **`appliedDeltaBytes` is the canonical serialized `ProtocolAppliedWaveletDelta`**
-   — which embeds the canonical client `ProtocolWaveletDelta` bytes + signatures +
-   `applicationTimestamp` + `operationsApplied`. A version match with a hash
-   mismatch is a hard error. **The clean-wire redesign applies only to the live
-   client transport encoding; the applied-delta serialization that feeds the hash
-   chain is fixed and byte-stable.** (See *Wire & transport*; ref
-   `AppliedDeltaUtil.calculateResultingHashedVersion`.)
+2. **History hash chain (structure non-negotiable; encoding chosen below).**
+   `hash(0) = UTF-8(wavelet URI)` (raw bytes, no digest);
+   `hash(n>0) = SHA-256(prevHash ‖ appliedDeltaBytes)[0:20]`. A version match with a
+   hash mismatch is a hard error, and `appliedDeltaBytes` must be a **deterministic,
+   frozen, byte-stable** encoding (replay recomputes it and verifies it against the
+   stored hash — invariant #7).
+   **Encoding — DECIDED 2026-05-28, supersedes the original plan:** `appliedDeltaBytes`
+   is our **own canonical CBOR** of (author, applied-at version, applicationTimestamp,
+   operations) — `internal/codec` in RFC 8949 Core Deterministic mode — *not* Java's
+   `ProtocolAppliedWaveletDelta` protobuf. Federation is dropped, so there is **no**
+   Java byte-compat requirement and **no** signed-delta wrapper / signatures; the
+   chain only needs to be self-consistent. (ref `version.Apply`, `codec.HashBytes`.)
+   See *Wire & transport* and the codec note below.
 3. Transform guarantees **TP1**, with the **client biased first** for concurrent
    insertions and overlapping attribute writes. (Single-server ⇒ no TP2.)
 4. At most **one client delta in flight per wavelet** channel.
@@ -123,9 +127,7 @@ deltas(
   applied_at_version INTEGER,          -- the version this delta applied at
   resulting_version  INTEGER,          -- appliedAt + opCount
   resulting_hash     BLOB,             -- 20-byte history hash at resulting_version
-  applied_blob       BLOB NULL,        -- serialized ProtocolAppliedWaveletDelta
-                                        --   (NULL for local-origin deltas; spec 05:411)
-  transformed_blob   BLOB NOT NULL,    -- serialized TransformedWaveletDelta:
+  transformed_blob   BLOB NOT NULL,    -- canonical CBOR (codec.StoredDelta):
                                         --   author, resultingVersion(+hash),
                                         --   applicationTimestamp, operations
   PRIMARY KEY (wave_id, wavelet_id, applied_at_version)
@@ -133,10 +135,12 @@ deltas(
 -- index on (wavelet_id, resulting_version) for getDeltaByEndVersion (spec 05:158)
 ```
 
-Both blobs are persisted **verbatim** (bit-identical replay). The `applied_blob`
-embeds signatures/signer-ids, so the federation signer-info seam is re-addable
-with no schema change. `applied_at_version` + `resulting_version` mirror the
-spec's own SQLite recommendation (05:672).
+**As built (Phase 4):** `transformed_blob` is the canonical CBOR encoding
+(`internal/codec`), persisted verbatim for bit-identical replay. The federation
+`applied_blob` column (signed original bytes + signer-ids) is **dropped** —
+federation is gone — and is re-addable as a nullable column with no migration if
+the federation seam is ever revived. `applied_at_version` + `resulting_version`
+mirror the spec's own SQLite recommendation (05:672).
 
 ### Other stores
 
@@ -242,9 +246,13 @@ over a hand-framed envelope — with WS as its only impl; the lesson is "one
 logical protocol, one transport at a time; the seam factors cleanly later," not
 that WS was a mistake.)
 
-**Default encoding (leaning):** binary protobuf, reusing the retained delta types
-where they fit, to avoid maintaining two codecs + a translation layer. Committed
-when the first browser transport is built (Phase 8).
+**Encoding.** The *internal* encoding — version hash chain + storage blobs, and
+the stdio frame payloads — is **canonical CBOR** (`internal/codec`, RFC 8949 Core
+Deterministic), **decided 2026-05-28** (federation dropped → no need to reproduce
+Java's protobuf; see invariant #2). The original lean toward binary protobuf
+referred to the *browser wire*, which is still open and **pinned at Phase 8** —
+but reusing the CBOR codec there (one codec, no translation layer) is now the
+natural default unless a browser concern argues otherwise.
 
 ## Authentication
 
@@ -364,5 +372,8 @@ A few forks I've leaned on a default for; flagging the ones worth your veto:
 - **Federation** — dropped; no-op seams + proto types retained.
 - **Client-side render concerns** — the diff/read-unread *rendering* document and
   server-side profile fetch are client/robot-surface, not server core.
-- **Wire encoding** (protobuf vs JSON) — pinned at Phase 8 (leaning: protobuf).
+- **Browser wire encoding** — pinned at Phase 8. Internal encoding is decided
+  (canonical CBOR, `internal/codec`); reusing it for the browser wire is the
+  natural default, but the choice is still open if a browser concern argues for
+  JSON/protobuf.
 - **Config library** and **DI** — `koanf` + hand-rolled wiring; confirm at skeleton.
