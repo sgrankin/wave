@@ -53,6 +53,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
 	// Serialize to one connection: one writer, and reads are cheap at our scale.
+	// This is also load-bearing for an in-memory database (path ":memory:"): the
+	// in-memory DB lives only as long as its owning connection, so pinning to a
+	// single connection keeps it alive for the process. Do not add
+	// SetConnMaxLifetime or raise the max without revisiting that.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
