@@ -30,8 +30,12 @@ type Data struct {
 	blips            map[string]*BlipData
 }
 
-// New creates a wavelet at the given (typically version-zero) hashed version,
-// with the creator added to the participant set (spec §8.1).
+// New creates a wavelet at the given (typically version-zero) hashed version.
+// The participant set starts EMPTY: in the delta-based model a wavelet springs
+// into existence from its first delta, which carries the AddParticipant(creator)
+// op (spec §8.1 step 4 is a delta operation, not pre-existing version-0 state).
+// creator is recorded as metadata only — pre-adding it would make the first
+// delta's AddParticipant(creator) a duplicate, and break replay.
 func New(waveID id.WaveID, waveletID id.WaveletID, creator id.ParticipantID, creationTime int64, hashedVersion version.HashedVersion) *Data {
 	return &Data{
 		waveID:           waveID,
@@ -40,7 +44,7 @@ func New(waveID id.WaveID, waveletID id.WaveletID, creator id.ParticipantID, cre
 		creationTime:     creationTime,
 		lastModifiedTime: creationTime,
 		hashedVersion:    hashedVersion,
-		participants:     []id.ParticipantID{creator},
+		participants:     nil,
 		blips:            map[string]*BlipData{},
 	}
 }

@@ -26,11 +26,11 @@ func (w *Data) ApplyDelta(delta waveop.WaveletDelta, serializedDelta []byte) err
 	running := base
 	for i := 0; i < delta.Len(); i++ {
 		o := delta.Op(i)
-		inc := o.Context().VersionIncrement
-		if inc <= 0 {
-			inc = 1
-		}
-		running += uint64(inc)
+		// Each operation advances the wavelet by exactly one version (spec §8.2:
+		// a delta of N operations advances the version by N). Context.VersionIncrement
+		// is wire metadata and is NOT used for version arithmetic — doing so would
+		// diverge from the op-count basis used by cc, the history, and storage.
+		running++
 		if err := w.applyOp(o, running); err != nil {
 			return err
 		}

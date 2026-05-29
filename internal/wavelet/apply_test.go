@@ -43,8 +43,13 @@ func TestNewWavelet(t *testing.T) {
 	if w.Version() != 0 {
 		t.Errorf("version = %d, want 0", w.Version())
 	}
-	if !w.HasParticipant(pid(t, "alice@example.com")) {
-		t.Error("creator should be a participant")
+	// The participant set starts empty; the creator is recorded as metadata and
+	// becomes a participant only via the first delta's AddParticipant op.
+	if w.Creator() != pid(t, "alice@example.com") {
+		t.Errorf("creator = %v, want alice", w.Creator())
+	}
+	if len(w.Participants()) != 0 {
+		t.Error("new wavelet should have no participants until a delta adds them")
 	}
 	if len(w.BlipIDs()) != 0 {
 		t.Error("new wavelet should have no blips")
@@ -212,7 +217,9 @@ func TestApplyRemoveParticipant(t *testing.T) {
 	w := mkWavelet(t)
 	alice := w.Creator()
 	bob := pid(t, "bob@example.com")
+	// Add alice and bob, then remove bob; alice must remain.
 	w.ApplyDelta(waveop.NewWaveletDelta(alice, w.HashedVersion(), []waveop.Operation{
+		waveop.AddParticipant{Ctx: ctx(alice), Participant: alice},
 		waveop.AddParticipant{Ctx: ctx(alice), Participant: bob},
 	}), []byte("d1"))
 	w.ApplyDelta(waveop.NewWaveletDelta(alice, w.HashedVersion(), []waveop.Operation{
@@ -221,11 +228,11 @@ func TestApplyRemoveParticipant(t *testing.T) {
 	if w.HasParticipant(bob) {
 		t.Error("bob should be removed")
 	}
-	if w.HasParticipant(alice) == false {
+	if !w.HasParticipant(alice) {
 		t.Error("alice should remain")
 	}
-	if w.Version() != 2 {
-		t.Errorf("version = %d, want 2", w.Version())
+	if w.Version() != 3 {
+		t.Errorf("version = %d, want 3", w.Version())
 	}
 }
 
