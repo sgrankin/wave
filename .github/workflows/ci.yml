@@ -43,6 +43,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.8
+      # golangci-lint is pinned as a tool dependency in go.mod, so it builds
+      # with the same Go toolchain as the rest of the module — no separate
+      # version pin to drift out of sync with the language version.
+      - run: go tool golangci-lint run ./...
