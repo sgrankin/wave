@@ -58,12 +58,22 @@ func Open(path string) (*Store, error) {
 	// single connection keeps it alive for the process. Do not add
 	// SetConnMaxLifetime or raise the max without revisiting that.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("sqlite: init schema: %w", err)
+	// Each store contributes its own DDL (delta log, accounts, …). All are
+	// CREATE TABLE IF NOT EXISTS, so running them on every open is idempotent.
+	for _, ddl := range []string{schema, accountsSchema} {
+		if _, err := db.Exec(ddl); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite: init schema: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
+
+// Compile-time assertions that Store implements the storage contracts.
+var (
+	_ storage.DeltaStore   = (*Store)(nil)
+	_ storage.AccountStore = (*Store)(nil)
+)
 
 // Checkpoint forces a WAL checkpoint (TRUNCATE), folding the write-ahead log
 // back into the main database file and truncating it. Closing the database also
