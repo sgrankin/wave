@@ -21,6 +21,12 @@ func (d DocOp) IsInitialization() bool {
 	return true
 }
 
+// DocumentLength returns the number of items in the document this op
+// represents — meaningful for a DocInitialization, where it is the document's
+// length (start tags, end tags, and characters each count as one item). For a
+// general op it is the op's output length.
+func (d DocOp) DocumentLength() int { return d.outputLength() }
+
 // Apply applies op to the document doc, returning the resulting document. It is
 // defined as Compose(doc, op): op must cover the whole document (op's input
 // length must equal doc's length). An error is returned if op is invalid against
