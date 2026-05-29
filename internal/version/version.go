@@ -118,9 +118,11 @@ func Zero(name id.WaveletName) HashedVersion {
 //	version = appliedAt.Version + operationsApplied
 //	hash    = SHA-256(appliedAt.HistoryHash || appliedDeltaBytes)[:20]
 //
-// appliedDeltaBytes MUST be the canonical serialized ProtocolAppliedWaveletDelta
-// (spec invariant #2). Hashing any other encoding (e.g. a redesigned live-wire
-// form) diverges the chain and breaks interoperability.
+// appliedDeltaBytes MUST be the project's frozen canonical encoding of the
+// applied delta — codec.HashBytes (canonical CBOR of author, applied-at version,
+// timestamp, ops); see architecture invariant #2. It is NOT Java's
+// ProtocolAppliedWaveletDelta (federation is dropped, so there is no byte-compat
+// requirement). Hashing any other encoding diverges the chain.
 func Apply(appliedAt HashedVersion, appliedDeltaBytes []byte, operationsApplied uint64) HashedVersion {
 	h := sha256.New()
 	h.Write(appliedAt.historyHash)
