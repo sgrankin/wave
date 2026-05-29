@@ -146,6 +146,50 @@ func TestFanoutOverflowDropsSubscriber(t *testing.T) {
 	}
 }
 
+// Open is the join flow: a client joining after some edits gets the full,
+// contiguous history, then subsequent deltas on a live stream with no gap or
+// overlap.
+func TestOpenJoinThenFollow(t *testing.T) {
+	m := newWaveMap(t)
+	name := waveletName(t)
+	c, _ := m.Container(name)
+	alice := pid(t, "alice@example.com")
+
+	// A creates (v2) and edits (v3) before B joins.
+	if _, err := c.Submit(creationDelta(alice, version.Zero(name), "b", chars("hi"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Submit(blipDelta(alice, c.Version(), "b", appendText(2, "!"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// B joins.
+	history, sub := c.Open()
+	defer sub.Close()
+	if len(history) != 2 {
+		t.Fatalf("history length %d, want 2", len(history))
+	}
+	if history[0].ResultingVersion.Version() != 2 || history[1].ResultingVersion.Version() != 3 {
+		t.Errorf("history versions = %d,%d; want 2,3",
+			history[0].ResultingVersion.Version(), history[1].ResultingVersion.Version())
+	}
+
+	// A edits again -> v4 -> arrives on B's live stream, contiguous with history.
+	if _, err := c.Submit(blipDelta(alice, c.Version(), "b", appendText(3, "?"))); err != nil {
+		t.Fatal(err)
+	}
+	u := <-sub.Updates()
+	if u.ResultingVersion.Version() != 4 {
+		t.Errorf("live update version %d, want 4", u.ResultingVersion.Version())
+	}
+	// No overlap: the live stream carries only the post-Open delta, not v2/v3.
+	select {
+	case extra := <-sub.Updates():
+		t.Errorf("unexpected extra update v%d on the live stream", extra.ResultingVersion.Version())
+	default:
+	}
+}
+
 // Concurrent subscribe/close churn against an active submit loop must not race
 // (run under -race -count=N to explore interleavings).
 func TestFanoutConcurrent(t *testing.T) {

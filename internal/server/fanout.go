@@ -35,13 +35,32 @@ func (s *Subscription) Updates() <-chan WaveletUpdate { return s.ch }
 func (s *Subscription) Close() { s.c.removeSub(s) }
 
 // Subscribe registers a subscriber for the wavelet's applied deltas. The caller
-// reads Updates() and must keep up (see subBuffer) or be dropped.
+// reads Updates() and must keep up (see DefaultSubBuffer) or be dropped.
 func (c *WaveletContainer) Subscribe() *Subscription {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.subscribeLocked()
+}
+
+func (c *WaveletContainer) subscribeLocked() *Subscription {
 	s := &Subscription{c: c, ch: make(chan WaveletUpdate, DefaultSubBuffer)}
 	c.subs[s] = struct{}{}
 	return s
+}
+
+// Open is the join flow: it atomically returns the wavelet's applied-delta
+// history (so a joining client can build its view) and a live subscription for
+// subsequent deltas, with no gap or overlap between them. A delta either appears
+// in history (it was applied before Open) or arrives on the subscription (after),
+// never both — because both Open and Submit hold the lock.
+func (c *WaveletContainer) Open() (history []WaveletUpdate, sub *Subscription) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	history = make([]WaveletUpdate, len(c.applied))
+	for i, d := range c.applied {
+		history[i] = WaveletUpdate{Delta: d, ResultingVersion: d.ResultingVersion}
+	}
+	return history, c.subscribeLocked()
 }
 
 // removeSub closes and deregisters a subscription if still present (idempotent).

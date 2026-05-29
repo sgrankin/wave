@@ -38,8 +38,9 @@ type WaveletContainer struct {
 	mu        sync.Mutex
 	wavelet   *wavelet.Data // nil until the first delta creates the wavelet
 	history   *cc.MemoryHistory
-	corrupted bool                       // set if in-memory state diverged from storage; requires reload
-	subs      map[*Subscription]struct{} // update subscribers (fan-out)
+	corrupted bool                         // set if in-memory state diverged from storage; requires reload
+	subs      map[*Subscription]struct{}   // update subscribers (fan-out)
+	applied   []cc.TransformedWaveletDelta // applied deltas in order (Open snapshot)
 }
 
 // SubmitResult reports the outcome of a successful submit. A transformed-away
@@ -83,9 +84,11 @@ func Load(name id.WaveletName, deltas storage.DeltasAccess, clk clock.Clock) (*W
 			return nil, fmt.Errorf("server: replay hash mismatch at version %d (stored vs recomputed differ)",
 				rec.ResultingVersion.Version())
 		}
-		c.history.Append(cc.TransformedWaveletDelta{
+		applied := cc.TransformedWaveletDelta{
 			Author: rec.Author, ResultingVersion: rec.ResultingVersion, Timestamp: rec.Timestamp, Ops: rec.Ops,
-		})
+		}
+		c.history.Append(applied)
+		c.applied = append(c.applied, applied)
 	}
 	return c, nil
 }
@@ -181,6 +184,7 @@ func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, erro
 		Author: rec.Author, ResultingVersion: resulting, Timestamp: ts, Ops: rec.Ops,
 	}
 	c.history.Append(applied)
+	c.applied = append(c.applied, applied)
 	// Fan out to subscribers in version order (still under the lock, so concurrent
 	// submits deliver their deltas in order).
 	c.publish(WaveletUpdate{Delta: applied, ResultingVersion: resulting})
