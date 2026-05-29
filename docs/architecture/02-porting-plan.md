@@ -129,12 +129,26 @@ Each phase lists deliverable + the tests that define "done". Phases 0–6 reach 
   transform surface CC rides on.
 
 ### Phase 2 — Wavelet & conversation model
-- `internal/wavelet`: wavelet/blip state, conversation manifest, supplement,
+- **Document representation — decided 2026-05-28 (lean backend model):** a blip's
+  content is held as a **`DocInitialization`** (an insertion-only `DocOp`) and
+  operations are applied via **`op.Compose`** (`Apply = Compose`, already built in
+  1a). The backend does **not** port the Java indexed mutable document model
+  (`model/document/`). This also lands the `apply()` deferred from 1b: blip ops →
+  compose into the target blip's content; Add/RemoveParticipant → participant-set
+  mutation; version + hash chain (`version.HashedVersion.Apply`) advance per op.
+  See [Deferred → indexed-document model](#deferred) for why this is mostly a
+  *drop*, not hidden debt, and what small piece is genuinely deferred.
+- `internal/wavelet`: `WaveletData` (participants, blips, version + hashed-version
+  chain, creator/timestamps), `BlipData` (id, content `DocInitialization`, author,
+  contributors, last-modified version/time), conversation manifest, supplement,
   participants/roles (roles = advisory metadata, unenforced).
-- **Tests:** port `model/conversation` + supplement tests.
-- **Done when:** can (a) read back manifest + blip structure, and (b) **generate
-  the ops that create a manifest, append a blip, and initialise a blip doc
-  (`<body><line/></body>`)** — the client-authoring capability Phase 5 needs.
+- **Tests:** port `model/conversation` + supplement tests; apply round-trips
+  (wavelet-op apply == compose on the target blip); participant add/remove.
+- **Done when:** can (a) read back manifest + blip structure, (b) **apply a
+  `WaveletDelta` to wavelet state** (blip + participant ops, version/hash
+  advance), and (c) **generate the ops that create a manifest, append a blip, and
+  initialise a blip doc (`<body><line/></body>`)** — the client-authoring
+  capability Phase 5 needs.
 
 ### Phase 3 — Concurrency control
 - `internal/cc`: delta types (client/transformed/applied), client CC (one
@@ -209,6 +223,21 @@ Each phase lists deliverable + the tests that define "done". Phases 0–6 reach 
   [10](../specs/10-web-client.md)). Out of scope here beyond reserving the seam.
 
 ### Deferred
+- **Indexed mutable document model** (Java `model/document/`: live editable doc
+  with annotation-range indexing, cursors, doc-based views). **Mostly *dropped*,
+  not deferred 1:1-port debt** — answering "is this work we'll need anyway?":
+  - The **backend doesn't need it.** Blip content is a `DocInitialization` and ops
+    apply via `op.Compose` (Phase 2 decision); storing/serving deltas + snapshots
+    needs nothing more.
+  - The **GWT editor that drove it is being rebuilt** (Phase 8 is a clean frontend
+    track, not a port), so the new client gets its *own* editor/document model on
+    a modern framework — we will not port `model/document/` verbatim there either.
+  - **What is genuinely deferred** is a *lightweight read-only projection* over a
+    `DocInitialization` — extract plain text / title, read annotation values —
+    needed for **search/indexing (Phase 7)** and possibly client snapshots. That
+    is far smaller than the full model and is the *alternative* we build when we
+    get there, not a resurrection of the Java model. **Net: no large hidden port
+    debt; a small projection replaces a large subsystem.**
 - Robots/Gadgets API (event-out/op-in seam kept).
 - Real federation (no-op seams + proto types kept).
 - Diff/read-unread *rendering* doc; server-side profile fetch (client/robot
