@@ -118,17 +118,28 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   `waved --snapshot-every N`); default off keeps the history-replay join. The
   snapshot-based join (current-state snapshot + live stream) is the bootstrap the
   eventual browser client will use.
-- **Phase 3 is server-side only so far.** `cc.TransformToHead` + the error
-  taxonomy are done; **client-side CC** (in-flight/queue/ack/nack, reconnection)
-  and the **ported `concurrencycontrol` Java suite** are deferred — convergence is
-  currently held by the in-process + over-the-wire transport tests and the OT
-  fuzz. Double-submit dedup is deferred to the submission handler.
+- **6 fully (auth):** `internal/auth` — stateless HMAC signed-token sessions, a
+  pluggable provider chain (`Local` + `TrustedHeader`; tsnet/OIDC/passkey slot in
+  behind `Provider`), register-on-first-use `Provisioner`, and HTTP
+  `Service`/`Middleware`. Self-contained; live wiring into the transport/HTTP
+  path lands with the client phase.
+- **7 fully (search + attachments):** `doc` text/title/snippet projection;
+  `internal/search` — per-user inbox index maintained off the commit event
+  (`server.WithIndexer`, `waved --index`) + FTS5 full-text search with
+  in:/with:/creator:/orderby: operators, all inbox-scoped (access-controlled) +
+  `Rebuild` from the log; `internal/attachapi` — attachment upload/download/
+  thumbnail HTTP serving gated by wavelet participation.
+- **Phase 3 is server-side only.** `cc.TransformToHead` + the error taxonomy are
+  done; **client-side CC** (optimistic in-flight/queue/ack/nack + reconnection)
+  and **double-submit dedup** are deferred — convergence is held by the
+  in-process + over-the-wire transport tests and the OT fuzz. Client-side CC is
+  coupled to the browser client design, so it is best done in Phase 8.
 - **`internal/doc` is a read projection, not the indexed model** (the lean
   `Apply = Compose` decision — see Phase 2 below and Deferred).
-- **Next up (toward Phase 7):** per-user `wave_participants` index off the
-  fan-out; `doc` text/title projection; FTS5 search/inbox; auth (sessions +
-  local/trusted-header); attachment serving; then the deferred OT/CC conformance
-  suite + client-side CC.
+- **Remaining before Phase 8 (the two deferred debts):** the ported Java OT/CC
+  **conformance suite** (`#10` — independent validation of the OT core, a good
+  workflow fan-out candidate), and **client-side CC** (`#11` — best done with the
+  Phase-8 client design). Everything else through Phase 7 is on `main`.
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
