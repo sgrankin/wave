@@ -37,6 +37,7 @@ type WaveletContainer struct {
 	zero      version.HashedVersion
 	snapshots storage.SnapshotStore // nil unless snapshots are enabled
 	snapEvery int                   // ops between snapshots (0 = disabled)
+	indexer   Indexer               // nil unless index maintenance is enabled
 
 	mu        sync.Mutex
 	wavelet   *wavelet.Data // nil until the first delta creates the wavelet
@@ -61,13 +62,13 @@ type SubmitResult struct {
 // the stored one (the stored hash is authoritative; a mismatch means encoding
 // drift or corruption).
 func Load(name id.WaveletName, deltas storage.DeltasAccess, clk clock.Clock) (*WaveletContainer, error) {
-	return loadContainer(name, deltas, nil, 0, clk)
+	return loadContainer(name, deltas, nil, 0, nil, clk)
 }
 
 // loadContainer reconstructs a container. With a snapshot store it tries
 // snapshot + tail replay first, falling back to full replay on a miss or any
 // inconsistency (the snapshot is a cache; the delta log is authoritative).
-func loadContainer(name id.WaveletName, deltas storage.DeltasAccess, snapshots storage.SnapshotStore, snapEvery int, clk clock.Clock) (*WaveletContainer, error) {
+func loadContainer(name id.WaveletName, deltas storage.DeltasAccess, snapshots storage.SnapshotStore, snapEvery int, indexer Indexer, clk clock.Clock) (*WaveletContainer, error) {
 	zero := version.Zero(name)
 	c := &WaveletContainer{
 		name:      name,
@@ -76,6 +77,7 @@ func loadContainer(name id.WaveletName, deltas storage.DeltasAccess, snapshots s
 		zero:      zero,
 		snapshots: snapshots,
 		snapEvery: snapEvery,
+		indexer:   indexer,
 		history:   cc.NewMemoryHistory(zero),
 		subs:      map[*Subscription]struct{}{},
 	}
@@ -266,6 +268,9 @@ func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, erro
 	// submits deliver their deltas in order).
 	c.publish(WaveletUpdate{Delta: applied, ResultingVersion: resulting})
 	c.maybeSnapshot()
+	if c.indexer != nil {
+		c.indexer.OnCommit(c.name, c.wavelet, applied)
+	}
 	return SubmitResult{OpsApplied: len(rec.Ops), ResultingVersion: resulting, Timestamp: ts}, nil
 }
 

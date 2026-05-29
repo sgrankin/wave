@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/sgrankin/wave/internal/clock"
+	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
@@ -40,6 +41,7 @@ type config struct {
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
+	index         bool   // maintain the derived read index (inbox/search)
 	showVersion   bool
 }
 
@@ -80,6 +82,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
+	fs.BoolVar(&c.index, "index", true, "maintain the derived read index (inbox/search)")
 	fs.BoolVar(&c.showVersion, "version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -101,6 +104,10 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.snapshotEvery > 0 {
 		opts = append(opts, server.WithSnapshots(store, cfg.snapshotEvery))
 		logger.Info("snapshots enabled", "every", cfg.snapshotEvery)
+	}
+	if cfg.index {
+		opts = append(opts, server.WithIndexer(search.New(store, logger)))
+		logger.Info("index maintenance enabled")
 	}
 	wm := server.NewWaveMap(store, clock.System{}, opts...)
 	srv := &transport.Server{WaveMap: wm, Logger: logger}

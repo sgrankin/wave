@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/sgrankin/wave/internal/cc"
 	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/storage"
+	"github.com/sgrankin/wave/internal/wavelet"
 )
 
 // WaveMap holds the loaded wavelet containers for a server, keyed by wavelet
@@ -18,13 +20,29 @@ type WaveMap struct {
 	clk       clock.Clock
 	snapshots storage.SnapshotStore // nil unless WithSnapshots is set
 	snapEvery int                   // ops between snapshots (0 = disabled)
+	indexer   Indexer               // nil unless WithIndexer is set
 
 	mu         sync.Mutex
 	containers map[string]*WaveletContainer
 }
 
+// Indexer is notified after each committed delta so it can maintain derived read
+// indexes (inbox, search) off the commit path. It is best-effort: indexes are a
+// rebuildable cache, so a container never fails a submit because indexing failed.
+// OnCommit is called with the container lock held and the post-delta wavelet
+// state, so implementations must not block or call back into the container.
+type Indexer interface {
+	OnCommit(name id.WaveletName, w *wavelet.Data, delta cc.TransformedWaveletDelta)
+}
+
 // Option configures a WaveMap.
 type Option func(*WaveMap)
+
+// WithIndexer enables derived-index maintenance: the given indexer is notified
+// after each committed delta. Disabled by default.
+func WithIndexer(indexer Indexer) Option {
+	return func(m *WaveMap) { m.indexer = indexer }
+}
 
 // WithSnapshots enables the snapshot cache: containers load via the latest
 // snapshot + tail replay (falling back to full replay on any inconsistency),
@@ -82,7 +100,7 @@ func (m *WaveMap) Container(name id.WaveletName) (*WaveletContainer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("server: open wavelet %s: %w", name, err)
 	}
-	c, err := loadContainer(name, access, m.snapshots, m.snapEvery, m.clk)
+	c, err := loadContainer(name, access, m.snapshots, m.snapEvery, m.indexer, m.clk)
 	if err != nil {
 		return nil, err
 	}
