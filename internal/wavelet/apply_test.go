@@ -124,6 +124,48 @@ func TestApplyComposeFailureErrors(t *testing.T) {
 	}
 }
 
+func TestApplyUnworthyEditDoesNotUpdateMetadata(t *testing.T) {
+	w := mkWavelet(t)
+	alice := w.Creator()
+	bob := pid(t, "bob@example.com")
+	// alice creates blip "b+1" with "hi" (worthy) at version 1.
+	w.ApplyDelta(waveop.NewWaveletDelta(alice, w.HashedVersion(), []waveop.Operation{
+		waveop.WaveletBlipOperation{BlipID: "b+1", BlipOp: waveop.BlipContentOperation{
+			Ctx: ctx(alice), ContentOp: op.NewDocOp([]op.Component{op.Characters{Text: "hi"}})}},
+	}), []byte("d1"))
+
+	// bob applies an unworthy edit (a presence annotation only) — metadata must
+	// not change: bob is not added as a contributor and lastModifiedVersion stays 1.
+	uval := "online"
+	presence, err := op.NewAnnotationBoundaryMap(nil, []op.AnnotationChange{{Key: "user/r/bob", NewValue: &uval}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endPresence, _ := op.NewAnnotationBoundaryMap([]string{"user/r/bob"}, nil)
+	unworthy := op.NewDocOp([]op.Component{
+		op.AnnotationBoundary{Boundary: presence},
+		op.Retain{Count: 2},
+		op.AnnotationBoundary{Boundary: endPresence},
+	})
+	if err := w.ApplyDelta(waveop.NewWaveletDelta(bob, w.HashedVersion(), []waveop.Operation{
+		waveop.WaveletBlipOperation{BlipID: "b+1", BlipOp: waveop.BlipContentOperation{Ctx: ctx(bob), ContentOp: unworthy}},
+	}), []byte("d2")); err != nil {
+		t.Fatalf("ApplyDelta: %v", err)
+	}
+	blip, _ := w.Blip("b+1")
+	for _, c := range blip.Contributors() {
+		if c == bob {
+			t.Error("bob made an unworthy edit and should not be a contributor")
+		}
+	}
+	if blip.LastModifiedVersion() != 1 {
+		t.Errorf("lastModifiedVersion = %d after unworthy edit, want 1 (unchanged)", blip.LastModifiedVersion())
+	}
+	if w.Version() != 2 {
+		t.Errorf("wavelet version = %d, want 2 (the op still advances the wavelet)", w.Version())
+	}
+}
+
 func TestApplyContributorMethods(t *testing.T) {
 	w := mkWavelet(t)
 	alice := w.Creator()

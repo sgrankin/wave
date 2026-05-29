@@ -105,25 +105,23 @@ func (w *Data) applyBlipOp(wbo waveop.WaveletBlipOperation, atVersion uint64) er
 	}
 	blip.content = newContent
 
-	// NOTE (deferred — worthiness): Java gates this metadata update on
-	// WorthyChangeChecker: edits to system documents (ids "attach*"/"mini"/"tr+")
-	// and pure inline-reply-anchor or presence/spell/link/language annotations do
-	// NOT update contributors or last-modified. That depends on the doc-id and
-	// annotation conventions ported in Phase 2b (conversation model); until then
-	// the update is unconditional (correct for ordinary content edits, the common
-	// case). See docs/architecture/02-porting-plan.md → Deferred.
-	switch bc.Method {
-	case waveop.ContributorAdd:
-		blip.contributors = addToSet(blip.contributors, ctx.Creator)
-	case waveop.ContributorRemove:
-		blip.contributors = removeFromSet(blip.contributors, ctx.Creator)
-	case waveop.ContributorNone:
-		// leave contributors unchanged
-	}
-
-	blip.lastModifiedVersion = atVersion
-	if ctx.HasTimestamp() {
-		blip.lastModifiedTime = ctx.Timestamp
+	// Metadata (contributors, last-modified) is updated only for "worthy" edits to
+	// "worthy" documents: trivial edits (inline-reply anchors, presence/spell/
+	// link/translation/language annotations) and system documents do not count
+	// (BlipOperation.update gated on updatesBlipMetadata).
+	if bc.UpdatesBlipMetadata(wbo.BlipID) {
+		switch bc.Method {
+		case waveop.ContributorAdd:
+			blip.contributors = addToSet(blip.contributors, ctx.Creator)
+		case waveop.ContributorRemove:
+			blip.contributors = removeFromSet(blip.contributors, ctx.Creator)
+		case waveop.ContributorNone:
+			// leave contributors unchanged
+		}
+		blip.lastModifiedVersion = atVersion
+		if ctx.HasTimestamp() {
+			blip.lastModifiedTime = ctx.Timestamp
+		}
 	}
 	return nil
 }

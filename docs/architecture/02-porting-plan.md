@@ -238,16 +238,9 @@ Each phase lists deliverable + the tests that define "done". Phases 0–6 reach 
     is far smaller than the full model and is the *alternative* we build when we
     get there, not a resurrection of the Java model. **Net: no large hidden port
     debt; a small projection replaces a large subsystem.**
-- **Blip-change "worthiness"** (`WorthyChangeChecker`): gating blip metadata
-  updates (contributors, last-modified) on whether an edit is "worthy" — system
-  docs (`attach*`/`mini`/`tr+`) and pure inline-reply-anchor or
-  presence/spell/link/language annotations are *not* worthy and must not update
-  metadata. Deferred to **Phase 2b** because it depends on the doc-id and
-  annotation conventions ported with the conversation model. Until then Phase
-  2a's apply updates metadata unconditionally — correct for ordinary content
-  edits (the common case), over-attributing only the edge cases above. *Needed
-  eventually* (affects contributor lists + read/unread), but small and localized
-  to `wavelet.applyBlipOp`.
+- ~~Blip-change "worthiness" (`WorthyChangeChecker`)~~ — **done in Phase 2b**
+  (`waveop.IsWorthyChange`/`IsWorthyBlipID`/`UpdatesBlipMetadata`, gating
+  metadata updates in `wavelet.applyBlipOp`).
 - Robots/Gadgets API (event-out/op-in seam kept).
 - Real federation (no-op seams + proto types kept).
 - Diff/read-unread *rendering* doc; server-side profile fetch (client/robot
