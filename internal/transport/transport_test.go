@@ -1,6 +1,7 @@
 package transport_test
 
 import (
+	"context"
 	"net"
 	"path/filepath"
 	"sync"
@@ -185,5 +186,54 @@ func TestConcurrentClientsConverge(t *testing.T) {
 	}
 	if ca.DocumentLength() != 4 {
 		t.Errorf("converged length = %d, want 4 ('ab' + two appends)", ca.DocumentLength())
+	}
+}
+
+// TestServerGracefulDrain: a Server over a real listener counts metrics, and on
+// context cancellation stops accepting, drains the active session, and returns.
+func TestServerGracefulDrain(t *testing.T) {
+	wm := newWaveMap(t)
+	name := waveletName(t)
+	alice := pid(t, "alice@example.com")
+
+	srv := &transport.Server{WaveMap: wm}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	accepted := make(chan error, 1)
+	go func() { accepted <- srv.Accept(ctx, ln) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := transport.NewClient(conn, name, alice)
+	defer cl.Close()
+	if err := cl.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := cl.Submit(writeBlip(alice, "b", chars("hi"))); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	m := srv.Metrics()
+	if m.ConnectionsTotal.Load() < 1 || m.ActiveSessions.Load() < 1 || m.SubmitsTotal.Load() < 1 {
+		t.Errorf("metrics not counted: conns=%d active=%d submits=%d",
+			m.ConnectionsTotal.Load(), m.ActiveSessions.Load(), m.SubmitsTotal.Load())
+	}
+
+	cancel()
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Errorf("Accept returned %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Accept did not return after cancel (drain hung)")
+	}
+	if got := m.ActiveSessions.Load(); got != 0 {
+		t.Errorf("active sessions after drain = %d, want 0", got)
 	}
 }

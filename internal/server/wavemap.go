@@ -30,6 +30,14 @@ func NewWaveMap(store storage.DeltaStore, clk clock.Clock) *WaveMap {
 	}
 }
 
+// Count returns the number of currently loaded (cached) wavelet containers. It
+// is an operability gauge, not the number of wavelets in storage.
+func (m *WaveMap) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.containers)
+}
+
 // Container returns the container for the named wavelet, loading it (by
 // replaying its delta log) on first access and caching it. Repeated calls for
 // the same name return the same container.

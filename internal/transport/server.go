@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -17,46 +19,110 @@ import (
 	"github.com/sgrankin/wave/internal/waveop"
 )
 
-// Serve handles one client connection: a single wavelet session. The first
-// message must be Open (binding the connection to a wavelet); thereafter the
-// client submits deltas and receives the wavelet's applied-delta stream (history
-// snapshot, then live updates with no gap). Serve returns when the connection
-// ends (clean EOF → nil) or a protocol error occurs.
-func Serve(conn io.ReadWriter, wm *server.WaveMap) error {
-	s := &session{conn: conn, wm: wm, out: make(chan []byte, 64), done: make(chan struct{})}
-	return s.run()
+// Server serves the session protocol to many connections over one shared
+// WaveMap. It tracks active sessions for graceful drain and exposes cumulative
+// counters for operability. A zero Server is not usable — set WaveMap.
+type Server struct {
+	WaveMap *server.WaveMap
+	Logger  *slog.Logger // nil → slog.Default()
+
+	wg sync.WaitGroup // active sessions started via Accept (for drain)
+	m  Metrics
 }
 
-// ListenAndServe accepts connections on ln and serves each (one goroutine per
-// connection) until ctx is cancelled, at which point it closes ln and returns.
-// It is the reusable multi-client binding; the production server (cmd/waved)
-// wraps it with config, graceful drain, and operability.
-func ListenAndServe(ctx context.Context, ln net.Listener, wm *server.WaveMap) error {
+// Metrics is a Server's operability counters. Read them via Server.Metrics; the
+// fields are atomics and must not be copied.
+type Metrics struct {
+	ConnectionsTotal atomic.Int64 // connections served since start
+	ActiveSessions   atomic.Int64 // sessions currently running
+	SubmitsTotal     atomic.Int64 // submit requests processed
+	SubmitErrors     atomic.Int64 // submit requests that nacked
+}
+
+// Metrics returns the server's live counters.
+func (s *Server) Metrics() *Metrics { return &s.m }
+
+func (s *Server) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
+}
+
+// ServeConn serves one connection — a single wavelet session — to completion
+// (clean EOF → nil). It is safe to call concurrently for distinct connections.
+func (s *Server) ServeConn(conn io.ReadWriter) error {
+	s.m.ConnectionsTotal.Add(1)
+	s.m.ActiveSessions.Add(1)
+	defer s.m.ActiveSessions.Add(-1)
+	sess := &session{srv: s, conn: conn, out: make(chan []byte, 64), done: make(chan struct{})}
+	return sess.run()
+}
+
+// Accept runs the accept loop on ln until ctx is cancelled. Each connection is
+// served in its own goroutine. On cancellation it stops accepting, closes any
+// still-open connections to unblock their sessions, waits for them to drain, and
+// returns nil. A non-cancellation accept error is returned.
+func (s *Server) Accept(ctx context.Context, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
+	var mu sync.Mutex
+	conns := map[net.Conn]struct{}{}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
+				// Shutting down: force-close any lingering sessions, then drain.
+				mu.Lock()
+				for c := range conns {
+					_ = c.Close()
+				}
+				mu.Unlock()
+				s.wg.Wait()
+				s.logger().Info("transport drained", "served", s.m.ConnectionsTotal.Load())
 				return nil
 			}
-			return err
+			return fmt.Errorf("transport: accept: %w", err)
 		}
+		mu.Lock()
+		conns[conn] = struct{}{}
+		mu.Unlock()
+		s.wg.Add(1)
 		go func() {
-			defer conn.Close()
-			_ = Serve(conn, wm)
+			defer s.wg.Done()
+			defer func() {
+				mu.Lock()
+				delete(conns, conn)
+				mu.Unlock()
+				_ = conn.Close()
+			}()
+			if err := s.ServeConn(conn); err != nil {
+				s.logger().Warn("session ended with error", "remote", conn.RemoteAddr(), "err", err)
+			}
 		}()
 	}
+}
+
+// Serve handles one connection with a transient default Server. Convenience for
+// tests and simple single-connection callers; prefer a Server for real use.
+func Serve(conn io.ReadWriter, wm *server.WaveMap) error {
+	return (&Server{WaveMap: wm}).ServeConn(conn)
+}
+
+// ListenAndServe accepts and serves connections on ln until ctx is cancelled,
+// using a transient default Server.
+func ListenAndServe(ctx context.Context, ln net.Listener, wm *server.WaveMap) error {
+	return (&Server{WaveMap: wm}).Accept(ctx, ln)
 }
 
 // session is the per-connection server state. A single writer goroutine drains
 // out to the connection, so the read loop and the update forwarder can enqueue
 // frames concurrently without interleaving.
 type session struct {
+	srv  *Server
 	conn io.ReadWriter
-	wm   *server.WaveMap
 
 	out  chan []byte
 	done chan struct{}
@@ -122,9 +188,7 @@ func (s *session) readLoop() error {
 			// A connection ending — cleanly at a frame boundary (io.EOF), mid-frame
 			// (io.ErrUnexpectedEOF), or via our own shutdown close (net.ErrClosed) —
 			// is a normal session end, not a server error. Mid-frame truncation is
-			// collapsed here too: with no logging story yet there is nothing to do
-			// but end the session; revisit (log/surface the distinction) once waved
-			// adds structured logging.
+			// collapsed here too: there is nothing to recover, so we end the session.
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
@@ -163,7 +227,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		s.push(encodeError("bad wavelet name: " + err.Error()))
 		return nil
 	}
-	c, err := s.wm.Container(name)
+	c, err := s.srv.WaveMap.Container(name)
 	if err != nil {
 		s.push(encodeError("open: " + err.Error()))
 		return nil
@@ -177,6 +241,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		hist[i] = encodeStored(u.Delta)
 	}
 	s.push(encodeOpenResponse(hist))
+	s.srv.logger().Debug("wavelet opened", "wavelet", nameStr, "history", len(hist))
 
 	s.wg.Add(1)
 	go s.forward(sub)
@@ -211,8 +276,10 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 	if err != nil {
 		return err
 	}
+	s.srv.m.SubmitsTotal.Add(1)
 	cd, err := codec.DecodeClientDelta(db)
 	if err != nil {
+		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest), "bad delta: "+err.Error(), nil))
 		return nil
 	}
@@ -224,6 +291,7 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 		if errors.As(err, &ce) {
 			code = ce.Code
 		}
+		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(code), err.Error(), nil))
 		return nil
 	}

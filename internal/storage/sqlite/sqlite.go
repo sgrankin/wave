@@ -65,6 +65,17 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// Checkpoint forces a WAL checkpoint (TRUNCATE), folding the write-ahead log
+// back into the main database file and truncating it. Closing the database also
+// checkpoints, but an explicit checkpoint at a clean shutdown point keeps the
+// on-disk file self-contained (no large -wal sidecar) for backup/inspection.
+func (s *Store) Checkpoint() error {
+	if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return fmt.Errorf("sqlite: wal checkpoint: %w", err)
+	}
+	return nil
+}
+
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
 
