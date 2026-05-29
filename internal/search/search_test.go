@@ -105,6 +105,122 @@ func TestInboxTracksParticipants(t *testing.T) {
 	}
 }
 
+// createWithText adds the author as a participant and writes a blip with text.
+func createWithText(author id.ParticipantID, target version.HashedVersion, blipID, text string) waveop.WaveletDelta {
+	c := waveop.Context{Creator: author, Timestamp: 1000, VersionIncrement: 1}
+	return waveop.NewWaveletDelta(author, target, []waveop.Operation{
+		waveop.AddParticipant{Ctx: c, Participant: author},
+		waveop.WaveletBlipOperation{BlipID: blipID, BlipOp: waveop.BlipContentOperation{Ctx: c, ContentOp: chars(text)}},
+	})
+}
+
+func searchSet(t *testing.T, idx *search.Index, who id.ParticipantID, query string) map[string]bool {
+	t.Helper()
+	results, err := idx.Search(who, query, 0)
+	if err != nil {
+		t.Fatalf("search %q: %v", query, err)
+	}
+	set := map[string]bool{}
+	for _, r := range results {
+		set[r.Wavelet.String()] = true
+	}
+	return set
+}
+
+func TestFullTextSearch(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+
+	alice := pid(t, "alice@example.com")
+	bob := pid(t, "bob@example.com")
+	wa := waveletName(t, "w+a")
+	wb := waveletName(t, "w+b")
+
+	ca, _ := wm.Container(wa)
+	if _, err := ca.Submit(createWithText(alice, version.Zero(wa), "b", "the quick brown fox")); err != nil {
+		t.Fatal(err)
+	}
+	cb, _ := wm.Container(wb)
+	if _, err := cb.Submit(createWithText(alice, version.Zero(wb), "b", "the lazy dog")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Free-text matches the right wavelet.
+	if got := searchSet(t, idx, alice, "quick"); len(got) != 1 || !got[wa.String()] {
+		t.Errorf("search 'quick' = %v, want {w+a}", got)
+	}
+	if got := searchSet(t, idx, alice, "dog"); len(got) != 1 || !got[wb.String()] {
+		t.Errorf("search 'dog' = %v, want {w+b}", got)
+	}
+	// Terms are ANDed: no single wavelet has both "fox" and "dog".
+	if got := searchSet(t, idx, alice, "fox dog"); len(got) != 0 {
+		t.Errorf("search 'fox dog' = %v, want empty (AND)", got)
+	}
+
+	// Inbox-scoped: bob is not a participant, so he finds nothing.
+	if got := searchSet(t, idx, bob, "quick"); len(got) != 0 {
+		t.Errorf("bob (non-participant) search = %v, want empty", got)
+	}
+	// Add bob to w+a → he can now find it.
+	if _, err := ca.Submit(addParticipantDelta(alice, bob, ca.Version())); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchSet(t, idx, bob, "quick"); !got[wa.String()] {
+		t.Errorf("bob search after add = %v, want to contain w+a", got)
+	}
+
+	// creator: filter — alice created both.
+	if got := searchSet(t, idx, alice, "creator:alice@example.com the"); len(got) != 2 {
+		t.Errorf("creator:alice = %v, want both wavelets", got)
+	}
+	if got := searchSet(t, idx, alice, "creator:bob@example.com the"); len(got) != 0 {
+		t.Errorf("creator:bob = %v, want empty (bob created none)", got)
+	}
+	// with: filter — only w+a also has bob.
+	if got := searchSet(t, idx, alice, "with:bob@example.com the"); len(got) != 1 || !got[wa.String()] {
+		t.Errorf("with:bob = %v, want {w+a}", got)
+	}
+}
+
+// Editing a blip updates its indexed text (old terms stop matching).
+func TestSearchReindexOnEdit(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+	alice := pid(t, "alice@example.com")
+	wa := waveletName(t, "w+a")
+	c, _ := wm.Container(wa)
+
+	if _, err := c.Submit(createWithText(alice, version.Zero(wa), "b", "original")); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchSet(t, idx, alice, "original"); !got[wa.String()] {
+		t.Fatal("expected to find 'original'")
+	}
+	// Replace the blip content (full-doc replace: delete 8 chars, insert new).
+	replace := op.NewDocOp([]op.Component{op.DeleteCharacters{Text: "original"}, op.Characters{Text: "replacement"}})
+	o := waveop.WaveletBlipOperation{BlipID: "b", BlipOp: waveop.BlipContentOperation{
+		Ctx: waveop.Context{Creator: alice, Timestamp: 1000, VersionIncrement: 1}, ContentOp: replace}}
+	if _, err := c.Submit(waveop.NewWaveletDelta(alice, c.Version(), []waveop.Operation{o})); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchSet(t, idx, alice, "original"); len(got) != 0 {
+		t.Errorf("'original' still matches after edit: %v", got)
+	}
+	if got := searchSet(t, idx, alice, "replacement"); !got[wa.String()] {
+		t.Errorf("'replacement' should match after edit")
+	}
+}
+
 func TestRebuildFromLog(t *testing.T) {
 	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
 	if err != nil {
