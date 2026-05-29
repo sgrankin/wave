@@ -97,30 +97,38 @@ risk, so they come first after the primitives. Note **auth depends on account**
 Each phase lists deliverable + the tests that define "done". Phases 0–6 reach a
 **working headless wave server**; 7+ broaden and then tackle UI.
 
-### Progress & decisions (live, as of 2026-05-28)
+### Progress & decisions (live, as of 2026-05-29)
 
 What's on the fork's `main`, and how execution deviated from the plan above:
 
 - **Done & pushed:** Phase 0; 1a (`op` + transform); 1b (`waveop` + transform);
   2 (`wavelet` apply, `conv` manifest, `doc` reader, worthiness); 3 *server side*
-  (`cc` transform-to-head + `MemoryHistory`); 4 *delta log* (`storage` + `sqlite`);
-  5 *logic* (`server`: container apply pipeline, wave map, fan-out, join flow).
-- **`internal/codec` — added between 3 and 4 (not its own line above).** Canonical
-  CBOR (fxamacker/cbor, RFC 8949 Core Deterministic) for the hash chain + storage
-  blobs (+ later the wire). Chosen over reproducing Java's `ProtocolAppliedWaveletDelta`:
-  federation is dropped, so there's no byte-compat need. See architecture invariant #2.
+  (`cc` transform-to-head + `MemoryHistory`); **4 fully** (`storage`/`sqlite`
+  delta log + lookups/delete/get-by-end-version, accounts store, `blobfs` +
+  attachment store, **snapshots** — snapshot+tail load with full-replay fallback,
+  snapshot-based join); **5 fully** (`server` apply pipeline + wave map + fan-out
+  + join; `transport` framed-CBOR session protocol + `Client`; `cmd/waved` with
+  unix/tcp/stdio listeners, slog, expvar/health, graceful drain; `cmd/wavectl`).
+- **`internal/codec`** — canonical CBOR (fxamacker, RFC 8949 Core Deterministic)
+  for the hash chain + storage blobs + the wire delta payloads. Chosen over
+  reproducing Java's `ProtocolAppliedWaveletDelta` (federation dropped → no
+  byte-compat need). See architecture invariant #2.
+- **`internal/snapshot`** — separate, *non-frozen* snapshot encoding (snapshots
+  are a rebuildable cache). Snapshots are **opt-in** (`server.WithSnapshots` /
+  `waved --snapshot-every N`); default off keeps the history-replay join. The
+  snapshot-based join (current-state snapshot + live stream) is the bootstrap the
+  eventual browser client will use.
 - **Phase 3 is server-side only so far.** `cc.TransformToHead` + the error
   taxonomy are done; **client-side CC** (in-flight/queue/ack/nack, reconnection)
-  and the **ported `concurrencycontrol` Java suite** are deferred — the
-  convergence contract is currently held by the in-process container tests +
-  the OT fuzz. Double-submit dedup is deferred to the submission handler.
-- **Phase 4 = delta log only.** Snapshots, the accounts store, attachment blobs,
-  and `WaveletStore` lookup/iterator/delete are **deferred**; full replay covers
-  the vertical slice, so snapshots wait until load time warrants them.
+  and the **ported `concurrencycontrol` Java suite** are deferred — convergence is
+  currently held by the in-process + over-the-wire transport tests and the OT
+  fuzz. Double-submit dedup is deferred to the submission handler.
 - **`internal/doc` is a read projection, not the indexed model** (the lean
   `Apply = Compose` decision — see Phase 2 below and Deferred).
-- **Remaining in Phase 5:** the stdio byte-transport + `wavectl` (tangible
-  two-client demo); the in-process serving logic is complete and proven.
+- **Next up (toward Phase 7):** per-user `wave_participants` index off the
+  fan-out; `doc` text/title projection; FTS5 search/inbox; auth (sessions +
+  local/trusted-header); attachment serving; then the deferred OT/CC conformance
+  suite + client-side CC.
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
@@ -201,10 +209,10 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   JSON-column round-trips.
 - **Done when:** a wavelet persists, reloads via snapshot+tail to identical
   state, survives restart.
-- **Status:** delta log done & pushed (`transformed_blob` = canonical CBOR via
-  `internal/codec`; the federation `applied_blob` column dropped, re-addable).
-  Snapshots, accounts, attachment blobs, and `WaveletStore` lookup/iterator/delete
-  are deferred (full replay covers the slice for now).
+- **Status:** done & pushed. Delta log (`transformed_blob` = canonical CBOR;
+  federation `applied_blob` dropped, re-addable) + lookup/delete/get-by-end-version;
+  accounts store (JSON column); `blobfs` + attachment store; snapshots
+  (snapshot+tail load with full-replay fallback, opt-in).
 
 ### Phase 5 — Server core + stdio transport (first vertical slice)
 - `internal/server`: wavelet container (load via snapshot+tail), apply pipeline
