@@ -33,6 +33,16 @@ type DeltaStore interface {
 	// Open returns per-wavelet delta access. The wavelet is created implicitly
 	// when its first delta is appended.
 	Open(name id.WaveletName) (DeltasAccess, error)
+	// Delete permanently removes a wavelet's delta log. It returns whether a
+	// wavelet was deleted (false if it had no deltas). Callers must serialize
+	// Delete with Open/Append for the same wavelet.
+	Delete(name id.WaveletName) (bool, error)
+	// Lookup returns the wavelet IDs of the given wave that have at least one
+	// delta. Empty if the wave does not exist (spec §5.5).
+	Lookup(wave id.WaveID) ([]id.WaveletID, error)
+	// WaveIDs returns all wave IDs that have at least one non-empty wavelet. The
+	// result is a snapshot taken at call time (spec §5.5 getWaveIdIterator).
+	WaveIDs() ([]id.WaveID, error)
 	// Close releases the store's resources.
 	Close() error
 }
@@ -48,6 +58,9 @@ type DeltasAccess interface {
 	// GetDelta returns the record applied at the given version, and whether it
 	// exists.
 	GetDelta(appliedAtVersion uint64) (DeltaRecord, bool, error)
+	// GetDeltaByEndVersion returns the record whose resulting version equals the
+	// given version, and whether it exists (spec §5.6).
+	GetDeltaByEndVersion(resultingVersion uint64) (DeltaRecord, bool, error)
 	// EndVersion returns the resulting version of the last record; ok is false
 	// when the wavelet has no deltas.
 	EndVersion() (hv version.HashedVersion, ok bool, err error)

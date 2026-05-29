@@ -98,6 +98,68 @@ func (s *Store) Open(name id.WaveletName) (storage.DeltasAccess, error) {
 	}, nil
 }
 
+// Delete permanently removes a wavelet's delta log, returning whether anything
+// was deleted.
+func (s *Store) Delete(name id.WaveletName) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM deltas WHERE wave_id = ? AND wavelet_id = ?`,
+		name.Wave().Serialize(), name.Wavelet().Serialize())
+	if err != nil {
+		return false, fmt.Errorf("sqlite: delete wavelet %s: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: delete wavelet %s: rows affected: %w", name, err)
+	}
+	return n > 0, nil
+}
+
+// Lookup returns the wavelet IDs of the given wave that have at least one delta.
+// Every row in the table is a delta, so any wavelet present is non-empty.
+func (s *Store) Lookup(wave id.WaveID) ([]id.WaveletID, error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT wavelet_id FROM deltas WHERE wave_id = ? ORDER BY wavelet_id`,
+		wave.Serialize())
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: lookup %s: %w", wave, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []id.WaveletID
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("sqlite: lookup scan: %w", err)
+		}
+		wl, err := id.ParseWaveletID(s)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: lookup: bad stored wavelet id %q: %w", s, err)
+		}
+		out = append(out, wl)
+	}
+	return out, rows.Err()
+}
+
+// WaveIDs returns all wave IDs with at least one non-empty wavelet (a snapshot).
+func (s *Store) WaveIDs() ([]id.WaveID, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT wave_id FROM deltas ORDER BY wave_id`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: wave ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []id.WaveID
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return nil, fmt.Errorf("sqlite: wave ids scan: %w", err)
+		}
+		w, err := id.ParseWaveID(s)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: wave ids: bad stored wave id %q: %w", s, err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 type deltasAccess struct {
 	db        *sql.DB
 	waveID    string
@@ -225,6 +287,25 @@ func (a *deltasAccess) GetDelta(appliedAtVersion uint64) (storage.DeltaRecord, b
 		return storage.DeltaRecord{}, false, fmt.Errorf("sqlite: get delta %d: %w", appliedAtVersion, err)
 	}
 	rec, err := recordFrom(appliedAtVersion, blob)
+	return rec, err == nil, err
+}
+
+// GetDeltaByEndVersion returns the record whose resulting version equals the
+// given version (uses idx_deltas_end).
+func (a *deltasAccess) GetDeltaByEndVersion(resultingVersion uint64) (storage.DeltaRecord, bool, error) {
+	var appliedAt int64
+	var blob []byte
+	err := a.db.QueryRow(
+		`SELECT applied_at_version, transformed_blob FROM deltas
+		 WHERE wave_id = ? AND wavelet_id = ? AND resulting_version = ?`,
+		a.waveID, a.waveletID, resultingVersion).Scan(&appliedAt, &blob)
+	if err == sql.ErrNoRows {
+		return storage.DeltaRecord{}, false, nil
+	}
+	if err != nil {
+		return storage.DeltaRecord{}, false, fmt.Errorf("sqlite: get delta by end version %d: %w", resultingVersion, err)
+	}
+	rec, err := recordFrom(uint64(appliedAt), blob)
 	return rec, err == nil, err
 }
 
