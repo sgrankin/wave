@@ -215,6 +215,19 @@ func ftsExpr(terms []string) string {
 	return strings.Join(quoted, " AND ")
 }
 
+// IsParticipant reports whether a participant currently belongs to a wavelet.
+func (s *Store) IsParticipant(name id.WaveletName, participant id.ParticipantID) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM wave_participants
+		 WHERE wave_id = ? AND wavelet_id = ? AND participant_id = ?)`,
+		name.Wave().Serialize(), name.Wavelet().Serialize(), participant.Address()).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: is participant %s in %s: %w", participant, name, err)
+	}
+	return exists == 1, nil
+}
+
 // parseWaveletName reconstructs a WaveletName from stored serialized ids.
 func parseWaveletName(waveStr, waveletStr string) (id.WaveletName, error) {
 	wave, err := id.ParseWaveID(waveStr)

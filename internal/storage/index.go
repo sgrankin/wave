@@ -22,6 +22,9 @@ type IndexStore interface {
 	// InboxWavelets returns the wavelets a participant currently belongs to.
 	// Ordering is the query layer's concern.
 	InboxWavelets(participant id.ParticipantID) ([]id.WaveletName, error)
+	// IsParticipant reports whether a participant currently belongs to a wavelet
+	// (the access-control predicate for reads/writes scoped to a wavelet).
+	IsParticipant(name id.WaveletName, participant id.ParticipantID) (bool, error)
 	// Search returns wavelets matching q (always scoped to q.Participant's inbox).
 	Search(q SearchQuery) ([]SearchResult, error)
 }

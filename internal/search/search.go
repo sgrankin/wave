@@ -116,6 +116,12 @@ func (i *Index) Inbox(participant id.ParticipantID) ([]id.WaveletName, error) {
 	return i.store.InboxWavelets(participant)
 }
 
+// CanAccess reports whether participant may access wavelet — the access-control
+// predicate (participation) used to scope attachment and wave reads/writes.
+func (i *Index) CanAccess(participant id.ParticipantID, wavelet id.WaveletName) (bool, error) {
+	return i.store.IsParticipant(wavelet, participant)
+}
+
 // Rebuild reconstructs the entire index from the delta log: it enumerates every
 // wave/wavelet, replays each to its current state, and re-records the index.
 // Use it to backfill after enabling indexing, or to repair drift. It is a
