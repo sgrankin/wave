@@ -64,8 +64,9 @@ type OptimisticClient struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
 	cc      *clientcc.CC
-	out     chan []byte // current session's outbound queue; nil while disconnected
-	opened  bool        // first open completed
+	out     chan []byte   // current session's outbound queue; nil while disconnected
+	outDone chan struct{} // closed when the current session ends; escapes a blocked enqueue
+	opened  bool          // first open completed
 	openErr error
 	fatal   error // non-recoverable failure; stops the supervisor and fails waiters
 	closed  bool
@@ -237,6 +238,7 @@ func (oc *OptimisticClient) runSession(conn io.ReadWriteCloser, first bool) erro
 
 	oc.mu.Lock()
 	oc.out = out
+	oc.outDone = sessDone
 	oc.mu.Unlock()
 
 	wg.Add(1)
@@ -278,6 +280,7 @@ func (oc *OptimisticClient) runSession(conn io.ReadWriteCloser, first bool) erro
 
 	oc.mu.Lock()
 	oc.out = nil
+	oc.outDone = nil
 	oc.mu.Unlock()
 	close(sessDone)
 	_ = conn.Close()
@@ -315,16 +318,19 @@ func (oc *OptimisticClient) sendDelta(o *clientcc.Outgoing) {
 }
 
 // enqueue puts a frame on the current session's outbound queue, blocking only on
-// backpressure (a full queue) until the client closes; a no-op while disconnected.
+// backpressure (a full queue); a no-op while disconnected. It escapes if that
+// session ends (outDone) — dropping the frame is safe, since the core re-derives
+// any unsent delta on reconnect via AfterResync/trySend — or if the client closes.
 func (oc *OptimisticClient) enqueue(f []byte) {
 	oc.mu.Lock()
-	out := oc.out
+	out, outDone := oc.out, oc.outDone
 	oc.mu.Unlock()
 	if out == nil {
 		return
 	}
 	select {
 	case out <- f:
+	case <-outDone:
 	case <-oc.done:
 	}
 }
@@ -414,6 +420,9 @@ func (oc *OptimisticClient) applyResync(mode uint64, tail [][]byte, snapshotBlob
 	default:
 		return fatalError{fmt.Errorf("transport: unknown resync mode %d", mode)}
 	}
+	// A resync response means we are synced/open; mark opened so Open() unblocks even
+	// in the (server-buggy) case it arrives before any open response.
+	oc.opened = true
 	oc.cond.Broadcast()
 	oc.signalLocked()
 	return nil
