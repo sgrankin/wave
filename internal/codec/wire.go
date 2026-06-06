@@ -25,15 +25,21 @@ type ClientDelta struct {
 	Author        id.ParticipantID
 	TargetVersion version.HashedVersion
 	Ops           []waveop.Operation
+	// Nonce is a per-submission client-generated tag, opaque to the server, used by
+	// client concurrency control to recognize its own delta in a resync tail (where
+	// suppression no longer hides it). It is NOT part of the hash chain. Empty if
+	// the client does not use it.
+	Nonce string
 }
 
 // EncodeClientDelta returns the canonical CBOR encoding of a client delta:
-// [author, targetVersion, ops].
+// [author, targetVersion, ops, nonce].
 func EncodeClientDelta(d ClientDelta) []byte {
 	return marshal([]any{
 		d.Author.Address(),
 		wireHV{Version: d.TargetVersion.Version(), Hash: d.TargetVersion.HistoryHash()},
 		opsValue(d.Ops),
+		d.Nonce,
 	})
 }
 
@@ -43,8 +49,8 @@ func DecodeClientDelta(data []byte) (ClientDelta, error) {
 	if err := cbor.Unmarshal(data, &raw); err != nil {
 		return ClientDelta{}, err
 	}
-	if len(raw) != 3 {
-		return ClientDelta{}, fmt.Errorf("codec: client delta has %d fields, want 3", len(raw))
+	if len(raw) != 4 {
+		return ClientDelta{}, fmt.Errorf("codec: client delta has %d fields, want 4", len(raw))
 	}
 	var addr string
 	if err := cbor.Unmarshal(raw[0], &addr); err != nil {
@@ -66,10 +72,15 @@ func DecodeClientDelta(data []byte) (ClientDelta, error) {
 	if err != nil {
 		return ClientDelta{}, err
 	}
+	var nonce string
+	if err := cbor.Unmarshal(raw[3], &nonce); err != nil {
+		return ClientDelta{}, err
+	}
 	return ClientDelta{
 		Author:        author,
 		TargetVersion: version.NewHashedVersion(hv.Version, hv.Hash),
 		Ops:           ops,
+		Nonce:         nonce,
 	}, nil
 }
 

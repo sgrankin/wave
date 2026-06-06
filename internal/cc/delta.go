@@ -27,6 +27,10 @@ type TransformedWaveletDelta struct {
 	ResultingVersion version.HashedVersion
 	Timestamp        int64
 	Ops              []waveop.Operation
+	// Nonce is the submitting client's per-submission tag (opaque, not hashed),
+	// retained so a resync tail lets that client recognize its own delta. Empty for
+	// server-internal deltas or deltas replayed from storage written without it.
+	Nonce string
 }
 
 // AppliedAtVersion is the version the delta was applied at: the resulting

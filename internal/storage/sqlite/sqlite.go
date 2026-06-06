@@ -220,6 +220,7 @@ func (a *deltasAccess) Append(records []storage.DeltaRecord) error {
 			ResultingVersion: r.ResultingVersion,
 			Timestamp:        r.Timestamp,
 			Ops:              r.Ops,
+			Nonce:            r.Nonce,
 		})
 		if _, err := stmt.Exec(a.waveID, a.waveletID, r.AppliedAtVersion,
 			r.ResultingVersion.Version(), r.ResultingVersion.HistoryHash(), blob); err != nil {
@@ -245,6 +246,7 @@ func recordFrom(appliedAt uint64, blob []byte) (storage.DeltaRecord, error) {
 		ResultingVersion: sd.ResultingVersion,
 		Timestamp:        sd.Timestamp,
 		Ops:              sd.Ops,
+		Nonce:            sd.Nonce,
 	}, nil
 }
 

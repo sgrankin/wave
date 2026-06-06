@@ -350,7 +350,7 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 	if s.suppressEcho {
 		exclude = s.sub
 	}
-	res, err := s.container.SubmitFrom(delta, exclude)
+	res, err := s.container.SubmitFrom(delta, cd.Nonce, exclude)
 	if err != nil {
 		code := cc.InternalError
 		var ce *cc.Error
@@ -373,5 +373,6 @@ func encodeStored(d cc.TransformedWaveletDelta) []byte {
 		ResultingVersion: d.ResultingVersion,
 		Timestamp:        d.Timestamp,
 		Ops:              d.Ops,
+		Nonce:            d.Nonce,
 	})
 }

@@ -126,7 +126,7 @@ func (c *WaveletContainer) replayFrom(start version.HashedVersion, from uint64) 
 				rec.ResultingVersion.Version())
 		}
 		applied := cc.TransformedWaveletDelta{
-			Author: rec.Author, ResultingVersion: rec.ResultingVersion, Timestamp: rec.Timestamp, Ops: rec.Ops,
+			Author: rec.Author, ResultingVersion: rec.ResultingVersion, Timestamp: rec.Timestamp, Ops: rec.Ops, Nonce: rec.Nonce,
 		}
 		c.history.Append(applied)
 		c.applied = append(c.applied, applied)
@@ -201,19 +201,20 @@ func (c *WaveletContainer) Wavelet() *wavelet.Data {
 // Errors carry a cc.ResponseCode (VersionError / InvalidOperation / ...). The
 // caller (frontend) maps them to the wire response.
 func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, error) {
-	return c.submitExcluding(delta, nil)
+	return c.submitExcluding(delta, "", nil)
 }
 
-// SubmitFrom is Submit for a connection-originated delta whose own subscription
-// is excluded from the resulting fan-out (self-suppression): the applied delta
-// is not echoed back to exclude, so an optimistic submitter sees only other
-// participants' deltas and learns its own outcome from the returned result.
-// exclude == nil behaves exactly like Submit.
-func (c *WaveletContainer) SubmitFrom(delta waveop.WaveletDelta, exclude *Subscription) (SubmitResult, error) {
-	return c.submitExcluding(delta, exclude)
+// SubmitFrom is Submit for a connection-originated delta. nonce is the submitter's
+// opaque per-submission tag, retained with the applied delta so the submitter can
+// recognize it in a later resync tail. exclude is the submitter's own subscription,
+// suppressed from the resulting fan-out (self-suppression) so an optimistic
+// submitter sees only other participants' deltas and learns its own outcome from
+// the returned result / ack. exclude == nil and nonce == "" behave like Submit.
+func (c *WaveletContainer) SubmitFrom(delta waveop.WaveletDelta, nonce string, exclude *Subscription) (SubmitResult, error) {
+	return c.submitExcluding(delta, nonce, exclude)
 }
 
-func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, exclude *Subscription) (SubmitResult, error) {
+func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, nonce string, exclude *Subscription) (SubmitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -275,6 +276,7 @@ func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, exclude *S
 		ResultingVersion: resulting,
 		Timestamp:        ts,
 		Ops:              transformed.Ops(),
+		Nonce:            nonce,
 	}
 	if err := c.deltas.Append([]storage.DeltaRecord{rec}); err != nil {
 		// The in-memory apply succeeded but persistence failed: in-memory state is
@@ -285,7 +287,7 @@ func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, exclude *S
 		return SubmitResult{}, &cc.Error{Code: cc.InternalError, Msg: "persisting delta (wavelet corrupted; reload required)", Err: err}
 	}
 	applied := cc.TransformedWaveletDelta{
-		Author: rec.Author, ResultingVersion: resulting, Timestamp: ts, Ops: rec.Ops,
+		Author: rec.Author, ResultingVersion: resulting, Timestamp: ts, Ops: rec.Ops, Nonce: nonce,
 	}
 	c.history.Append(applied)
 	c.applied = append(c.applied, applied)

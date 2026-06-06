@@ -26,6 +26,10 @@ type DeltaRecord struct {
 	ResultingVersion version.HashedVersion
 	Timestamp        int64
 	Ops              []waveop.Operation
+	// Nonce is the submitting client's per-submission tag (opaque, not hashed),
+	// persisted so a resync tail lets that client recognize its own delta even
+	// across a server restart. Empty for server-internal or pre-nonce deltas.
+	Nonce string
 }
 
 // DeltaStore is the root of delta-log persistence.

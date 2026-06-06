@@ -20,7 +20,7 @@ func TestSubmitFromSuppressesOrigin(t *testing.T) {
 	defer s2.Close()
 
 	// Submit excluding s1: s2 sees the delta, s1 does not.
-	if _, err := c.SubmitFrom(creationDelta(alice, version.Zero(name), "b", chars("hi")), s1); err != nil {
+	if _, err := c.SubmitFrom(creationDelta(alice, version.Zero(name), "b", chars("hi")), "", s1); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	select {

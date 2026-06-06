@@ -513,6 +513,10 @@ type StoredDelta struct {
 	ResultingVersion version.HashedVersion
 	Timestamp        int64
 	Ops              []waveop.Operation
+	// Nonce is the submitting client's per-submission tag, carried through so a
+	// resync tail lets that client recognize its own delta. Opaque to the server,
+	// not part of the hash chain, empty if unused.
+	Nonce string
 }
 
 // EncodeStoredDelta returns the canonical CBOR encoding of a stored delta.
@@ -522,6 +526,7 @@ func EncodeStoredDelta(d StoredDelta) []byte {
 		wireHV{Version: d.ResultingVersion.Version(), Hash: d.ResultingVersion.HistoryHash()},
 		d.Timestamp,
 		opsValue(d.Ops),
+		d.Nonce,
 	})
 }
 
@@ -531,8 +536,8 @@ func DecodeStoredDelta(data []byte) (StoredDelta, error) {
 	if err := cbor.Unmarshal(data, &raw); err != nil {
 		return StoredDelta{}, err
 	}
-	if len(raw) != 4 {
-		return StoredDelta{}, fmt.Errorf("codec: stored delta has %d fields, want 4", len(raw))
+	if len(raw) != 5 {
+		return StoredDelta{}, fmt.Errorf("codec: stored delta has %d fields, want 5", len(raw))
 	}
 	var addr string
 	if err := cbor.Unmarshal(raw[0], &addr); err != nil {
@@ -558,10 +563,15 @@ func DecodeStoredDelta(data []byte) (StoredDelta, error) {
 	if err != nil {
 		return StoredDelta{}, err
 	}
+	var nonce string
+	if err := cbor.Unmarshal(raw[4], &nonce); err != nil {
+		return StoredDelta{}, err
+	}
 	return StoredDelta{
 		Author:           author,
 		ResultingVersion: version.NewHashedVersion(hv.Version, hv.Hash),
 		Timestamp:        ts,
 		Ops:              ops,
+		Nonce:            nonce,
 	}, nil
 }
