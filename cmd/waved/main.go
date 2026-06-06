@@ -42,6 +42,7 @@ type config struct {
 	httpAddr      string // operability HTTP address; "" disables
 	wsAddr        string // browser WebSocket transport address; "" disables
 	wsUser        string // dev identity pinned to every WebSocket connection
+	webRoot       string // static web root served at / on the -ws server; "" disables
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
@@ -85,6 +86,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.httpAddr, "http", "127.0.0.1:8099", "operability HTTP address (\"\" to disable)")
 	fs.StringVar(&c.wsAddr, "ws", "", "browser WebSocket transport address, host:port (\"\" to disable)")
 	fs.StringVar(&c.wsUser, "ws-user", "user@example.com", "DEV identity pinned to every WebSocket connection (no real auth yet)")
+	fs.StringVar(&c.webRoot, "webroot", "", "static web root served at / on the -ws server (\"\" to disable)")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
@@ -262,6 +264,13 @@ func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*ht
 
 	mux := http.NewServeMux()
 	mux.Handle("/socket", srv.WebSocketHandler(identify))
+	if cfg.webRoot != "" {
+		// Serve the browser client from the same origin as the socket (so the page
+		// and the WebSocket share host/port, and later the auth cookie). The more
+		// specific "/socket" pattern still wins for the WebSocket upgrade.
+		mux.Handle("/", http.FileServer(http.Dir(cfg.webRoot)))
+		logger.Info("serving web root", "dir", cfg.webRoot)
+	}
 
 	// Bind synchronously so a failure is reported here rather than lost in a
 	// goroutine; the WebSocket transport is the browser-facing service.

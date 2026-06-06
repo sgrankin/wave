@@ -71,3 +71,4 @@ wave/config/wave.conf
 *.test
 *.out
 coverage.out
+.playwright-mcp/
