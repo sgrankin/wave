@@ -32,7 +32,7 @@ import (
 // OperationTestBase constants.
 const (
 	creationTimestamp     int64 = 100
-	lastModifiedTimestamp int64 = creationTimestamp + 10 // 110
+	lastModifiedTimestamp int64 = creationTimestamp + 10    // 110
 	opContextTimestamp    int64 = lastModifiedTimestamp + 5 // 115 (CONTEXT_TIMESTAMP)
 )
 

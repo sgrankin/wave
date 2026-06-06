@@ -17,25 +17,26 @@ package waveop_test
 import "testing"
 
 func TestConformanceAddParticipantSuite(t *testing.T) {
-	t.Skip("NOT-YET-PORTED: AddParticipantTest's forward-apply (add/remove with " +
-		"duplicate/absent errors) is implemented in internal/wavelet/apply.go and " +
-		"ad-hoc covered by apply_test.go; port it there as a conformance test. Only " +
-		"the applyAndReturnReverse (op inversion) half is a genuine gap (absent from " +
+	t.Skip("PORTED ELSEWHERE: AddParticipantTest's forward-apply (add/remove with " +
+		"duplicate/absent errors) is ported in " +
+		"internal/wavelet/conformance_addparticipant_test.go. Only the " +
+		"applyAndReturnReverse (op inversion) half is a genuine gap (absent from " +
 		"internal/).")
 }
 
 func TestConformanceBlipOperationApplySuite(t *testing.T) {
-	t.Skip("NOT-YET-PORTED: BlipOperationTest's apply/contributor/timestamp forward " +
-		"path is implemented in internal/wavelet/apply.go (port there); only the " +
+	t.Skip("PORTED ELSEWHERE: BlipOperationTest's apply/contributor/timestamp forward " +
+		"path is ported in internal/wavelet/conformance_blipop_test.go; only the " +
 		"reverse (applyAndReturnReverse) half is a genuine gap. Portable structure " +
-		"parts (getContext, sample-op worthiness, type dispatch) are in " +
-		"conformance_blipop_test.go.")
+		"parts (getContext, sample-op worthiness, type dispatch) are in this " +
+		"package's conformance_blipop_test.go.")
 }
 
 func TestConformanceBlipContentOperationApplySuite(t *testing.T) {
-	t.Skip("NOT-YET-PORTED: BlipContentOperationTest's forward-apply (compose into " +
-		"blip content, contributor update) is implemented in internal/wavelet (port " +
-		"there); only the reverse half is a genuine gap (no op inversion in internal/).")
+	t.Skip("PORTED ELSEWHERE: BlipContentOperationTest's forward-apply (compose into " +
+		"blip content, contributor update) is ported in " +
+		"internal/wavelet/conformance_blipcontentop_test.go; only the reverse half " +
+		"is a genuine gap (no op inversion in internal/).")
 }
 
 func TestConformanceVersionUpdateOpSuite(t *testing.T) {
@@ -46,10 +47,11 @@ func TestConformanceVersionUpdateOpSuite(t *testing.T) {
 }
 
 func TestConformanceWaveletOperationSuite(t *testing.T) {
-	t.Skip("NOT-YET-PORTED: WaveletOperationTest's apply() metadata side-effects " +
-		"(timestamp/version) on wavelet state are implemented in " +
-		"internal/wavelet/apply.go (port there); only createReverseContext / inversion " +
-		"is a genuine gap.")
+	t.Skip("PORTED ELSEWHERE: WaveletOperationTest's apply() metadata side-effects " +
+		"(timestamp/version) on wavelet state are ported in " +
+		"internal/wavelet/conformance_waveletop_test.go (the signature/hashed-version " +
+		"cases diverge — recorded there as CONFORMANCE DIVERGENCE skips); " +
+		"createReverseContext / inversion is a genuine gap.")
 }
 
 func TestConformanceCoreWaveletOperationInverseSuite(t *testing.T) {
