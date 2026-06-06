@@ -130,16 +130,29 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   `Rebuild` from the log; `internal/attachapi` — attachment upload/download/
   thumbnail HTTP serving gated by wavelet participation.
 - **Phase 3 is server-side only.** `cc.TransformToHead` + the error taxonomy are
-  done; **client-side CC** (optimistic in-flight/queue/ack/nack + reconnection)
-  and **double-submit dedup** are deferred — convergence is held by the
-  in-process + over-the-wire transport tests and the OT fuzz. Client-side CC is
-  coupled to the browser client design, so it is best done in Phase 8.
+  done, and **double-submit dedup** has since landed (the server half of
+  reconnection — idempotent resubmit by author + `EqualOps` at the resend's
+  target version). **Client-side CC** (optimistic in-flight/queue/ack/nack +
+  reconnection) remains deferred to `#11` — convergence is held by the in-process
+  + over-the-wire transport tests and the OT fuzz, now also by the ported Java
+  conformance suite.
 - **`internal/doc` is a read projection, not the indexed model** (the lean
   `Apply = Compose` decision — see Phase 2 below and Deferred).
-- **Remaining before Phase 8 (the two deferred debts):** the ported Java OT/CC
-  **conformance suite** (`#10` — independent validation of the OT core, a good
-  workflow fan-out candidate), and **client-side CC** (`#11` — best done with the
-  Phase-8 client design). Everything else through Phase 7 is on `main`.
+- **Conformance suite (`#10`) — DONE** (2026-06-06, via a fan-out workflow). The
+  Java OT/CC tests are ported as Go conformance tests across `op`/`waveop`/`cc`
+  (57 pass, 11 documented skips), including an **independent reference-transformer
+  oracle** cross-checked against `op.Transform` over 7000 random pairs. One
+  low-severity, documented divergence: our normalizing builder omits Java's
+  annotation-state elision (`op/builder.go`) — representation-only, does not
+  affect apply semantics or convergence. Follow-up `#7`: port the wavelet
+  *forward-apply* halves (participant/blip/metadata) into `internal/wavelet`
+  (they're implemented there; the `waveop` suite skips them for lack of a data
+  model in that package).
+- **Remaining before Phase 8:** **client-side CC** (`#11`). Its wire contract is
+  now pinned in [03-delta-channel-protocol.md](03-delta-channel-protocol.md): the
+  one real gap is a resync handshake; the state machine is buildable headless over
+  the existing transport (testable with `testing/synctest`), decoupled from the
+  browser editor. Everything else through Phase 7 is on `main`.
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
