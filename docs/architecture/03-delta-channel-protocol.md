@@ -3,9 +3,11 @@
 Status: **draft** (2026-06-06). Pins the live client↔server contract that
 client-side concurrency control (work item #11) builds on. Scope: the logical
 delta channel — open/resync, submit/ack, the live delta stream, errors — as it
-exists today plus the additions #11 requires. Out of scope: the *browser*
-transport choice and over-the-wire encoding (that is Phase 8a — this contract is
-transport-agnostic and currently rides the framed-CBOR session on stdio/tcp/unix).
+exists today plus the additions #11 requires. The contract is transport-agnostic:
+it rides the framed-CBOR session over any byte stream (stdio/tcp/unix) and, as of
+Phase 8a, over **WebSocket** (binary frames, the same framed-CBOR envelope; see
+*Transport bindings* below). Out of scope: the over-the-wire encoding details and
+the browser editor (8b).
 
 References the implementation: `internal/transport/message.go` (envelope),
 `internal/transport/server.go` (session), `internal/server/container.go` (submit
@@ -170,6 +172,33 @@ This runs **headless** over the existing framed-CBOR transport — no browser ed
 needed — and is tested deterministically with `testing/synctest` (fake clock for
 backoff/timeouts, `Wait` for goroutine quiescence). The browser editor (Phase 8b)
 is a separate consumer of the same client-CC core.
+
+## Transport bindings (Phase 8a)
+
+The session protocol is a leaf over a byte stream, so each transport is a thin
+adapter; the protocol, framing, fan-out, and the headless tests are shared.
+
+- **Server `io.ReadWriter`** (`ServeConn`) — stdio / unix / tcp. *Trusted*: the
+  submitted delta's author is taken from the wire with no identity check (use
+  behind a trust boundary).
+- **WebSocket** (`Server.WebSocketHandler`, `internal/transport/websocket.go`) —
+  the WS connection is wrapped as an `io.ReadWriteCloser` (`coder/websocket`'s
+  `NetConn`, one binary message per frame) and handed to the same session loop.
+  *Authenticated*: the upgrade is gated by an `identify(*http.Request)` hook (401
+  before the handshake; mount behind auth middleware so the session cookie is
+  verified before Accept), and the resolved participant is **bound to the
+  session** — every `Submit` must be authored by it, else it is nacked
+  `BadRequest` ("delta author does not match authenticated participant"). This
+  binds **authorship** only; **wavelet membership/access control on Open is not
+  yet enforced** (any authenticated user may Open/read any wavelet by name) — a
+  separate auth-integration step. Client side: `DialWebSocket` / `WebSocketDialer`
+  provide the reconnecting `dial` seam `OptimisticClient`/`Client` expect.
+
+Both directions keep the 4-byte length prefix inside the WS binary message (a
+redundant but harmless frame boundary): one `writeFrame` = one WS message, and the
+read side presents a continuous byte stream, so `readFrame` is unchanged. A
+per-message read limit (`maxFrameSize`) and a keepalive ping bound memory and reap
+vanished peers.
 
 ## Open decisions
 

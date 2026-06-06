@@ -163,7 +163,9 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   **Transport decided: WebSocket + framed-CBOR** (see Phase 8 below for the full
   rationale + h2/h3 note); 8a is the WebSocket server adapter + a JS port of
   `OptimisticClient`, 8b is the editor rebuild. Follow-ups `#7` and the `#11`
-  deferrals are **done** (2026-06-06); the backend is wrapped up.
+  deferrals are **done** (2026-06-06); the backend is wrapped up. The **8a server
+  WebSocket adapter is done** (`#4`, 2026-06-06; see Phase 8 below) — next is the
+  JS `OptimisticClient` port (`#9`).
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
@@ -319,6 +321,23 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   [03-delta-channel-protocol.md](03-delta-channel-protocol.md)). (8b) the editor /
   document-model rebuild — its own design+build track (strategy per spec
   [10](../specs/10-web-client.md)), out of scope beyond reserving the seam.
+- **8a server adapter — DONE 2026-06-06** (`#4`). `internal/transport/websocket.go`:
+  `Server.WebSocketHandler` upgrades via `coder/websocket` and wraps the WS as an
+  `io.ReadWriteCloser` (`NetConn`, binary frames) handed to the existing
+  `serveConn` loop — framing, fan-out, and the headless client/tests ride it
+  unchanged. The upgrade is gated by an `identify(*http.Request)→(participant,ok)`
+  hook (401 before Accept; mount behind auth middleware, cf. `attachapi`); the
+  authenticated participant is **bound to the session** so a client cannot author
+  deltas as another (mismatch → nack). `DialWebSocket`/`WebSocketDialer` are the
+  client dial seam; `Server.Shutdown` drains hijacked WS conns; a per-conn
+  keepalive ping reaps vanished peers. Tested over a real `httptest` WebSocket
+  (round-trip, two-client converge, unauthorized-rejected, author-mismatch-nacked,
+  shutdown + concurrent-dial race). Wired into `waved` behind `-ws` (DEV:
+  unauthenticated, pinned `-ws-user`). **Deferred to the auth-integration step:**
+  real session-cookie login (`auth.Service`) in front of `-ws`, and **wavelet
+  access control** — today any authenticated user can Open/read any wavelet by
+  name (authorship is enforced, membership is not). Next: JS `OptimisticClient`
+  port (`#9`, now unblocked).
 
 ### Deferred
 - **Indexed mutable document model** (Java `model/document/`: live editable doc
