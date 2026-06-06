@@ -55,6 +55,56 @@ func (d *dropDialer) drop() {
 	}
 }
 
+// TestOptimisticSnapshotOpen: against a snapshot-enabled server, a joining
+// optimistic client's open response is a current-state snapshot (not delta
+// history), exercising the LoadSnapshot path.
+func TestOptimisticSnapshotOpen(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	clk := clock.NewFixed(time.UnixMilli(1000))
+	wm := server.NewWaveMap(store, clk, server.WithSnapshots(store, 100))
+	name := waveletName(t)
+	alice := pid(t, "alice@example.com")
+	bob := pid(t, "bob@example.com")
+
+	a := transport.NewOptimisticClient(pipeDial(wm), name, alice)
+	defer a.Close()
+	if err := a.Open(); err != nil {
+		t.Fatalf("alice open: %v", err)
+	}
+	if err := a.Submit(writeBlip(alice, "b", chars("hi"))); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := a.WaitServerVersion(1); err != nil {
+		t.Fatalf("alice v1: %v", err)
+	}
+	if err := a.SubmitWith(func(blip func(string) (op.DocOp, bool)) []waveop.Operation {
+		cur, _ := blip("b")
+		return insertAt(alice, "b", cur.DocumentLength(), cur.DocumentLength(), "!")
+	}); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if err := a.WaitServerVersion(2); err != nil {
+		t.Fatalf("alice v2: %v", err)
+	}
+
+	// Bob joins: the snapshot-enabled server sends a current-state snapshot.
+	b := transport.NewOptimisticClient(pipeDial(wm), name, bob)
+	defer b.Close()
+	if err := b.Open(); err != nil {
+		t.Fatalf("bob open: %v", err)
+	}
+	if err := b.WaitServerVersion(2); err != nil {
+		t.Fatalf("bob v2: %v", err)
+	}
+	if got, _ := b.BlipContent("b"); !got.Equal(chars("hi!")) {
+		t.Errorf("bob (snapshot open) content = %v, want hi!", got.Components())
+	}
+}
+
 // restartDialer serves from a swappable WaveMap so a test can simulate a server
 // restart: point it at a fresh WaveMap over the same (still-open) store and drop
 // the current connection — the client then reconnects to a server holding only the

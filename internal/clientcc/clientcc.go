@@ -309,11 +309,42 @@ func (c *CC) trySend() *Outgoing {
 	if c.inflight != nil || len(c.queue) == 0 {
 		return nil
 	}
-	ops := c.queue
+	ops := mergeQueue(c.queue)
 	c.queue = nil
 	nonce := c.nextNonce()
 	c.inflight = &pending{ops: ops, sentTarget: c.recv, versionSpan: versionSpan(ops), nonce: nonce}
 	return &Outgoing{Delta: waveop.NewWaveletDelta(c.author, c.recv, ops), Nonce: nonce}
+}
+
+// mergeQueue composes consecutive blip-content ops on the same blip with the same
+// contributor method into one op, shrinking an outgoing delta — e.g. a run of
+// single-character inserts typed while a delta was in flight collapses to one op.
+// A differing blip, a participant op, or a differing contributor method is a
+// barrier; a compose that doesn't line up is left unmerged (defensive — consecutive
+// edits on the client's own optimistic replica always line up). Reducing the op
+// count is sound: the server advances the version by the (merged) op count and the
+// ack's opsApplied matches, so settling stays consistent.
+func mergeQueue(ops []waveop.Operation) []waveop.Operation {
+	merged := make([]waveop.Operation, 0, len(ops))
+	for _, o := range ops {
+		if wbo, ok := o.(waveop.WaveletBlipOperation); ok && len(merged) > 0 {
+			if bco, ok := wbo.BlipOp.(waveop.BlipContentOperation); ok {
+				if prev, ok := merged[len(merged)-1].(waveop.WaveletBlipOperation); ok && prev.BlipID == wbo.BlipID {
+					if pbco, ok := prev.BlipOp.(waveop.BlipContentOperation); ok && pbco.Method == bco.Method {
+						if composed, err := op.Compose(pbco.ContentOp, bco.ContentOp); err == nil {
+							merged[len(merged)-1] = waveop.WaveletBlipOperation{
+								BlipID: wbo.BlipID,
+								BlipOp: waveop.BlipContentOperation{Ctx: pbco.Ctx, ContentOp: composed, Method: pbco.Method},
+							}
+							continue
+						}
+					}
+				}
+			}
+		}
+		merged = append(merged, o)
+	}
+	return merged
 }
 
 // nextNonce returns a per-session-unique submission nonce.

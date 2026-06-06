@@ -392,6 +392,59 @@ func TestResyncResubmitsUncommitted(t *testing.T) {
 	}
 }
 
+// TestQueueMergesConsecutiveBlipOps: edits queued behind an in-flight delta (a run
+// of same-blip inserts) merge into a single op when sent, and still converge.
+func TestQueueMergesConsecutiveBlipOps(t *testing.T) {
+	name := mkName(t)
+	alice := mkPID(t, "alice@example.com")
+	srv := newSimServer(name)
+	seedVer, seedOps := srv.seed(t, alice, "X")
+
+	c := clientcc.New(name, alice, version.Zero(name), "sessA")
+	if _, err := c.OnServerDelta(seedOps, seedVer, ""); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// First edit goes in-flight (one op).
+	out1, err := c.Edit(insertCharOp(alice, 1, 0, 'A')) // "AX"
+	if err != nil || out1 == nil {
+		t.Fatalf("edit A: out=%v err=%v", out1, err)
+	}
+	if n := len(out1.Delta.Ops()); n != 1 {
+		t.Fatalf("first delta ops=%d, want 1", n)
+	}
+
+	// Two more edits queue behind it (same blip, same contributor method).
+	if o, err := c.Edit(insertCharOp(alice, 2, 2, 'B')); err != nil || o != nil { // "AXB"
+		t.Fatalf("edit B should queue: o=%v err=%v", o, err)
+	}
+	if o, err := c.Edit(insertCharOp(alice, 3, 3, 'C')); err != nil || o != nil { // "AXBC"
+		t.Fatalf("edit C should queue: o=%v err=%v", o, err)
+	}
+
+	// Acking the in-flight sends the queue — merged from two ops into one.
+	ver1, applied1 := srv.submit(t, out1.Delta, out1.Nonce)
+	out2 := c.OnAck(ver1, uint64(len(applied1)))
+	if out2 == nil {
+		t.Fatal("queue not sent after ack")
+	}
+	if n := len(out2.Delta.Ops()); n != 1 {
+		t.Errorf("merged queue delta ops=%d, want 1 (B,C composed)", n)
+	}
+
+	// It applies and converges.
+	ver2, applied2 := srv.submit(t, out2.Delta, out2.Nonce)
+	if o := c.OnAck(ver2, uint64(len(applied2))); o != nil {
+		t.Fatalf("unexpected send: %v", o)
+	}
+	if got := blipText(t, c, "b"); got != "AXBC" {
+		t.Errorf("client content = %q, want AXBC", got)
+	}
+	if got := srv.text(t, "b"); got != "AXBC" {
+		t.Errorf("server content = %q, want AXBC", got)
+	}
+}
+
 // node is one client plus its in-order inbox of server deltas and a floatable
 // pending ack (the simulated network).
 type node struct {
