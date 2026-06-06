@@ -108,6 +108,9 @@ function asBool(v: CborValue, field: string): boolean {
 }
 
 function asBytes(v: CborValue, field: string): Uint8Array {
+  // Go encodes a nil []byte as CBOR null (not an empty byte string); treat it as
+  // empty bytes — e.g. an absent snapshot blob in an open/resync response.
+  if (v === null) return new Uint8Array(0);
   if (!(v instanceof Uint8Array)) {
     throw new Error(`transport: ${field}: expected byte string, got ${typeof v}`);
   }
@@ -115,6 +118,8 @@ function asBytes(v: CborValue, field: string): Uint8Array {
 }
 
 function asBytesArray(v: CborValue, field: string): Uint8Array[] {
+  // Go encodes a nil [][]byte as CBOR null (not an empty array); treat it as empty.
+  if (v === null) return [];
   if (!Array.isArray(v)) throw new Error(`transport: ${field}: expected array, got ${typeof v}`);
   return v.map((item, i) => asBytes(item, `${field}[${i}]`));
 }
