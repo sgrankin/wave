@@ -6,11 +6,14 @@ import type { Component } from "../wave/types.ts";
 import { compose } from "../wave/compose.ts";
 import {
   caretToOffset,
+  deleteLineMarker,
   deleteText,
   insertText,
   paragraphText,
   project,
+  replaceText,
   splitLine,
+  splitLineAt,
   textBetween,
 } from "./blipdoc.ts";
 
@@ -108,6 +111,38 @@ test("splitLine composes and splits a paragraph in two", () => {
   assert.equal(paragraphText(proj.paragraphs[0]!), "Ti");
   assert.equal(paragraphText(proj.paragraphs[1]!), "tle");
   assert.equal(paragraphText(proj.paragraphs[2]!), "Body text");
+});
+
+test("replaceText replaces a selection within a paragraph", () => {
+  const content = structured();
+  const proj = project(content);
+  const from = caretToOffset(proj, 1, 0); // start of "Body text"
+  const to = caretToOffset(proj, 1, 4); // after "Body"
+  const next = compose(content, new DocOp(replaceText(content, from, to, "Reply")));
+  assert.equal(paragraphText(project(next).paragraphs[1]!), "Reply text");
+});
+
+test("splitLineAt with a selection deletes then splits", () => {
+  const content = structured();
+  const proj = project(content);
+  const from = caretToOffset(proj, 0, 2); // "Ti|tle"
+  const to = caretToOffset(proj, 0, 4); // "Ti|tl|e" → select "tl"
+  const next = compose(content, new DocOp(splitLineAt(content, from, to, Attributes.empty())));
+  const p = project(next);
+  assert.equal(p.paragraphs.length, 3);
+  assert.equal(paragraphText(p.paragraphs[0]!), "Ti");
+  assert.equal(paragraphText(p.paragraphs[1]!), "e");
+  assert.equal(paragraphText(p.paragraphs[2]!), "Body text");
+});
+
+test("deleteLineMarker composes and merges paragraphs", () => {
+  const content = structured();
+  const p1 = project(content).paragraphs[1]!; // the plain <line> before "Body text"
+  const next = compose(content, new DocOp(deleteLineMarker(content, p1.lineOffset!, p1.lineType, p1.indent)));
+  const proj = project(next);
+  assert.equal(proj.paragraphs.length, 1);
+  assert.equal(proj.paragraphs[0]!.lineType, "h1");
+  assert.equal(paragraphText(proj.paragraphs[0]!), "TitleBody text");
 });
 
 test("textBetween rejects ranges crossing element items", () => {

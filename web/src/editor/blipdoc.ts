@@ -13,8 +13,8 @@
 // character is one item (counted in runes), each element start/end is one item;
 // annotation boundaries are zero-width.
 
-import { runeCount } from "../wave/types.ts";
-import type { Attributes, Component, DocOp } from "../wave/types.ts";
+import { Attributes, runeCount } from "../wave/types.ts";
+import type { Component, DocOp } from "../wave/types.ts";
 
 const BODY = "body";
 const LINE = "line";
@@ -206,6 +206,44 @@ export function deleteText(content: DocOp, from: number, to: number): Component[
   return [...retain(a), { kind: "deleteCharacters", text }, ...retain(len - b)];
 }
 
+/**
+ * replaceText builds the content op that replaces the text in [from, to) with
+ * `text` (text-only range). Subsumes insert (from==to), delete-range (text==""),
+ * and replace. Throws if the range spans a non-character item.
+ */
+export function replaceText(content: DocOp, from: number, to: number, text: string): Component[] {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+  const out: Component[] = [...retain(a)];
+  if (b > a) {
+    const del = textBetween(content, a, b);
+    if (del !== "") out.push({ kind: "deleteCharacters", text: del });
+  }
+  if (text !== "") out.push({ kind: "characters", text });
+  out.push(...retain(len - b));
+  return out;
+}
+
+/**
+ * splitLineAt deletes the selection [from, to) (if any) and inserts an empty
+ * <line/> marker at `from` — the Enter command. Throws if the selection spans a
+ * non-character item.
+ */
+export function splitLineAt(content: DocOp, from: number, to: number, attributes: Attributes): Component[] {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+  const out: Component[] = [...retain(a)];
+  if (b > a) {
+    const del = textBetween(content, a, b);
+    if (del !== "") out.push({ kind: "deleteCharacters", text: del });
+  }
+  out.push({ kind: "elementStart", type: LINE, attributes }, { kind: "elementEnd" });
+  out.push(...retain(len - b));
+  return out;
+}
+
 /** splitLine builds the content op inserting an empty <line/> marker at `at`. */
 export function splitLine(content: DocOp, at: number, attributes: Attributes): Component[] {
   const len = content.documentLength();
@@ -216,6 +254,33 @@ export function splitLine(content: DocOp, at: number, attributes: Attributes): C
     { kind: "elementEnd" },
     ...retain(len - a),
   ];
+}
+
+/**
+ * deleteLineMarker builds the content op removing the empty <line/> marker at
+ * lineOffset (its ElementStart+ElementEnd, 2 items), merging the paragraph it
+ * begins into the previous one. The marker's type/indent must match the document
+ * (DeleteElementStart echoes the attributes), so they are passed from the
+ * projected paragraph. NOTE: only the t/i attributes are reconstructed — a line
+ * carrying other attributes would not match (acceptable for the current line set).
+ */
+export function deleteLineMarker(content: DocOp, lineOffset: number, lineType: string | null, indent: number): Component[] {
+  const len = content.documentLength();
+  const a = clamp(lineOffset, 0, len);
+  return [
+    ...retain(a),
+    { kind: "deleteElementStart", type: LINE, attributes: lineAttributes(lineType, indent) },
+    { kind: "deleteElementEnd" },
+    ...retain(len - a - 2),
+  ];
+}
+
+/** lineAttributes reconstructs a <line>'s attributes from its type and indent. */
+export function lineAttributes(lineType: string | null, indent: number): Attributes {
+  const m: Record<string, string> = {};
+  if (lineType !== null) m.t = lineType;
+  if (indent > 0) m.i = String(indent);
+  return Attributes.of(m);
 }
 
 /**
