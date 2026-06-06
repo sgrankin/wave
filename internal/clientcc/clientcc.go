@@ -108,9 +108,36 @@ func New(name id.WaveletName, author id.ParticipantID, start version.HashedVersi
 	}
 }
 
+// LoadSnapshot seeds the optimistic replica from a current-state snapshot — the
+// blip contents by id, the participant set, and the version it represents — for a
+// snapshot-based open or a resync reset. It must be called on a fresh CC, before
+// any edit or server delta (it replaces all state).
+func (c *CC) LoadSnapshot(at version.HashedVersion, blips map[string]op.DocOp, parts []id.ParticipantID) {
+	c.recv = at
+	c.inflight = nil
+	c.queue = nil
+	c.blips = make(map[string]op.DocOp, len(blips))
+	for k, v := range blips {
+		c.blips[k] = v
+	}
+	c.parts = make(map[id.ParticipantID]struct{}, len(parts))
+	for _, p := range parts {
+		c.parts[p] = struct{}{}
+	}
+}
+
 // ServerVersion returns the latest confirmed server version (what a fresh idle
 // submit targets, and the resync point).
 func (c *CC) ServerVersion() version.HashedVersion { return c.recv }
+
+// BlipIDs returns the ids of all blips in the optimistic replica, unsorted.
+func (c *CC) BlipIDs() []string {
+	ids := make([]string, 0, len(c.blips))
+	for k := range c.blips {
+		ids = append(ids, k)
+	}
+	return ids
+}
 
 // Blip returns the optimistic content of a blip and whether it exists.
 func (c *CC) Blip(blipID string) (op.DocOp, bool) {

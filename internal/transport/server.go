@@ -342,7 +342,7 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 	cd, err := codec.DecodeClientDelta(db)
 	if err != nil {
 		s.srv.m.SubmitErrors.Add(1)
-		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest), "bad delta: "+err.Error(), nil))
+		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest), "bad delta: "+err.Error(), nil, 0))
 		return nil
 	}
 	delta := waveop.NewWaveletDelta(cd.Author, cd.TargetVersion, cd.Ops)
@@ -358,10 +358,10 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 			code = ce.Code
 		}
 		s.srv.m.SubmitErrors.Add(1)
-		s.push(encodeSubmitResponse(false, uint64(code), err.Error(), nil))
+		s.push(encodeSubmitResponse(false, uint64(code), err.Error(), nil, 0))
 		return nil
 	}
-	s.push(encodeSubmitResponse(true, uint64(cc.OK), "", codec.EncodeHashedVersion(res.ResultingVersion)))
+	s.push(encodeSubmitResponse(true, uint64(cc.OK), "", codec.EncodeHashedVersion(res.ResultingVersion), uint64(res.OpsApplied)))
 	return nil
 }
 

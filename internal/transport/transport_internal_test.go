@@ -67,7 +67,7 @@ func TestMessageRoundTrips(t *testing.T) {
 	}
 
 	// submit response (nack carries code + message, nil version)
-	_, raw, err := messageKind(encodeSubmitResponse(false, 4, "stale", nil))
+	_, raw, err := messageKind(encodeSubmitResponse(false, 4, "stale", nil, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestMessageRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.OK || r.Code != 4 || r.Msg != "stale" || r.ResultingVersion != nil {
+	if r.OK || r.Code != 4 || r.Msg != "stale" || r.ResultingVersion != nil || r.OpsApplied != 0 {
 		t.Errorf("submitResponse round trip = %+v", r)
 	}
 

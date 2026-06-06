@@ -134,24 +134,30 @@ func decodeSubmit(raw []cbor.RawMessage) ([]byte, error) {
 	return b, err
 }
 
-// --- submit response: [mSubmitResponse, ok, code, msg, resultingVersionBytes] ---
+// --- submit response: [mSubmitResponse, ok, code, msg, resultingVersionBytes, opsApplied] ---
+// opsApplied is the number of operations the server actually applied (the
+// authoritative version span of the delta): equal to the submitted op count
+// normally, but zero for a deduped resend or a fully transformed-away delta.
+// Client concurrency control needs it to settle the in-flight delta correctly.
 
-func encodeSubmitResponse(ok bool, code uint64, msg string, resultingVersion []byte) []byte {
-	return marshal([]any{mSubmitResponse, ok, code, msg, resultingVersion})
+func encodeSubmitResponse(ok bool, code uint64, msg string, resultingVersion []byte, opsApplied uint64) []byte {
+	return marshal([]any{mSubmitResponse, ok, code, msg, resultingVersion, opsApplied})
 }
 
 // submitResponse is the decoded ack/nack. ResultingVersion is the codec encoding
-// of the post-apply hashed version (nil on a nack).
+// of the post-apply hashed version (nil on a nack); OpsApplied is the server's
+// applied op count (zero on a nack).
 type submitResponse struct {
 	OK               bool
 	Code             uint64
 	Msg              string
 	ResultingVersion []byte
+	OpsApplied       uint64
 }
 
 func decodeSubmitResponse(raw []cbor.RawMessage) (submitResponse, error) {
 	var r submitResponse
-	if err := need(raw, 5); err != nil {
+	if err := need(raw, 6); err != nil {
 		return r, err
 	}
 	if err := cbor.Unmarshal(raw[1], &r.OK); err != nil {
@@ -161,6 +167,9 @@ func decodeSubmitResponse(raw []cbor.RawMessage) (submitResponse, error) {
 		return r, err
 	}
 	if err := cbor.Unmarshal(raw[3], &r.Msg); err != nil {
+		return r, err
+	}
+	if err := cbor.Unmarshal(raw[5], &r.OpsApplied); err != nil {
 		return r, err
 	}
 	if err := cbor.Unmarshal(raw[4], &r.ResultingVersion); err != nil {
