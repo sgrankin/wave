@@ -3,13 +3,17 @@ package transport_test
 import (
 	"io"
 	"net"
+	"path/filepath"
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
+	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/op"
 	"github.com/sgrankin/wave/internal/server"
+	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
 	"github.com/sgrankin/wave/internal/waveop"
 )
@@ -49,6 +53,94 @@ func (d *dropDialer) drop() {
 	if c != nil {
 		_ = c.Close()
 	}
+}
+
+// restartDialer serves from a swappable WaveMap so a test can simulate a server
+// restart: point it at a fresh WaveMap over the same (still-open) store and drop
+// the current connection — the client then reconnects to a server holding only the
+// persisted state (its in-memory containers reloaded from disk).
+type restartDialer struct {
+	mu      sync.Mutex
+	wm      *server.WaveMap
+	current net.Conn
+}
+
+func (d *restartDialer) dial() (io.ReadWriteCloser, error) {
+	d.mu.Lock()
+	wm := d.wm
+	d.mu.Unlock()
+	cConn, sConn := net.Pipe()
+	go func() { _ = transport.Serve(sConn, wm) }()
+	d.mu.Lock()
+	d.current = cConn
+	d.mu.Unlock()
+	return cConn, nil
+}
+
+func (d *restartDialer) restart(wm *server.WaveMap) {
+	d.mu.Lock()
+	c := d.current
+	d.wm = wm
+	d.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+// TestOptimisticServerRestartRecovery: after the server "restarts" (a fresh WaveMap
+// over the same store, in-memory containers gone), the client reconnects, resyncs
+// from the persisted log, finds its document intact, and keeps editing.
+func TestOptimisticServerRestartRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer store.Close()
+		clk := clock.NewFixed(time.UnixMilli(1000))
+		name := waveletName(t)
+		alice := pid(t, "alice@example.com")
+
+		dd := &restartDialer{wm: server.NewWaveMap(store, clk)}
+		a := transport.NewOptimisticClient(dd.dial, name, alice)
+		defer a.Close()
+		if err := a.Open(); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+
+		if err := a.Submit(writeBlip(alice, "b", chars("hi"))); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := a.WaitServerVersion(1); err != nil {
+			t.Fatalf("v1: %v", err)
+		}
+		if err := a.SubmitWith(func(blip func(string) (op.DocOp, bool)) []waveop.Operation {
+			cur, _ := blip("b")
+			return insertAt(alice, "b", cur.DocumentLength(), cur.DocumentLength(), "!")
+		}); err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		if err := a.WaitServerVersion(2); err != nil {
+			t.Fatalf("v2: %v", err)
+		}
+
+		// Restart the server (fresh WaveMap over the same store) and drop the conn.
+		dd.restart(server.NewWaveMap(store, clk))
+
+		// Reconnect + resync recovers; alice keeps editing and converges.
+		if err := a.SubmitWith(func(blip func(string) (op.DocOp, bool)) []waveop.Operation {
+			cur, _ := blip("b")
+			return insertAt(alice, "b", cur.DocumentLength(), 0, "A")
+		}); err != nil {
+			t.Fatalf("post-restart edit: %v", err)
+		}
+		if err := a.WaitServerVersion(3); err != nil {
+			t.Fatalf("v3 after restart: %v", err)
+		}
+		if got, _ := a.BlipContent("b"); !got.Equal(chars("Ahi!")) {
+			t.Errorf("after restart = %v, want Ahi!", got.Components())
+		}
+	})
 }
 
 // TestOptimisticReconnectResync drops an optimistic client's connection mid-session

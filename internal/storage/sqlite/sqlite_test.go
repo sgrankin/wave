@@ -85,6 +85,49 @@ func recordEqual(t *testing.T, got, want storage.DeltaRecord) {
 	if !gc.Equal(wc) {
 		t.Errorf("op content mismatch: got %v, want %v", gc.Components(), wc.Components())
 	}
+	if got.Nonce != want.Nonce {
+		t.Errorf("nonce = %q, want %q", got.Nonce, want.Nonce)
+	}
+}
+
+// TestDeltaNoncePersists: a delta's client nonce survives storage and a reopen
+// (a server restart). This is what makes resync recognition crash-safe — a
+// reconnecting client recognizes its own committed delta in the tail by nonce
+// even after the server reloaded from disk.
+func TestDeltaNoncePersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wave.db")
+	name := waveletName(t, "w+a", "conv+root")
+	alice := pid(t, "alice@example.com")
+	rec := chainRecord(version.Zero(name), alice, op.NewDocOp([]op.Component{op.Characters{Text: "hi"}}))
+	rec.Nonce = "sess-abc.7"
+
+	store := openStore(t, path)
+	access, err := store.Open(name)
+	if err != nil {
+		t.Fatalf("open wavelet: %v", err)
+	}
+	if err := access.Append([]storage.DeltaRecord{rec}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	store.Close()
+
+	// Reopen (server restart) and confirm the nonce survived the round trip.
+	store2 := openStore(t, path)
+	defer store2.Close()
+	access2, err := store2.Open(name)
+	if err != nil {
+		t.Fatalf("reopen wavelet: %v", err)
+	}
+	all, err := access2.ReadAll()
+	if err != nil {
+		t.Fatalf("read all: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("read %d records, want 1", len(all))
+	}
+	if all[0].Nonce != rec.Nonce {
+		t.Errorf("nonce after reopen = %q, want %q", all[0].Nonce, rec.Nonce)
+	}
 }
 
 func TestAppendReadBack(t *testing.T) {
