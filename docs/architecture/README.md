@@ -10,6 +10,9 @@ modern, single-machine Go server.
 2. [02-porting-plan.md](02-porting-plan.md) — the phased, dependency-ordered plan
    to build it, backend-first, with the original Java tests ported as a
    conformance suite.
+3. [03-delta-channel-protocol.md](03-delta-channel-protocol.md) — the live
+   client↔server delta-channel contract (open/resync, submit/ack, live stream)
+   that client-side concurrency control builds on.
 
 Both were drafted from the specs, then put through an adversarial panel review
 (plan soundness, Go architecture, spec fidelity, simplicity, completeness) with
