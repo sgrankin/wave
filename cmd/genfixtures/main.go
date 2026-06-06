@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 
 	"github.com/sgrankin/wave/internal/cc"
@@ -193,9 +194,292 @@ func run() error {
 		})},
 	)
 
+	// --- seeded property-based random vectors ---
+	// Fixed seed ensures deterministic, reproducible output across runs.
+	rng := rand.New(rand.NewSource(1))
+
+	// compose: ~150 random cases
+	const randComposeCount = 150
+	for i := 0; i < randComposeCount; i++ {
+		d := randomDoc(rng)
+		o := randomOp(rng, d)
+		out, err := op.Compose(d, o)
+		if err != nil {
+			// randomOp guarantees validity via construction + retry; this is a safety net.
+			i--
+			continue
+		}
+		f.Compose = append(f.Compose, composeCase{
+			Note: fmt.Sprintf("random:%d", i),
+			A:    encDoc(d),
+			B:    encDoc(o),
+			Out:  encDoc(out),
+		})
+	}
+
+	// transform: ~150 random cases — two INDEPENDENT ops over the SAME doc
+	const randTransformCount = 150
+	for i := 0; i < randTransformCount; {
+		d := randomDoc(rng)
+		client := randomOp(rng, d)
+		server := randomOp(rng, d)
+		cp, sp, err := op.Transform(client, server)
+		if err != nil {
+			// some concurrent op pairs are legitimately incompatible; skip silently
+			continue
+		}
+		f.Transform = append(f.Transform, transformCase{
+			Note:        fmt.Sprintf("random:%d", i),
+			Client:      encDoc(client),
+			Server:      encDoc(server),
+			ClientPrime: encDoc(cp),
+			ServerPrime: encDoc(sp),
+		})
+		i++
+	}
+
+	// delta transform: ~20 random cases wrapping random DocOps as blip ops
+	const randDeltaCount = 20
+	blipIDs := []string{"b0", "b1", "b2"}
+	for i := 0; i < randDeltaCount; {
+		d := randomDoc(rng)
+		clientOp := randomOp(rng, d)
+		serverOp := randomOp(rng, d)
+
+		bID := blipIDs[rng.Intn(len(blipIDs))]
+		cOps := []waveop.Operation{blip(ctx, bID, clientOp)}
+		sOps := []waveop.Operation{blip(bctx, bID, serverOp)}
+
+		cp, sp, err := cc.TransformOps(cOps, sOps)
+		if err != nil {
+			continue
+		}
+		f.DeltaTransform = append(f.DeltaTransform, deltaCase{
+			Note:        fmt.Sprintf("random:%d", i),
+			Client:      encOps(alice, cOps),
+			Server:      encOps(bob, sOps),
+			ClientPrime: encOps(alice, cp),
+			ServerPrime: encOps(bob, sp),
+		})
+		i++
+	}
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(f)
+}
+
+// fuzzAlphabet is the set of runes used in random text generation. Includes
+// ASCII and multi-byte runes to exercise UTF-8 character counting in TS.
+var fuzzAlphabet = []rune("abcXY😀é")
+
+// randText returns a random string of 1..maxRunes runes from fuzzAlphabet.
+// Returns "" only when maxRunes <= 0.
+func randText(rng *rand.Rand, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	n := 1 + rng.Intn(maxRunes)
+	r := make([]rune, n)
+	for i := range r {
+		r[i] = fuzzAlphabet[rng.Intn(len(fuzzAlphabet))]
+	}
+	return string(r)
+}
+
+// randomDoc builds a valid DocInitialization (insertion-only DocOp) of
+// moderate length, mixing Characters, ElementStart/End, and occasional
+// AnnotationBoundary components. The document is always non-empty.
+func randomDoc(rng *rand.Rand) op.DocOp {
+	var comps []op.Component
+	annKey := "" // tracks any currently-open annotation
+
+	maybeAnnotation := func() {
+		if annKey == "" && rng.Intn(4) == 0 {
+			key := []string{"style/bold", "style/italic", "link/auto"}[rng.Intn(3)]
+			val := "true"
+			m, _ := op.NewAnnotationBoundaryMap(nil, []op.AnnotationChange{{Key: key, NewValue: &val}})
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = key
+		} else if annKey != "" && rng.Intn(3) == 0 {
+			m, _ := op.NewAnnotationBoundaryMap([]string{annKey}, nil)
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = ""
+		}
+	}
+	closeAnnotation := func() {
+		if annKey != "" {
+			m, _ := op.NewAnnotationBoundaryMap([]string{annKey}, nil)
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = ""
+		}
+	}
+
+	// Emit 2-5 top-level items (characters or elements).
+	n := 2 + rng.Intn(4)
+	for i := 0; i < n; i++ {
+		switch rng.Intn(3) {
+		case 0: // element with optional character children
+			closeAnnotation()
+			elemType := []string{"p", "line", "li"}[rng.Intn(3)]
+			var attrMap map[string]string
+			if rng.Intn(2) == 0 {
+				attrMap = map[string]string{"a": []string{"0", "1"}[rng.Intn(2)]}
+			}
+			a, _ := op.NewAttributes(attrMap)
+			comps = append(comps, op.ElementStart{Type: elemType, Attributes: a})
+			// 0-2 character children inside the element
+			nc := rng.Intn(3)
+			for j := 0; j < nc; j++ {
+				maybeAnnotation()
+				comps = append(comps, op.Characters{Text: randText(rng, 2)})
+			}
+			closeAnnotation()
+			comps = append(comps, op.ElementEnd{})
+		default: // characters (cases 1 and 2)
+			maybeAnnotation()
+			comps = append(comps, op.Characters{Text: randText(rng, 3)})
+		}
+	}
+	closeAnnotation()
+
+	return op.NewDocOp(comps)
+}
+
+// docItem represents one traversable item in a document for op generation.
+// Characters are broken into individual runes; element tags are single items.
+type docItem struct {
+	kind    docItemKind
+	r       rune              // kindChar: the character at this position
+	elem    string            // kindElemStart: element type
+	attrMap map[string]string // kindElemStart: element attributes
+}
+
+type docItemKind int
+
+const (
+	kindChar      docItemKind = iota
+	kindElemStart             // element open tag; counts as 1 item
+	kindElemEnd               // element close tag; counts as 1 item
+)
+
+// decomposeDoc walks d's components and returns a flat slice of items, one per
+// document position. AnnotationBoundary components are zero-width and skipped.
+func decomposeDoc(d op.DocOp) []docItem {
+	var items []docItem
+	for _, c := range d.Components() {
+		switch v := c.(type) {
+		case op.Characters:
+			for _, r := range v.Text {
+				items = append(items, docItem{kind: kindChar, r: r})
+			}
+		case op.ElementStart:
+			attrMap := map[string]string{}
+			for _, attr := range v.Attributes.All() {
+				attrMap[attr.Name] = attr.Value
+			}
+			items = append(items, docItem{kind: kindElemStart, elem: v.Type, attrMap: attrMap})
+		case op.ElementEnd:
+			items = append(items, docItem{kind: kindElemEnd})
+		case op.AnnotationBoundary:
+			// zero-width — no document position
+		}
+	}
+	return items
+}
+
+// randomOp generates a valid mutating DocOp over the given document by walking
+// its items: for each character run it randomly retains or deletes, and
+// interspersed insertions are added. Element tags are always retained to avoid
+// unbalanced delete-element pairs. Validity is confirmed by Compose; on failure
+// it falls back to a pure retain-all identity op.
+func randomOp(rng *rand.Rand, d op.DocOp) op.DocOp {
+	const maxRetries = 20
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		o, err := tryRandomOp(rng, d)
+		if err == nil {
+			return o
+		}
+	}
+	// Last resort: identity (retain all).
+	n := d.DocumentLength()
+	if n == 0 {
+		return op.NewDocOp(nil)
+	}
+	return op.NewDocOp([]op.Component{op.Retain{Count: n}})
+}
+
+func tryRandomOp(rng *rand.Rand, d op.DocOp) (op.DocOp, error) {
+	items := decomposeDoc(d)
+	var comps []op.Component
+
+	annKey := "" // tracks any currently-open annotation in the generated op
+	maybeInsertAnnotation := func() {
+		if annKey == "" && rng.Intn(5) == 0 {
+			key := []string{"style/bold", "link/auto"}[rng.Intn(2)]
+			val := "x"
+			m, _ := op.NewAnnotationBoundaryMap(nil, []op.AnnotationChange{{Key: key, NewValue: &val}})
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = key
+		} else if annKey != "" && rng.Intn(3) == 0 {
+			m, _ := op.NewAnnotationBoundaryMap([]string{annKey}, nil)
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = ""
+		}
+	}
+	closeAnnotation := func() {
+		if annKey != "" {
+			m, _ := op.NewAnnotationBoundaryMap([]string{annKey}, nil)
+			comps = append(comps, op.AnnotationBoundary{Boundary: m})
+			annKey = ""
+		}
+	}
+	maybeInsertChars := func() {
+		if rng.Intn(4) == 0 {
+			maybeInsertAnnotation()
+			comps = append(comps, op.Characters{Text: randText(rng, 2)})
+		}
+	}
+
+	i := 0
+	for i < len(items) {
+		maybeInsertChars()
+		item := items[i]
+
+		switch item.kind {
+		case kindChar:
+			// Consume a contiguous character run of length k (1..runLen).
+			j := i
+			for j < len(items) && items[j].kind == kindChar {
+				j++
+			}
+			runLen := j - i
+			k := 1 + rng.Intn(runLen)
+			if rng.Intn(2) == 0 {
+				comps = append(comps, op.Retain{Count: k})
+			} else {
+				rs := make([]rune, k)
+				for m := 0; m < k; m++ {
+					rs[m] = items[i+m].r
+				}
+				closeAnnotation()
+				comps = append(comps, op.DeleteCharacters{Text: string(rs)})
+			}
+			i += k
+
+		case kindElemStart, kindElemEnd:
+			// Always retain element tags to keep open/close balanced.
+			comps = append(comps, op.Retain{Count: 1})
+			i++
+		}
+	}
+	maybeInsertChars()
+	closeAnnotation()
+
+	o := op.NewDocOp(comps)
+	// Compose verifies the op covers the document exactly; skip if it doesn't.
+	_, err := op.Compose(d, o)
+	return o, err
 }
 
 // encOps encodes an ops list as a StoredDelta hex (its resulting version/hash are
