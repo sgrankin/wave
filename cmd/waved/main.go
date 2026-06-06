@@ -3,8 +3,9 @@
 // with structured logging, an operability HTTP endpoint, and signal-driven
 // graceful shutdown.
 //
-// Authentication, search, and the browser transport are added in later phases
-// (docs/architecture/02-porting-plan.md); this is the headless real-time server.
+// A dev browser WebSocket transport is available behind -ws (unauthenticated,
+// pinned identity — see startWebSocket); session-cookie authentication is a later
+// phase (docs/architecture/02-porting-plan.md).
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sgrankin/wave/internal/clock"
+	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
@@ -38,6 +40,8 @@ type config struct {
 	addr          string // unix socket path or host:port
 	dbPath        string
 	httpAddr      string // operability HTTP address; "" disables
+	wsAddr        string // browser WebSocket transport address; "" disables
+	wsUser        string // dev identity pinned to every WebSocket connection
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
@@ -79,6 +83,8 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.addr, "addr", "/tmp/waved.sock", "listen address (unix socket path or host:port)")
 	fs.StringVar(&c.dbPath, "db", "waved.db", "sqlite database path (\":memory:\" for ephemeral)")
 	fs.StringVar(&c.httpAddr, "http", "127.0.0.1:8099", "operability HTTP address (\"\" to disable)")
+	fs.StringVar(&c.wsAddr, "ws", "", "browser WebSocket transport address, host:port (\"\" to disable)")
+	fs.StringVar(&c.wsUser, "ws-user", "user@example.com", "DEV identity pinned to every WebSocket connection (no real auth yet)")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
@@ -120,31 +126,45 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.network == "stdio" {
 		logger.Info("serving one session over stdio")
 		serveErr := srv.ServeConn(stdioConn{})
-		return finishShutdown(store, nil, logger, serveErr)
+		return finishShutdown(store, srv, nil, nil, logger, serveErr)
 	}
 
 	httpSrv := startOperability(cfg, srv, wm, logger)
 
+	wsSrv, err := startWebSocket(cfg, srv, logger)
+	if err != nil {
+		return finishShutdown(store, srv, httpSrv, nil, logger, err)
+	}
+
 	ln, err := listen(cfg)
 	if err != nil {
-		return finishShutdown(store, httpSrv, logger, err)
+		return finishShutdown(store, srv, httpSrv, wsSrv, logger, err)
 	}
 	logger.Info("listening", "net", cfg.network, "addr", cfg.addr, "db", cfg.dbPath)
 
 	// Accept blocks until ctx is cancelled (signal), then stops accepting and
 	// drains active sessions before returning.
 	serveErr := srv.Accept(ctx, ln)
-	return finishShutdown(store, httpSrv, logger, serveErr)
+	return finishShutdown(store, srv, httpSrv, wsSrv, logger, serveErr)
 }
 
-// finishShutdown runs the ordered teardown after the transport has drained: stop
-// the operability server, checkpoint the WAL, then let the deferred store.Close
-// run. It returns the original serve error (if any).
-func finishShutdown(store *sqlite.Store, httpSrv *http.Server, logger *slog.Logger, serveErr error) error {
+// finishShutdown runs the ordered teardown after the socket transport has drained:
+// drain live WebSocket sessions, stop the HTTP servers, checkpoint the WAL, then
+// let the deferred store.Close run. It returns the original serve error (if any).
+func finishShutdown(store *sqlite.Store, srv *transport.Server, httpSrv, wsSrv *http.Server, logger *slog.Logger, serveErr error) error {
+	sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	if wsSrv != nil {
+		// http.Server.Shutdown does not close hijacked WebSocket connections, so
+		// drain the live sessions via the transport server first, then stop the
+		// HTTP server (whose handlers have now returned).
+		if err := srv.Shutdown(sctx); err != nil {
+			logger.Warn("websocket drain incomplete", "err", err)
+		}
+		_ = wsSrv.Shutdown(sctx)
+	}
 	if httpSrv != nil {
-		sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		_ = httpSrv.Shutdown(sctx)
-		cancel()
 	}
 	if err := store.Checkpoint(); err != nil {
 		logger.Warn("wal checkpoint failed", "err", err)
@@ -207,6 +227,43 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, log
 	}()
 	logger.Info("operability http listening", "addr", cfg.httpAddr, "paths", "/healthz /debug/vars")
 	return httpSrv
+}
+
+// startWebSocket serves the browser WebSocket transport at /socket on the
+// configured address. Returns (nil, nil) when disabled (empty address), or an
+// error if the identity or bind is invalid.
+//
+// CAVEAT: this is DEV wiring. Every connection is pinned to -ws-user with NO real
+// authentication — session-cookie login (auth.Service) is a later phase. Bind -ws
+// to loopback, or run it behind a trusted authenticating proxy, until auth lands.
+func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*http.Server, error) {
+	if cfg.wsAddr == "" {
+		return nil, nil
+	}
+	devUser, err := id.NewParticipantID(cfg.wsUser)
+	if err != nil {
+		return nil, fmt.Errorf("invalid -ws-user %q: %w", cfg.wsUser, err)
+	}
+	identify := func(*http.Request) (id.ParticipantID, bool) { return devUser, true }
+
+	mux := http.NewServeMux()
+	mux.Handle("/socket", srv.WebSocketHandler(identify))
+
+	// Bind synchronously so a failure is reported here rather than lost in a
+	// goroutine; the WebSocket transport is the browser-facing service.
+	ln, err := net.Listen("tcp", cfg.wsAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen ws %q: %w", cfg.wsAddr, err)
+	}
+	httpSrv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("websocket server error", "err", err)
+		}
+	}()
+	logger.Warn("websocket transport listening (DEV: unauthenticated, pinned identity)",
+		"addr", cfg.wsAddr, "path", "/socket", "dev_user", cfg.wsUser)
+	return httpSrv, nil
 }
 
 func newLogger(cfg config) *slog.Logger {
