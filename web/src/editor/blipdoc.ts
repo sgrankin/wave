@@ -1,0 +1,256 @@
+// The rich blip document model for the editor: project a blip's content DocOp
+// (Wave's <body>/<line> line-container with style annotations) into paragraphs of
+// styled text spans, and build the content ops that edit it (insert/delete text,
+// split a line). This is the pure, DOM-free core — the BlipView component renders
+// the projection and turns user actions into these ops. Correctness is checked
+// against the ported composer (compose(content, command) == expected).
+//
+// Wave's body model (spec 10 §document structure): a document stores a <body>
+// containing <line/> elements (empty paragraph *markers*); the text of a paragraph
+// follows its <line> as siblings up to the next <line>. Formatting is a parallel
+// annotation layer — style/<prop> key ranges over the item stream — NOT nested
+// tags. A "doc offset" below is an item position in the DocOp stream: each
+// character is one item (counted in runes), each element start/end is one item;
+// annotation boundaries are zero-width.
+
+import { runeCount } from "../wave/types.ts";
+import type { Attributes, Component, DocOp } from "../wave/types.ts";
+
+const BODY = "body";
+const LINE = "line";
+const STYLE_PREFIX = "style/";
+
+/** A contiguous run of text sharing the same active style annotations. */
+export interface Span {
+  readonly text: string;
+  /** CSS property → value, from style/<prop> annotations active over this run. */
+  readonly styles: Readonly<Record<string, string>>;
+}
+
+/** A paragraph: a <line> marker (its type/indent) and the text that follows it. */
+export interface Paragraph {
+  /** The <line t="..."> value (e.g. "h1", "li"), or null for a plain line. */
+  readonly lineType: string | null;
+  /** The <line i="..."> indent level (0 if unset). */
+  readonly indent: number;
+  /** Doc offset of the <line> element-start item, or null for text before any line. */
+  readonly lineOffset: number | null;
+  /** Doc offset where this paragraph's text begins (just after the <line> marker). */
+  readonly textStart: number;
+  /** Text length of the paragraph in runes (sum of span lengths). */
+  readonly textLength: number;
+  readonly spans: readonly Span[];
+}
+
+/** The projected, renderable view of a blip body. */
+export interface BlipProjection {
+  readonly paragraphs: readonly Paragraph[];
+  /** Total doc item length (== content.documentLength()). */
+  readonly length: number;
+}
+
+interface MutParagraph {
+  lineType: string | null;
+  indent: number;
+  lineOffset: number | null;
+  textStart: number;
+  textLength: number;
+  spans: Span[];
+}
+
+/**
+ * project walks a blip content DocInitialization into paragraphs of styled spans.
+ * It is lenient: a document with no <body>/<line> (e.g. a flat-text blip — just
+ * Characters) projects to a single plain paragraph, so legacy flat blips render
+ * too. Non-style annotations are tracked but only style/<prop> keys surface (as
+ * CSS) on spans.
+ */
+export function project(content: DocOp): BlipProjection {
+  const paras: MutParagraph[] = [];
+  const active = new Map<string, string>(); // annotation key → value (null/cleared keys removed)
+  const stack: string[] = [];
+  let pos = 0;
+  let cur: MutParagraph | null = null;
+
+  const ensureParagraph = (): MutParagraph => {
+    if (cur === null) {
+      // Text before any <line> (flat blip, or leading text): implicit plain paragraph.
+      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [] };
+      paras.push(cur);
+    }
+    return cur;
+  };
+
+  for (const c of content.components) {
+    switch (c.kind) {
+      case "elementStart": {
+        if (c.type === LINE) {
+          cur = {
+            lineType: c.attributes.get("t") ?? null,
+            indent: parseIndent(c.attributes),
+            lineOffset: pos,
+            textStart: pos + 1, // text begins after the (empty) <line> marker's start+end
+            textLength: 0,
+            spans: [],
+          };
+          paras.push(cur);
+        }
+        stack.push(c.type);
+        pos += 1;
+        break;
+      }
+      case "elementEnd": {
+        const top = stack.pop();
+        pos += 1;
+        if (top === LINE && cur !== null) cur.textStart = pos; // text starts after </line>
+        break;
+      }
+      case "characters": {
+        const p = ensureParagraph();
+        const styles = currentStyles(active);
+        appendSpan(p, c.text, styles);
+        p.textLength += runeCount(c.text);
+        pos += runeCount(c.text);
+        break;
+      }
+      case "annotationBoundary": {
+        for (const ch of c.boundary.changes) {
+          if (ch.newValue === null) active.delete(ch.key);
+          else active.set(ch.key, ch.newValue);
+        }
+        for (const key of c.boundary.endKeys) active.delete(key);
+        break; // zero-width
+      }
+      default:
+        // Deletions/retains/attribute ops never appear in an initialization; ignore
+        // defensively (a malformed content op would surface elsewhere).
+        break;
+    }
+  }
+  void BODY; // body element is just a container; tracked via the stack
+  return { paragraphs: paras, length: pos };
+}
+
+function parseIndent(attrs: Attributes): number {
+  const v = attrs.get("i");
+  if (v === undefined) return 0;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function currentStyles(active: Map<string, string>): Record<string, string> {
+  const styles: Record<string, string> = {};
+  for (const [key, value] of active) {
+    if (key.startsWith(STYLE_PREFIX)) styles[key.slice(STYLE_PREFIX.length)] = value;
+  }
+  return styles;
+}
+
+function appendSpan(p: MutParagraph, text: string, styles: Record<string, string>): void {
+  const last = p.spans[p.spans.length - 1];
+  if (last !== undefined && sameStyles(last.styles, styles)) {
+    p.spans[p.spans.length - 1] = { text: last.text + text, styles: last.styles };
+  } else {
+    p.spans.push({ text, styles });
+  }
+}
+
+function sameStyles(a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+// --- caret mapping ---
+
+/** caretToOffset maps a paragraph index + in-paragraph rune offset to a doc offset. */
+export function caretToOffset(proj: BlipProjection, para: number, textOffset: number): number {
+  const p = proj.paragraphs[para];
+  if (p === undefined) return proj.length;
+  return p.textStart + Math.max(0, Math.min(textOffset, p.textLength));
+}
+
+/** paragraphText returns the concatenated text of a paragraph. */
+export function paragraphText(p: Paragraph): string {
+  let s = "";
+  for (const sp of p.spans) s += sp.text;
+  return s;
+}
+
+// --- command builders (return content-op components; input length == content.documentLength()) ---
+
+function retain(n: number): Component[] {
+  return n > 0 ? [{ kind: "retain", count: n }] : [];
+}
+
+/** insertText builds the content op inserting text at doc offset `at`. */
+export function insertText(content: DocOp, at: number, text: string): Component[] {
+  const len = content.documentLength();
+  const a = clamp(at, 0, len);
+  return [...retain(a), { kind: "characters", text }, ...retain(len - a)];
+}
+
+/**
+ * deleteText builds the content op deleting the runes in [from, to) (text only —
+ * the range must not span element items). The exact deleted text is read from the
+ * projection (DeleteCharacters must echo the document).
+ */
+export function deleteText(content: DocOp, from: number, to: number): Component[] {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+  if (b === a) return [];
+  const text = textBetween(content, a, b);
+  return [...retain(a), { kind: "deleteCharacters", text }, ...retain(len - b)];
+}
+
+/** splitLine builds the content op inserting an empty <line/> marker at `at`. */
+export function splitLine(content: DocOp, at: number, attributes: Attributes): Component[] {
+  const len = content.documentLength();
+  const a = clamp(at, 0, len);
+  return [
+    ...retain(a),
+    { kind: "elementStart", type: LINE, attributes },
+    { kind: "elementEnd" },
+    ...retain(len - a),
+  ];
+}
+
+/**
+ * textBetween extracts the document's character items in [from, to) (used to build
+ * a DeleteCharacters payload). Errors if the range covers a non-character item.
+ */
+export function textBetween(content: DocOp, from: number, to: number): string {
+  let pos = 0;
+  let out = "";
+  for (const c of content.components) {
+    if (pos >= to) break;
+    switch (c.kind) {
+      case "characters": {
+        const rs = [...c.text];
+        for (const r of rs) {
+          if (pos >= from && pos < to) out += r;
+          pos += 1;
+        }
+        break;
+      }
+      case "elementStart":
+      case "elementEnd": {
+        if (pos >= from && pos < to) {
+          throw new Error(`blipdoc: delete range [${from},${to}) spans a non-character item at ${pos}`);
+        }
+        pos += 1;
+        break;
+      }
+      default:
+        break; // annotation boundaries are zero-width
+    }
+  }
+  return out;
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(n, hi));
+}
