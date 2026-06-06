@@ -129,8 +129,9 @@ type session struct {
 	once sync.Once
 	wg   sync.WaitGroup
 
-	container *server.WaveletContainer // set on Open (one wavelet per connection)
-	sub       *server.Subscription
+	container    *server.WaveletContainer // set on Open/Resync (one wavelet per connection)
+	sub          *server.Subscription
+	suppressEcho bool // omit this connection's own deltas from its update stream
 }
 
 func (s *session) run() error {
@@ -203,6 +204,10 @@ func (s *session) readLoop() error {
 			if err := s.handleOpen(raw); err != nil {
 				return err
 			}
+		case mResync:
+			if err := s.handleResync(raw); err != nil {
+				return err
+			}
 		case mSubmit:
 			if err := s.handleSubmit(raw); err != nil {
 				return err
@@ -218,7 +223,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		s.push(encodeError("already opened (one wavelet per connection)"))
 		return nil
 	}
-	nameStr, err := decodeOpen(raw)
+	nameStr, suppressEcho, err := decodeOpen(raw)
 	if err != nil {
 		return err
 	}
@@ -232,6 +237,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		s.push(encodeError("open: " + err.Error()))
 		return nil
 	}
+	s.suppressEcho = suppressEcho
 	snapshotBlob, history, sub := c.Open()
 	s.container = c
 	s.sub = sub
@@ -248,16 +254,72 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 	return nil
 }
 
+// handleResync is the reconnect join: a fresh connection that already holds state
+// through (knownVersion, knownHash) catches up incrementally. On a hit the server
+// sends the tail since that version and streams onward; on a miss (fork or pruned)
+// it sends a reset (the full view) so the client rebuilds. Like Open, it binds the
+// connection to one wavelet and is rejected if already bound.
+func (s *session) handleResync(raw []cbor.RawMessage) error {
+	if s.container != nil {
+		s.push(encodeError("already opened (one wavelet per connection)"))
+		return nil
+	}
+	nameStr, knownVersion, knownHash, suppressEcho, err := decodeResync(raw)
+	if err != nil {
+		return err
+	}
+	name, err := id.ParseWaveletName(nameStr)
+	if err != nil {
+		s.push(encodeError("bad wavelet name: " + err.Error()))
+		return nil
+	}
+	c, err := s.srv.WaveMap.Container(name)
+	if err != nil {
+		s.push(encodeError("resync: " + err.Error()))
+		return nil
+	}
+	s.suppressEcho = suppressEcho
+
+	if tail, sub, ok := c.OpenAt(knownVersion, knownHash); ok {
+		s.container = c
+		s.sub = sub
+		td := make([][]byte, len(tail))
+		for i, u := range tail {
+			td[i] = encodeStored(u.Delta)
+		}
+		s.push(encodeResyncResponse(resyncTail, td, nil, nil))
+		s.srv.logger().Debug("wavelet resynced", "wavelet", nameStr, "from", knownVersion, "tail", len(td))
+		s.wg.Add(1)
+		go s.forward(sub)
+		return nil
+	}
+
+	// Reset: the known point is a fork or below the pruned floor. Send the full
+	// view (as an open would) and let the client discard and rebuild.
+	snapshotBlob, history, sub := c.Open()
+	s.container = c
+	s.sub = sub
+	hist := make([][]byte, len(history))
+	for i, u := range history {
+		hist[i] = encodeStored(u.Delta)
+	}
+	s.push(encodeResyncResponse(resyncReset, nil, snapshotBlob, hist))
+	s.srv.logger().Debug("wavelet resync reset", "wavelet", nameStr, "from", knownVersion, "history", len(hist))
+	s.wg.Add(1)
+	go s.forward(sub)
+	return nil
+}
+
 // forward streams the wavelet's live applied deltas to the client. If the
 // subscription is dropped (the client fell too far behind — fan-out overflow),
-// it tells the client to resync, then returns.
+// it signals the client to reconnect and Resync, then returns.
 func (s *session) forward(sub *server.Subscription) {
 	defer s.wg.Done()
 	for {
 		select {
 		case u, ok := <-sub.Updates():
 			if !ok {
-				s.push(encodeError("update stream dropped; reopen to resync"))
+				s.push(encodeResyncRequired())
 				return
 			}
 			s.push(encodeUpdate(encodeStored(u.Delta)))
@@ -284,7 +346,11 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 		return nil
 	}
 	delta := waveop.NewWaveletDelta(cd.Author, cd.TargetVersion, cd.Ops)
-	res, err := s.container.Submit(delta)
+	var exclude *server.Subscription
+	if s.suppressEcho {
+		exclude = s.sub
+	}
+	res, err := s.container.SubmitFrom(delta, exclude)
 	if err != nil {
 		code := cc.InternalError
 		var ce *cc.Error

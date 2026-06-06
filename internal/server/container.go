@@ -201,6 +201,19 @@ func (c *WaveletContainer) Wavelet() *wavelet.Data {
 // Errors carry a cc.ResponseCode (VersionError / InvalidOperation / ...). The
 // caller (frontend) maps them to the wire response.
 func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, error) {
+	return c.submitExcluding(delta, nil)
+}
+
+// SubmitFrom is Submit for a connection-originated delta whose own subscription
+// is excluded from the resulting fan-out (self-suppression): the applied delta
+// is not echoed back to exclude, so an optimistic submitter sees only other
+// participants' deltas and learns its own outcome from the returned result.
+// exclude == nil behaves exactly like Submit.
+func (c *WaveletContainer) SubmitFrom(delta waveop.WaveletDelta, exclude *Subscription) (SubmitResult, error) {
+	return c.submitExcluding(delta, exclude)
+}
+
+func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, exclude *Subscription) (SubmitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -277,8 +290,9 @@ func (c *WaveletContainer) Submit(delta waveop.WaveletDelta) (SubmitResult, erro
 	c.history.Append(applied)
 	c.applied = append(c.applied, applied)
 	// Fan out to subscribers in version order (still under the lock, so concurrent
-	// submits deliver their deltas in order).
-	c.publish(WaveletUpdate{Delta: applied, ResultingVersion: resulting})
+	// submits deliver their deltas in order). exclude (the submitter's own
+	// subscription, when self-suppression is on) is skipped.
+	c.publish(WaveletUpdate{Delta: applied, ResultingVersion: resulting}, exclude)
 	c.maybeSnapshot()
 	if c.indexer != nil {
 		c.indexer.OnCommit(c.name, c.wavelet, applied)

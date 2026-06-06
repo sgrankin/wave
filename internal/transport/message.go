@@ -15,6 +15,15 @@ const (
 	mSubmitResponse               // server→client: ack/nack for a submit
 	mUpdate                       // server→client: a newly applied delta (live stream)
 	mError                        // server→client: a protocol/processing error
+	mResync                       // client→server: reconnect/resync at a known version
+	mResyncResponse               // server→client: incremental tail, or a full-view reset
+	mResyncRequired               // server→client: the live stream gapped; client must Resync
+)
+
+// Resync response modes.
+const (
+	resyncTail  uint64 = 0 // tail holds the stored deltas after the client's known version
+	resyncReset uint64 = 1 // known point unusable (fork/pruned): full view follows; discard local state
 )
 
 // msgEnc is the envelope encoder. CoreDeterministic is used for consistency with
@@ -64,17 +73,31 @@ func messageKind(data []byte) (uint64, []cbor.RawMessage, error) {
 	return kind, raw, nil
 }
 
-// --- open: [mOpen, waveletName] ---
+// --- open: [mOpen, waveletName, suppressEcho] ---
+// suppressEcho: when true the server omits this connection's own applied deltas
+// from its update stream (the submitter learns each outcome from the submit ack
+// only). Optimistic clients set it — they apply locally and transform incoming
+// deltas themselves, so an echo of their own delta would be a duplicate they
+// cannot reliably recognize (the server's transformed delta and the client's
+// locally-transformed in-flight can differ syntactically while still converging).
+// The pessimistic replica client leaves it false and advances by applying its
+// own echoed delta.
 
-func encodeOpen(waveletName string) []byte { return marshal([]any{mOpen, waveletName}) }
+func encodeOpen(waveletName string, suppressEcho bool) []byte {
+	return marshal([]any{mOpen, waveletName, suppressEcho})
+}
 
-func decodeOpen(raw []cbor.RawMessage) (string, error) {
-	if err := need(raw, 2); err != nil {
-		return "", err
+func decodeOpen(raw []cbor.RawMessage) (name string, suppressEcho bool, err error) {
+	if err := need(raw, 3); err != nil {
+		return "", false, err
 	}
-	var name string
-	err := cbor.Unmarshal(raw[1], &name)
-	return name, err
+	if err := cbor.Unmarshal(raw[1], &name); err != nil {
+		return "", false, err
+	}
+	if err := cbor.Unmarshal(raw[2], &suppressEcho); err != nil {
+		return "", false, err
+	}
+	return name, suppressEcho, nil
 }
 
 // --- open response: [mOpenResponse, snapshotBlob, [storedDeltaBytes...]] ---
@@ -171,3 +194,65 @@ func decodeError(raw []cbor.RawMessage) (string, error) {
 	err := cbor.Unmarshal(raw[1], &msg)
 	return msg, err
 }
+
+// --- resync: [mResync, waveletName, knownVersion, knownHash, suppressEcho] ---
+// A reconnecting client states the (version, history-hash) it already holds; the
+// server replies with the tail since then (or a reset). suppressEcho carries the
+// same meaning as in Open and applies to the continuation stream.
+
+func encodeResync(waveletName string, knownVersion uint64, knownHash []byte, suppressEcho bool) []byte {
+	return marshal([]any{mResync, waveletName, knownVersion, knownHash, suppressEcho})
+}
+
+func decodeResync(raw []cbor.RawMessage) (name string, knownVersion uint64, knownHash []byte, suppressEcho bool, err error) {
+	if err := need(raw, 5); err != nil {
+		return "", 0, nil, false, err
+	}
+	if err := cbor.Unmarshal(raw[1], &name); err != nil {
+		return "", 0, nil, false, err
+	}
+	if err := cbor.Unmarshal(raw[2], &knownVersion); err != nil {
+		return "", 0, nil, false, err
+	}
+	if err := cbor.Unmarshal(raw[3], &knownHash); err != nil {
+		return "", 0, nil, false, err
+	}
+	if err := cbor.Unmarshal(raw[4], &suppressEcho); err != nil {
+		return "", 0, nil, false, err
+	}
+	return name, knownVersion, knownHash, suppressEcho, nil
+}
+
+// --- resync response: [mResyncResponse, mode, tail, snapshotBlob, history] ---
+// mode resyncTail: tail holds the stored deltas after knownVersion; snapshotBlob
+// and history are empty. mode resyncReset: the full view is in snapshotBlob (or
+// history), exactly as an open response, and tail is empty.
+
+func encodeResyncResponse(mode uint64, tail [][]byte, snapshotBlob []byte, history [][]byte) []byte {
+	return marshal([]any{mResyncResponse, mode, tail, snapshotBlob, history})
+}
+
+func decodeResyncResponse(raw []cbor.RawMessage) (mode uint64, tail [][]byte, snapshotBlob []byte, history [][]byte, err error) {
+	if err := need(raw, 5); err != nil {
+		return 0, nil, nil, nil, err
+	}
+	if err := cbor.Unmarshal(raw[1], &mode); err != nil {
+		return 0, nil, nil, nil, err
+	}
+	if err := cbor.Unmarshal(raw[2], &tail); err != nil {
+		return 0, nil, nil, nil, err
+	}
+	if err := cbor.Unmarshal(raw[3], &snapshotBlob); err != nil {
+		return 0, nil, nil, nil, err
+	}
+	if err := cbor.Unmarshal(raw[4], &history); err != nil {
+		return 0, nil, nil, nil, err
+	}
+	return mode, tail, snapshotBlob, history, nil
+}
+
+// --- resync required: [mResyncRequired] ---
+// The server dropped this connection's live stream (it fell too far behind); the
+// client must reconnect and Resync at its last known version.
+
+func encodeResyncRequired() []byte { return marshal([]any{mResyncRequired}) }

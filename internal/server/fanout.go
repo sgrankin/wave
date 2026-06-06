@@ -72,6 +72,31 @@ func (c *WaveletContainer) Open() (snapshotBlob []byte, history []WaveletUpdate,
 	return nil, history, c.subscribeLocked()
 }
 
+// OpenAt is the incremental (resync) join for a reconnecting client that already
+// holds state through (knownVersion, knownHash). On success (ok == true) it
+// returns the applied deltas after knownVersion plus a live subscription that
+// continues from there, with no gap or overlap (both selected under the lock,
+// like Open). ok == false means the known point is not a current signature — a
+// fork (hash mismatch) or pruned below the snapshot floor — and the caller must
+// fall back to a full Open (a reset): the client's local state is unrecoverable
+// incrementally and must be rebuilt.
+func (c *WaveletContainer) OpenAt(knownVersion uint64, knownHash []byte) (tail []WaveletUpdate, sub *Subscription, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wavelet == nil {
+		return nil, nil, false // nothing applied yet: nothing to resync onto
+	}
+	if !c.history.HasSignature(version.NewHashedVersion(knownVersion, knownHash)) {
+		return nil, nil, false // fork or pruned: reset
+	}
+	for _, d := range c.applied {
+		if d.ResultingVersion.Version() > knownVersion {
+			tail = append(tail, WaveletUpdate{Delta: d, ResultingVersion: d.ResultingVersion})
+		}
+	}
+	return tail, c.subscribeLocked(), true
+}
+
 // removeSub closes and deregisters a subscription if still present (idempotent).
 func (c *WaveletContainer) removeSub(s *Subscription) {
 	c.mu.Lock()
@@ -82,12 +107,16 @@ func (c *WaveletContainer) removeSub(s *Subscription) {
 	}
 }
 
-// publish fans an update out to all subscribers. It must be called with c.mu
-// held (delivery order == submit order). A full subscriber queue means the
-// subscriber fell behind: it is dropped (channel closed) so it resyncs, rather
-// than receiving a gapped stream or blocking the submit path.
-func (c *WaveletContainer) publish(u WaveletUpdate) {
+// publish fans an update out to all subscribers except exclude (the submitter's
+// own subscription under self-suppression; nil to fan out to everyone). It must
+// be called with c.mu held (delivery order == submit order). A full subscriber
+// queue means the subscriber fell behind: it is dropped (channel closed) so it
+// resyncs, rather than receiving a gapped stream or blocking the submit path.
+func (c *WaveletContainer) publish(u WaveletUpdate, exclude *Subscription) {
 	for s := range c.subs {
+		if s == exclude {
+			continue
+		}
 		select {
 		case s.ch <- u:
 		default:

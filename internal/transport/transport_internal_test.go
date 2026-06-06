@@ -39,10 +39,31 @@ func TestFrameRoundTrip(t *testing.T) {
 
 func TestMessageRoundTrips(t *testing.T) {
 	// open
-	if kind, raw, err := messageKind(encodeOpen("example.com/w+a/~/conv+root")); err != nil || kind != mOpen {
+	if kind, raw, err := messageKind(encodeOpen("example.com/w+a/~/conv+root", true)); err != nil || kind != mOpen {
 		t.Fatalf("open kind=%d err=%v", kind, err)
-	} else if name, err := decodeOpen(raw); err != nil || name != "example.com/w+a/~/conv+root" {
-		t.Errorf("decodeOpen = %q, %v", name, err)
+	} else if name, suppress, err := decodeOpen(raw); err != nil || name != "example.com/w+a/~/conv+root" || !suppress {
+		t.Errorf("decodeOpen = %q, suppress=%v, %v", name, suppress, err)
+	}
+
+	// resync request
+	if _, raw, err := messageKind(encodeResync("example.com/w+a/~/conv+root", 7, []byte{1, 2, 3}, true)); err != nil {
+		t.Fatal(err)
+	} else if name, v, hash, suppress, err := decodeResync(raw); err != nil ||
+		name != "example.com/w+a/~/conv+root" || v != 7 || string(hash) != "\x01\x02\x03" || !suppress {
+		t.Errorf("decodeResync = %q v=%d hash=%x suppress=%v err=%v", name, v, hash, suppress, err)
+	}
+
+	// resync response (tail mode)
+	if _, raw, err := messageKind(encodeResyncResponse(resyncTail, [][]byte{[]byte("d0"), []byte("d1")}, nil, nil)); err != nil {
+		t.Fatal(err)
+	} else if mode, tail, snap, hist, err := decodeResyncResponse(raw); err != nil ||
+		mode != resyncTail || len(tail) != 2 || len(snap) != 0 || len(hist) != 0 {
+		t.Errorf("decodeResyncResponse(tail) = mode=%d tail=%d snap=%d hist=%d err=%v", mode, len(tail), len(snap), len(hist), err)
+	}
+
+	// resync required (no payload)
+	if kind, _, err := messageKind(encodeResyncRequired()); err != nil || kind != mResyncRequired {
+		t.Errorf("resyncRequired kind=%d err=%v", kind, err)
 	}
 
 	// submit response (nack carries code + message, nil version)
@@ -97,7 +118,7 @@ func TestSubmitBadVersionNacks(t *testing.T) {
 	defer cConn.Close()
 
 	// Open and apply a first delta so the wavelet exists at v1.
-	mustWrite(t, cConn, encodeOpen(name.Serialize()))
+	mustWrite(t, cConn, encodeOpen(name.Serialize(), false))
 	mustRead(t, cConn) // open response (empty history)
 	good := codec.EncodeClientDelta(codec.ClientDelta{
 		Author: alice, TargetVersion: version.Zero(name),

@@ -74,7 +74,9 @@ func NewClient(conn io.ReadWriter, name id.WaveletName, author id.ParticipantID)
 // Open binds the connection to the wavelet and applies the history snapshot,
 // blocking until the server's open response is processed.
 func (c *Client) Open() error {
-	if err := c.send(encodeOpen(c.name.Serialize())); err != nil {
+	// suppressEcho=false: this pessimistic replica client advances by applying its
+	// own delta when the server echoes it back, so it must receive that echo.
+	if err := c.send(encodeOpen(c.name.Serialize(), false)); err != nil {
 		return err
 	}
 	c.mu.Lock()
@@ -297,6 +299,10 @@ func (c *Client) handle(data []byte) error {
 		default:
 			return fmt.Errorf("transport: unexpected submit response (none in flight)")
 		}
+	case mResyncRequired:
+		// This pessimistic client does not resync incrementally; a dropped stream
+		// is a fatal session error (reopen a fresh client to recover).
+		return fmt.Errorf("transport: live stream dropped (resync required); reopen")
 	case mError:
 		msg, _ := decodeError(raw)
 		return fmt.Errorf("transport: server error: %s", msg)
