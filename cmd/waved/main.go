@@ -236,6 +236,11 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, log
 // CAVEAT: this is DEV wiring. Every connection is pinned to -ws-user with NO real
 // authentication — session-cookie login (auth.Service) is a later phase. Bind -ws
 // to loopback, or run it behind a trusted authenticating proxy, until auth lands.
+//
+// DEV override: a ?user=<address> query parameter overrides the pinned identity,
+// allowing integration tests and demos to connect distinct identities (e.g. alice,
+// bob) to one server without real auth. Invalid addresses are rejected (the
+// connection is refused). This override is intentionally dev-only.
 func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
@@ -244,7 +249,16 @@ func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*ht
 	if err != nil {
 		return nil, fmt.Errorf("invalid -ws-user %q: %w", cfg.wsUser, err)
 	}
-	identify := func(*http.Request) (id.ParticipantID, bool) { return devUser, true }
+	identify := func(r *http.Request) (id.ParticipantID, bool) {
+		if addr := r.URL.Query().Get("user"); addr != "" {
+			p, err := id.NewParticipantID(addr)
+			if err != nil {
+				return id.ParticipantID{}, false
+			}
+			return p, true
+		}
+		return devUser, true
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/socket", srv.WebSocketHandler(identify))
