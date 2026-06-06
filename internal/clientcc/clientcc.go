@@ -58,10 +58,20 @@ import (
 	"github.com/sgrankin/wave/internal/waveop"
 )
 
+// Outgoing is a delta the state machine wants submitted, with the per-submission
+// nonce to tag it with on the wire (so the client can later recognize its own
+// delta in a resync tail).
+type Outgoing struct {
+	Delta waveop.WaveletDelta
+	Nonce string
+}
+
 // CC is the client concurrency-control state machine for one wavelet.
 type CC struct {
-	name   id.WaveletName
-	author id.ParticipantID
+	name      id.WaveletName
+	author    id.ParticipantID
+	sessionID string // per-session unique nonce prefix
+	nonceSeq  uint64 // per-session nonce counter
 
 	// recv is the latest confirmed server version: the version on top of which the
 	// unacknowledged ops (inflight, then queue) currently apply. Advanced by
@@ -84,11 +94,13 @@ type CC struct {
 // (except a deduped resend, which applies zero — a resync-era case). It locates
 // the delta's slot in the version stream when a post-in-flight delta reveals it as
 // a gap before the ack arrives. Once acked, ackedApplied carries the server's
-// authoritative applied op count, which drives settling.
+// authoritative applied op count, which drives settling. nonce tags the submission
+// so it can be recognized in a resync tail.
 type pending struct {
 	ops          []waveop.Operation
 	sentTarget   version.HashedVersion
 	versionSpan  uint64
+	nonce        string
 	acked        bool
 	ackedVer     version.HashedVersion
 	ackedApplied uint64
@@ -96,15 +108,18 @@ type pending struct {
 
 // New creates a client state machine for wavelet name authored by author,
 // starting from the given confirmed version (e.g. version.Zero for a fresh open;
-// the snapshot/history version for a resync). The caller then feeds any initial
-// history via OnServerDelta.
-func New(name id.WaveletName, author id.ParticipantID, start version.HashedVersion) *CC {
+// the snapshot/history version for a resync). sessionID is a per-session unique
+// token used to prefix submission nonces so a client recognizes only its own
+// deltas (distinct even across two sessions of the same participant). The caller
+// then feeds any initial history via OnServerDelta.
+func New(name id.WaveletName, author id.ParticipantID, start version.HashedVersion, sessionID string) *CC {
 	return &CC{
-		name:   name,
-		author: author,
-		recv:   start,
-		blips:  map[string]op.DocOp{},
-		parts:  map[id.ParticipantID]struct{}{},
+		name:      name,
+		author:    author,
+		sessionID: sessionID,
+		recv:      start,
+		blips:     map[string]op.DocOp{},
+		parts:     map[id.ParticipantID]struct{}{},
 	}
 }
 
@@ -155,7 +170,7 @@ func (c *CC) HasParticipant(p id.ParticipantID) bool {
 // submission, returning a delta to send now or nil if one is already in flight
 // (the ops wait in the queue). ops must be authored against the current optimistic
 // document and carry a per-op VersionIncrement (normally 1).
-func (c *CC) Edit(ops []waveop.Operation) (*waveop.WaveletDelta, error) {
+func (c *CC) Edit(ops []waveop.Operation) (*Outgoing, error) {
 	if err := c.apply(ops); err != nil {
 		return nil, fmt.Errorf("clientcc: applying local edit: %w", err)
 	}
@@ -163,14 +178,31 @@ func (c *CC) Edit(ops []waveop.Operation) (*waveop.WaveletDelta, error) {
 	return c.trySend(), nil
 }
 
-// OnServerDelta incorporates a delta applied by the server (authored by another
-// participant). ops are its operations and resulting is the version the server
-// reached after it. The delta is transformed past the unacknowledged ops and
-// applied to the replica; the unacknowledged ops are transformed past it. It may
-// settle the in-flight delta and return a newly-sendable delta (else nil).
-func (c *CC) OnServerDelta(ops []waveop.Operation, resulting version.HashedVersion) (*waveop.WaveletDelta, error) {
+// OnServerDelta incorporates a delta the server applied. ops are its operations,
+// resulting the version reached after it, and nonce the submitting client's tag
+// (empty for server-internal or pre-nonce deltas). If the nonce matches this
+// client's own in-flight delta — which happens in a resync tail, where the delta
+// is no longer suppressed — it settles the in-flight delta without re-applying it
+// (already applied optimistically). Otherwise the delta is transformed past the
+// unacknowledged ops and applied to the replica, and the unacknowledged ops are
+// transformed past it. May settle the in-flight delta and return a newly-sendable
+// delta (else nil).
+func (c *CC) OnServerDelta(ops []waveop.Operation, resulting version.HashedVersion, nonce string) (*Outgoing, error) {
 	span := versionSpan(ops)
 	appliedAt := resulting.Version() - span
+
+	// Our own delta, recognized by nonce in a resync tail (not suppressed there).
+	// It is confirmed at `resulting`; settle without re-applying. All deltas the
+	// server applied before it have already been fed (recv reached its applied-at).
+	if c.inflight != nil && nonce != "" && nonce == c.inflight.nonce {
+		if appliedAt != c.recv.Version() {
+			return nil, fmt.Errorf("clientcc: own delta in resync tail applies at %d, client at %d",
+				appliedAt, c.recv.Version())
+		}
+		c.recv = resulting
+		c.inflight = nil
+		return c.trySend(), nil
+	}
 
 	// A gap (the delta applies beyond recv) is our own suppressed in-flight delta:
 	// everything up to here was concurrent with it; from here on follows it. Settle
@@ -224,7 +256,7 @@ func (c *CC) OnServerDelta(ops []waveop.Operation, resulting version.HashedVersi
 // in-flight delta (once all preceding server deltas have arrived) and return a
 // newly-sendable delta (else nil). A late ack for a delta already settled via a
 // version gap is ignored.
-func (c *CC) OnAck(resulting version.HashedVersion, opsApplied uint64) *waveop.WaveletDelta {
+func (c *CC) OnAck(resulting version.HashedVersion, opsApplied uint64) *Outgoing {
 	if c.inflight == nil {
 		return nil // already settled (gap-confirmed); the ack is redundant
 	}
@@ -234,13 +266,30 @@ func (c *CC) OnAck(resulting version.HashedVersion, opsApplied uint64) *waveop.W
 	return c.settleAndSend()
 }
 
+// AfterResync is called once the resync tail has been fully fed (via OnServerDelta).
+// If the in-flight delta was recognized in the tail it is already settled and this
+// returns the next queued delta (if any). If it was NOT in the tail — the server
+// never received it before the disconnect — it is re-submitted, re-targeted to the
+// now-current version (its ops are already transformed onto recv), with its original
+// nonce so a later resync recognizes it too.
+func (c *CC) AfterResync() *Outgoing {
+	if c.inflight != nil {
+		c.inflight.sentTarget = c.recv
+		return &Outgoing{
+			Delta: waveop.NewWaveletDelta(c.author, c.recv, c.inflight.ops),
+			Nonce: c.inflight.nonce,
+		}
+	}
+	return c.trySend()
+}
+
 // settleAndSend settles an acked in-flight delta once the client has received
 // every delta the server applied before it, then sends the next queued delta if
 // the path is now clear. The delta's applied-at version is derived from the
 // server's authoritative applied count (so opsApplied==0 — a deduped or fully
 // transformed-away submit — settles in place at the resulting version, advancing
 // nothing, rather than underflowing).
-func (c *CC) settleAndSend() *waveop.WaveletDelta {
+func (c *CC) settleAndSend() *Outgoing {
 	if c.inflight != nil && c.inflight.acked {
 		appliedAt := c.inflight.ackedVer.Version() - c.inflight.ackedApplied
 		if c.recv.Version() == appliedAt {
@@ -254,16 +303,23 @@ func (c *CC) settleAndSend() *waveop.WaveletDelta {
 }
 
 // trySend promotes the queue to the in-flight slot when it is free, returning the
-// delta to submit (targeting the confirmed version) or nil.
-func (c *CC) trySend() *waveop.WaveletDelta {
+// delta to submit (targeting the confirmed version, tagged with a fresh nonce) or
+// nil.
+func (c *CC) trySend() *Outgoing {
 	if c.inflight != nil || len(c.queue) == 0 {
 		return nil
 	}
 	ops := c.queue
 	c.queue = nil
-	c.inflight = &pending{ops: ops, sentTarget: c.recv, versionSpan: versionSpan(ops)}
-	d := waveop.NewWaveletDelta(c.author, c.recv, ops)
-	return &d
+	nonce := c.nextNonce()
+	c.inflight = &pending{ops: ops, sentTarget: c.recv, versionSpan: versionSpan(ops), nonce: nonce}
+	return &Outgoing{Delta: waveop.NewWaveletDelta(c.author, c.recv, ops), Nonce: nonce}
+}
+
+// nextNonce returns a per-session-unique submission nonce.
+func (c *CC) nextNonce() string {
+	c.nonceSeq++
+	return fmt.Sprintf("%s.%d", c.sessionID, c.nonceSeq)
 }
 
 // apply mutates the optimistic replica by the given ops (blip content composes;

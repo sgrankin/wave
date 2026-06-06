@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"sync"
@@ -14,6 +16,14 @@ import (
 	"github.com/sgrankin/wave/internal/wavelet"
 	"github.com/sgrankin/wave/internal/waveop"
 )
+
+// newSessionID returns a random per-session token used to scope submission
+// nonces (so a client recognizes only its own deltas).
+func newSessionID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // OptimisticClient is the collaborative wavelet client: it applies local edits
 // immediately to an optimistic replica (via the clientcc state machine) and
@@ -52,7 +62,7 @@ func NewOptimisticClient(conn io.ReadWriter, name id.WaveletName, author id.Part
 		author: author,
 		out:    make(chan []byte, 64),
 		done:   make(chan struct{}),
-		cc:     clientcc.New(name, author, version.Zero(name)),
+		cc:     clientcc.New(name, author, version.Zero(name), newSessionID()),
 		notify: make(chan struct{}, 1),
 	}
 	oc.cond = sync.NewCond(&oc.mu)
@@ -152,15 +162,16 @@ func (oc *OptimisticClient) Close() error {
 
 // --- internals ---
 
-// sendDelta encodes and enqueues a client delta produced by the core, if any. The
-// core's one-in-flight invariant serializes emissions, so frames stay ordered even
-// though this runs outside the lock.
-func (oc *OptimisticClient) sendDelta(d *waveop.WaveletDelta) {
-	if d == nil {
+// sendDelta encodes and enqueues a client delta produced by the core, if any,
+// tagging it with the core's submission nonce. The core's one-in-flight invariant
+// serializes emissions, so frames stay ordered even though this runs outside the
+// lock.
+func (oc *OptimisticClient) sendDelta(o *clientcc.Outgoing) {
+	if o == nil {
 		return
 	}
 	db := codec.EncodeClientDelta(codec.ClientDelta{
-		Author: d.Author(), TargetVersion: d.TargetVersion(), Ops: d.Ops(),
+		Author: o.Delta.Author(), TargetVersion: o.Delta.TargetVersion(), Ops: o.Delta.Ops(), Nonce: o.Nonce,
 	})
 	_ = oc.send(encodeSubmit(db))
 }
@@ -305,7 +316,7 @@ func (oc *OptimisticClient) initLocked(snapshotBlob []byte, history [][]byte) er
 		if err != nil {
 			return err
 		}
-		if _, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion); err != nil {
+		if _, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion, sd.Nonce); err != nil {
 			return err
 		}
 	}
@@ -318,7 +329,7 @@ func (oc *OptimisticClient) applyServerDelta(db []byte) error {
 		return err
 	}
 	oc.mu.Lock()
-	d, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion)
+	d, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion, sd.Nonce)
 	oc.signalLocked()
 	oc.mu.Unlock()
 	if err != nil {
