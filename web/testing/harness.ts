@@ -121,11 +121,11 @@ export function parseSnapshots(data: string): {name: string; input: string; want
     const sections = data.split(/^-- (.+) --$/m);
     // sections[0] is preamble (before first header), then alternating [name, content].
     for (let i = 1; i < sections.length; i += 2) {
-        const name = sections[i].trim();
-        const content = sections[i + 1];
+        const name = (sections[i] ?? "").trim();
+        const content = sections[i + 1] ?? "";
         const [input, ...rest] = content.split("\n\n");
         const want = rest.join("\n\n").trim();
-        cases.push({name, input: input.trim(), want});
+        cases.push({name, input: (input ?? "").trim(), want});
     }
     return cases;
 }

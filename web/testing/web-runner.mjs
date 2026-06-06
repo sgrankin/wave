@@ -31,6 +31,7 @@ const dirs = process.argv.slice(2).filter((a) => !a.startsWith("--") && !a.start
 const searchDirs = dirs.length > 0 ? dirs : ["."];
 
 // Recursively find *.test.ts files, skipping node_modules and testing/.
+// Also skips files that import from "node:" builtins — those are node-only tests.
 function findTests(dir, root) {
     let results = [];
     for (const entry of readdirSync(join(root, dir), {withFileTypes: true})) {
@@ -39,7 +40,8 @@ function findTests(dir, root) {
         if (entry.isDirectory()) {
             results = results.concat(findTests(rel, root));
         } else if (entry.name.endsWith(".test.ts")) {
-            results.push(rel);
+            const src = readFileSync(join(root, rel), "utf-8");
+            if (!src.includes('"node:')) results.push(rel);
         }
     }
     return results;
@@ -107,7 +109,14 @@ const port = server.address().port;
 // --- Step 3: Open headless Chromium and run the tests.
 // The test harness (harness.ts) logs results as "PASS  name" / "FAIL  name: msg"
 // and a final "PASS" or "FAIL" line. We parse console output to track results.
-const browser = await chromium.launch({headless: true});
+//
+// --no-zygote / --single-process: run renderer in the browser process so Mach
+// port rendezvous (which is blocked in restricted sandbox environments) isn't
+// needed. Safe for CI / headless use; not for production browsing.
+const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-zygote", "--single-process", "--disable-gpu"],
+});
 const page = await browser.newPage();
 
 if (wantCoverage) {
