@@ -28,6 +28,14 @@ type Server struct {
 
 	wg sync.WaitGroup // active sessions started via Accept (for drain)
 	m  Metrics
+
+	// WebSocket-session lifecycle, for Shutdown. Each live WebSocket connection
+	// registers a cancel (cancelling its conn context closes it) so Shutdown can
+	// drain them; wsWG tracks them so Shutdown can wait.
+	wsWG      sync.WaitGroup
+	wsMu      sync.Mutex
+	wsNextID  uint64
+	wsCancels map[uint64]context.CancelFunc
 }
 
 // Metrics is a Server's operability counters. Read them via Server.Metrics; the
@@ -51,11 +59,23 @@ func (s *Server) logger() *slog.Logger {
 
 // ServeConn serves one connection — a single wavelet session — to completion
 // (clean EOF → nil). It is safe to call concurrently for distinct connections.
+// The connection is trusted: submitted deltas are authored as their wire-stated
+// author with no identity check. Use it for the local socket / stdio transports
+// behind a trust boundary; the WebSocket transport uses the authenticated path
+// (WebSocketHandler) instead.
 func (s *Server) ServeConn(conn io.ReadWriter) error {
+	return s.serveConn(conn, nil)
+}
+
+// serveConn serves one connection, optionally bound to an authenticated
+// participant. When participant is non-nil, every submitted delta must be
+// authored by it (see session.handleSubmit) — a logged-in user cannot author as
+// another. A nil participant trusts the wire-stated author.
+func (s *Server) serveConn(conn io.ReadWriter, participant *id.ParticipantID) error {
 	s.m.ConnectionsTotal.Add(1)
 	s.m.ActiveSessions.Add(1)
 	defer s.m.ActiveSessions.Add(-1)
-	sess := &session{srv: s, conn: conn, out: make(chan []byte, 64), done: make(chan struct{})}
+	sess := &session{srv: s, conn: conn, authParticipant: participant, out: make(chan []byte, 64), done: make(chan struct{})}
 	return sess.run()
 }
 
@@ -117,6 +137,51 @@ func ListenAndServe(ctx context.Context, ln net.Listener, wm *server.WaveMap) er
 	return (&Server{WaveMap: wm}).Accept(ctx, ln)
 }
 
+// registerWS records a live WebSocket connection's cancel func and returns its
+// handle; unregisterWS removes it when the session ends.
+func (s *Server) registerWS(cancel context.CancelFunc) uint64 {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	if s.wsCancels == nil {
+		s.wsCancels = map[uint64]context.CancelFunc{}
+	}
+	s.wsNextID++
+	h := s.wsNextID
+	s.wsCancels[h] = cancel
+	return h
+}
+
+func (s *Server) unregisterWS(h uint64) {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	delete(s.wsCancels, h)
+}
+
+// Shutdown drains the WebSocket sessions served via WebSocketHandler: it cancels
+// every live connection (closing it, which ends its session) and waits for them
+// to finish, or for ctx to expire. It returns ctx.Err() on timeout. Sessions
+// served via Accept are drained by cancelling Accept's own context instead; this
+// only covers the WebSocket transport (an http.Server's Shutdown does not close
+// hijacked WebSocket connections).
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.wsMu.Lock()
+	for _, cancel := range s.wsCancels {
+		cancel()
+	}
+	s.wsMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.wsWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // session is the per-connection server state. A single writer goroutine drains
 // out to the connection, so the read loop and the update forwarder can enqueue
 // frames concurrently without interleaving.
@@ -132,6 +197,11 @@ type session struct {
 	container    *server.WaveletContainer // set on Open/Resync (one wavelet per connection)
 	sub          *server.Subscription
 	suppressEcho bool // omit this connection's own deltas from its update stream
+
+	// authParticipant, when non-nil, is the connection's authenticated identity:
+	// every submitted delta must be authored by it. Nil on the trusted (socket /
+	// stdio) transports.
+	authParticipant *id.ParticipantID
 }
 
 func (s *session) run() error {
@@ -187,10 +257,13 @@ func (s *session) readLoop() error {
 		data, err := readFrame(s.conn)
 		if err != nil {
 			// A connection ending — cleanly at a frame boundary (io.EOF), mid-frame
-			// (io.ErrUnexpectedEOF), or via our own shutdown close (net.ErrClosed) —
-			// is a normal session end, not a server error. Mid-frame truncation is
-			// collapsed here too: there is nothing to recover, so we end the session.
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+			// (io.ErrUnexpectedEOF), via our own shutdown close (net.ErrClosed), or
+			// via a cancelled connection context (context.Canceled, used to drain a
+			// WebSocket on Shutdown) — is a normal session end, not a server error.
+			// Mid-frame truncation is collapsed here too: there is nothing to
+			// recover, so we end the session.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+				errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
 				return nil
 			}
 			return err
@@ -343,6 +416,14 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 	if err != nil {
 		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest), "bad delta: "+err.Error(), nil, 0))
+		return nil
+	}
+	// On an authenticated connection, the delta must be authored by the verified
+	// participant: a client may not submit deltas as someone else.
+	if s.authParticipant != nil && cd.Author != *s.authParticipant {
+		s.srv.m.SubmitErrors.Add(1)
+		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest),
+			"delta author does not match authenticated participant", nil, 0))
 		return nil
 	}
 	delta := waveop.NewWaveletDelta(cd.Author, cd.TargetVersion, cd.Ops)

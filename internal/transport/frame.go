@@ -24,6 +24,9 @@ import (
 // hostile length prefix triggering an unbounded allocation.
 const maxFrameSize = 64 << 20 // 64 MiB
 
+// frameHeaderSize is the big-endian length prefix preceding each frame payload.
+const frameHeaderSize = 4
+
 // writeFrame writes one length-prefixed frame in a single Write (header +
 // payload), so a frame is never split across writes by this function. Callers
 // must still serialize writeFrame on a given writer (one writer goroutine per
@@ -32,9 +35,9 @@ func writeFrame(w io.Writer, payload []byte) error {
 	if len(payload) > maxFrameSize {
 		return fmt.Errorf("transport: frame too large to send: %d bytes", len(payload))
 	}
-	buf := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(buf[:4], uint32(len(payload)))
-	copy(buf[4:], payload)
+	buf := make([]byte, frameHeaderSize+len(payload))
+	binary.BigEndian.PutUint32(buf[:frameHeaderSize], uint32(len(payload)))
+	copy(buf[frameHeaderSize:], payload)
 	_, err := w.Write(buf)
 	return err
 }
@@ -42,7 +45,7 @@ func writeFrame(w io.Writer, payload []byte) error {
 // readFrame reads one length-prefixed frame. It returns io.EOF if the stream
 // ends cleanly at a frame boundary, and io.ErrUnexpectedEOF if it ends mid-frame.
 func readFrame(r io.Reader) ([]byte, error) {
-	var hdr [4]byte
+	var hdr [frameHeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ go 1.26.3
 tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/fxamacker/cbor/v2 v2.9.2
 	modernc.org/sqlite v1.51.0
 )
