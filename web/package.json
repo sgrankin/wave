@@ -1,0 +1,19 @@
+{
+  "name": "wave-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser client for the Wave Go server: a TypeScript port of the optimistic client (OptimisticClient + clientcc + OT) over WebSocket, plus the Lit editor.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/wave/*.test.ts",
+    "build": "node esbuild.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "lit": "^3.2.1"
+  }
+}
