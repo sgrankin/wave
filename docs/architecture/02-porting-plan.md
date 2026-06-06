@@ -159,10 +159,11 @@ What's on the fork's `main`, and how execution deviated from the plan above:
 - **Remaining: Phase 8** — the browser transport + frontend (`#4`/`#5`). The
   backend is now functionally complete through client-side CC: a headless
   optimistic client converges and recovers over the wire. The client wire contract
-  is pinned in [03-delta-channel-protocol.md](03-delta-channel-protocol.md). Phase
-  8 picks the browser transport (the `OptimisticClient` is the reference consumer
-  to port to JS) and rebuilds the editor. Smaller follow-ups: `#7` (wavelet
-  forward-apply conformance), and the `#11` deferrals above.
+  is pinned in [03-delta-channel-protocol.md](03-delta-channel-protocol.md).
+  **Transport decided: WebSocket + framed-CBOR** (see Phase 8 below for the full
+  rationale + h2/h3 note); 8a is the WebSocket server adapter + a JS port of
+  `OptimisticClient`, 8b is the editor rebuild. Follow-ups `#7` and the `#11`
+  deferrals are **done** (2026-06-06); the backend is wrapped up.
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
@@ -289,12 +290,35 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   inbox/search identical"; upload→download round-trip + access control.
 - **Done when:** inbox/search and attachment up/download work end-to-end.
 
-### Phase 8 — Browser transport(s) + frontend (separate effort)
-- Pick the browser transport (SSE+POST / WebTransport / WS); build that
-  `transport` impl and **extract the transport/encoding seam from the two real
-  cases** (stdio + browser). Commit the wire encoding (leaning: protobuf binary).
-- **Frontend rebuild** is its own design+build track (editor strategy per spec
-  [10](../specs/10-web-client.md)). Out of scope here beyond reserving the seam.
+### Phase 8 — Browser transport + frontend (separate effort)
+- **Transport — DECIDED 2026-06-06: WebSocket** (binary frames; Go server via
+  `coder/websocket`). Rationale: our logical channel *is* an ordered/reliable/
+  bidirectional message stream (open/resync/submit/ack/update), which is exactly
+  WebSocket's native contract; and `transport.OptimisticClient`'s
+  `dial func() (io.ReadWriteCloser, error)` seam makes the transport a **leaf
+  adapter**, so the existing headless client-CC tests carry over to the browser
+  client and WebTransport/SSE stay cheap to add later. Second choice
+  **WebTransport/HTTP-3** (Baseline since 2026-03, but draft-tracking Go lib +
+  UDP/QUIC ops + needs a WS fallback); fallback **SSE↓+POST↑** for proxy-hostile
+  networks, behind the same `dial` seam. Long-poll / negotiation: skip.
+- **Encoding — keep framed-CBOR** (the `internal/transport/message.go` envelope)
+  over the WebSocket, NOT protobuf/JSON: the Go reference client and the JS client
+  then speak one wire format, so the headless `OptimisticClient` tests stay
+  authoritative. (Hash-chain CBOR is internal and independent of this.) Add a
+  dev-only JSON/decode hook since binary frames are opaque in DevTools.
+- **h2/h3 coexistence (verified):** WebSocket is its own connection and does NOT
+  preclude serving pages/API over h2/h3. Go's `http.Server` over TLS auto-
+  negotiates h1.1+h2 on one TCP listener via ALPN; the WS rides an h1.1 connection
+  (WS-over-h2 RFC 8441 / WS-over-h3 RFC 9220 aren't implemented by Go stdlib or
+  `coder/websocket`, and browsers fall back to h1.1 transparently). h3 for page/
+  asset delivery is an optional later add (separate UDP listener via quic-go) and
+  never touches the realtime path. Net: one TCP listener / one port covers it.
+- **Build order:** (8a) WebSocket `transport` adapter on the server + a JS client
+  port of `OptimisticClient` (same envelope, same open/resync/submit/ack/update
+  state machine; reconnect+resync+nonce reconciliation per
+  [03-delta-channel-protocol.md](03-delta-channel-protocol.md)). (8b) the editor /
+  document-model rebuild — its own design+build track (strategy per spec
+  [10](../specs/10-web-client.md)), out of scope beyond reserving the seam.
 
 ### Deferred
 - **Indexed mutable document model** (Java `model/document/`: live editable doc
