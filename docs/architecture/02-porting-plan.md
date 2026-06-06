@@ -129,13 +129,21 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   in:/with:/creator:/orderby: operators, all inbox-scoped (access-controlled) +
   `Rebuild` from the log; `internal/attachapi` — attachment upload/download/
   thumbnail HTTP serving gated by wavelet participation.
-- **Phase 3 is server-side only.** `cc.TransformToHead` + the error taxonomy are
-  done, and **double-submit dedup** has since landed (the server half of
-  reconnection — idempotent resubmit by author + `EqualOps` at the resend's
-  target version). **Client-side CC** (optimistic in-flight/queue/ack/nack +
-  reconnection) remains deferred to `#11` — convergence is held by the in-process
-  + over-the-wire transport tests and the OT fuzz, now also by the ported Java
-  conformance suite.
+- **Phase 3 / client-side CC (`#11`) — DONE** (2026-06-06). Server CC
+  (`cc.TransformToHead` + error taxonomy + double-submit dedup) plus the full
+  client side: `internal/clientcc` is a pure (no-I/O) optimistic state machine
+  (one in-flight delta + queue, transform-incoming, option-1 ack/gap settling),
+  validated by a 50-seed convergence fuzz and adversarially reviewed (two
+  criticals fixed: op-count version basis, zero-op-ack settle). The server gained
+  self-suppression + a `Resync` handshake; `transport.OptimisticClient` is a
+  reconnecting supervisor that resyncs on drop/nack, recognizing its own committed
+  delta in the resync tail by a per-submission **nonce** (persisted, so recovery
+  is crash-safe) or re-submitting an uncommitted one. Recovery validated with
+  `testing/synctest` (reconnect-resync, server-restart) and `-race`. Deferred (not
+  blocking): queue merging (optimization), an optimistic snapshot-open test, and
+  literal ports of the Java client-CC suites (`OT3Test`/`OperationQueueTest`/
+  `ClientAndServerTest` — they don't map 1:1 to our API; their behaviors are
+  covered by the resync/reconnect/convergence tests).
 - **`internal/doc` is a read projection, not the indexed model** (the lean
   `Apply = Compose` decision — see Phase 2 below and Deferred).
 - **Conformance suite (`#10`) — DONE** (2026-06-06, via a fan-out workflow). The
@@ -148,11 +156,13 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   *forward-apply* halves (participant/blip/metadata) into `internal/wavelet`
   (they're implemented there; the `waveop` suite skips them for lack of a data
   model in that package).
-- **Remaining before Phase 8:** **client-side CC** (`#11`). Its wire contract is
-  now pinned in [03-delta-channel-protocol.md](03-delta-channel-protocol.md): the
-  one real gap is a resync handshake; the state machine is buildable headless over
-  the existing transport (testable with `testing/synctest`), decoupled from the
-  browser editor. Everything else through Phase 7 is on `main`.
+- **Remaining: Phase 8** — the browser transport + frontend (`#4`/`#5`). The
+  backend is now functionally complete through client-side CC: a headless
+  optimistic client converges and recovers over the wire. The client wire contract
+  is pinned in [03-delta-channel-protocol.md](03-delta-channel-protocol.md). Phase
+  8 picks the browser transport (the `OptimisticClient` is the reference consumer
+  to port to JS) and rebuilds the editor. Smaller follow-ups: `#7` (wavelet
+  forward-apply conformance), and the `#11` deferrals above.
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
