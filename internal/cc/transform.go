@@ -49,6 +49,15 @@ func TransformToHead(h DeltaHistory, delta waveop.WaveletDelta) (waveop.WaveletD
 	return waveop.NewWaveletDelta(delta.Author(), h.CurrentHashedVersion(), ops), nil
 }
 
+// TransformOps transforms a client op list against a concurrent server op list,
+// returning both transformed lists (the DeltaPair transform). It is the public
+// entry point used by client-side concurrency control to transform an incoming
+// server delta past the client's unacknowledged ops (and vice versa); the server
+// uses the same transform internally via TransformToHead. See transformOpLists.
+func TransformOps(client, server []waveop.Operation) (clientPrime, serverPrime []waveop.Operation, err error) {
+	return transformOpLists(client, server)
+}
+
 // transformOpLists transforms a client delta's operations against a server
 // delta's operations, returning both transformed lists (the DeltaPair
 // transform). Each client op is transformed past every server op left-to-right,

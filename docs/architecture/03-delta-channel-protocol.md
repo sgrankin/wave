@@ -154,7 +154,8 @@ ported Java tests (`OperationQueueTest`, `OT3Test`, `ClientAndServerTest` recove
 scenarios) validate:
 
 - **One in-flight delta.** At most one unacknowledged delta on the wire; further
-  local ops accumulate in a queue, merged (consecutive same-author ops compose).
+  local ops accumulate in a queue (a future optimization may merge consecutive
+  same-author ops; the queue is a plain op list today).
 - **Optimistic apply.** Local ops apply to the local doc immediately.
 - **Transform incoming.** Each `Update` (other participants' deltas) is transformed
   against the in-flight delta and the queued ops before being applied locally; the
