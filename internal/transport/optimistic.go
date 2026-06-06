@@ -3,10 +3,14 @@ package transport
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/sgrankin/wave/internal/cc"
 	"github.com/sgrankin/wave/internal/clientcc"
 	"github.com/sgrankin/wave/internal/codec"
 	"github.com/sgrankin/wave/internal/id"
@@ -25,97 +29,114 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// reconnectDelay is the pause before redialing after a recoverable failure.
+// (Inside a testing/synctest bubble this is faked, so it costs no real time.)
+const reconnectDelay = 100 * time.Millisecond
+
+// fatalError marks a non-recoverable session error: the supervisor stops rather
+// than reconnecting.
+type fatalError struct{ err error }
+
+func (e fatalError) Error() string { return e.err.Error() }
+func (e fatalError) Unwrap() error { return e.err }
+
 // OptimisticClient is the collaborative wavelet client: it applies local edits
 // immediately to an optimistic replica (via the clientcc state machine) and
 // transforms concurrent server deltas, instead of waiting for the server to echo
 // its own edits. It opens with self-suppression, so its update stream carries only
 // other participants' deltas and it learns its own outcomes from submit acks.
 //
-// This is the in-flight/queue ("optimistic") counterpart to Client (the pessimistic
-// replica client). The clientcc core owns all OT bookkeeping; this adapter owns the
-// connection, goroutines, and serialization. It drives a single connection — nack
-// recovery and reconnect/resync are not yet wired (a dropped stream is fatal here).
+// A supervisor goroutine owns the connection lifecycle: it dials, runs a session
+// (the first sends Open, reconnections send Resync), and on a recoverable failure
+// (dropped connection, dropped live stream, or a TooOld/VersionError nack) redials
+// and resyncs — preserving the optimistic edits the clientcc core holds across the
+// gap (recognizing its own committed delta in the resync tail by nonce, or
+// re-submitting an uncommitted one). A fatal failure (illegal op, protocol error)
+// stops the supervisor. The clientcc core owns OT bookkeeping; this adapter owns
+// connections, goroutines, and serialization.
 type OptimisticClient struct {
-	conn   io.ReadWriter
-	name   id.WaveletName
-	author id.ParticipantID
-
-	out  chan []byte
-	done chan struct{}
-	once sync.Once
+	dial      func() (io.ReadWriteCloser, error)
+	name      id.WaveletName
+	author    id.ParticipantID
+	sessionID string
+	logger    *slog.Logger
 
 	mu      sync.Mutex
 	cond    *sync.Cond
-	cc      *clientcc.CC // guarded by mu
-	opened  bool
+	cc      *clientcc.CC
+	out     chan []byte // current session's outbound queue; nil while disconnected
+	opened  bool        // first open completed
 	openErr error
-	readErr error
+	fatal   error // non-recoverable failure; stops the supervisor and fails waiters
+	closed  bool
 	notify  chan struct{} // coalesced "replica changed" signal (buffered 1)
+
+	closeOnce sync.Once
+	done      chan struct{}
 }
 
-// NewOptimisticClient creates an optimistic client over conn for the given wavelet,
-// authoring as author. It starts the read/write goroutines; call Open next.
-func NewOptimisticClient(conn io.ReadWriter, name id.WaveletName, author id.ParticipantID) *OptimisticClient {
+// NewOptimisticClient creates an optimistic client for the given wavelet, authoring
+// as author. dial opens a fresh connection to the server; the supervisor calls it
+// for the initial connection and again on each reconnect. The read/write goroutines
+// start immediately; call Open to block until the initial open completes.
+func NewOptimisticClient(dial func() (io.ReadWriteCloser, error), name id.WaveletName, author id.ParticipantID) *OptimisticClient {
 	oc := &OptimisticClient{
-		conn:   conn,
-		name:   name,
-		author: author,
-		out:    make(chan []byte, 64),
-		done:   make(chan struct{}),
-		cc:     clientcc.New(name, author, version.Zero(name), newSessionID()),
-		notify: make(chan struct{}, 1),
+		dial:      dial,
+		name:      name,
+		author:    author,
+		sessionID: newSessionID(),
+		logger:    slog.Default(),
+		cc:        nil,
+		notify:    make(chan struct{}, 1),
+		done:      make(chan struct{}),
 	}
+	oc.cc = clientcc.New(name, author, version.Zero(name), oc.sessionID)
 	oc.cond = sync.NewCond(&oc.mu)
-	go oc.writeLoop()
-	go oc.readLoop()
+	go oc.supervise()
 	return oc
 }
 
-// Open binds the connection to the wavelet (requesting self-suppression) and
-// applies the starting view, blocking until the open response is processed.
+// Open blocks until the initial open completes (or the client fails/closes).
 func (oc *OptimisticClient) Open() error {
-	if err := oc.send(encodeOpen(oc.name.Serialize(), true)); err != nil {
-		return err
-	}
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
-	for !oc.opened && oc.readErr == nil {
+	for !oc.opened && oc.fatal == nil && !oc.closed {
 		oc.cond.Wait()
 	}
-	if oc.readErr != nil {
-		return oc.readErr
+	if oc.fatal != nil {
+		return oc.fatal
+	}
+	if oc.closed {
+		return errClosed
 	}
 	return oc.openErr
 }
 
-// Submit applies ops as a local edit (optimistically, against the current replica)
-// and submits them. It returns as soon as the edit is applied locally — the ack and
-// any transforms are handled asynchronously. See SubmitWith for building ops from a
-// consistent snapshot.
-func (oc *OptimisticClient) Submit(ops []waveop.Operation) error {
-	return oc.SubmitWith(func(func(string) (op.DocOp, bool)) []waveop.Operation { return ops })
-}
-
 // SubmitWith builds and submits a local edit from a consistent snapshot: build is
 // called once under the client lock with a reader for the optimistic replica's
-// blips, so position-dependent ops are authored against exactly the state they
-// apply to. It applies the ops optimistically and sends a delta if the in-flight
-// slot is free (else they queue).
+// blips. The ops apply optimistically immediately; a delta is sent if the in-flight
+// slot is free and a connection is up (otherwise the core queues it and the
+// supervisor sends/resubmits it after the next (re)connect).
 func (oc *OptimisticClient) SubmitWith(build func(blip func(blipID string) (op.DocOp, bool)) []waveop.Operation) error {
 	oc.mu.Lock()
-	if oc.readErr != nil {
+	if oc.fatal != nil {
 		oc.mu.Unlock()
-		return oc.readErr
+		return oc.fatal
 	}
 	ops := build(oc.cc.Blip)
-	d, err := oc.cc.Edit(ops)
+	o, err := oc.cc.Edit(ops)
 	oc.signalLocked()
 	oc.mu.Unlock()
 	if err != nil {
 		return fmt.Errorf("transport: optimistic submit: %w", err)
 	}
-	oc.sendDelta(d)
+	oc.sendDelta(o)
 	return nil
+}
+
+// Submit applies and submits ops as a single edit.
+func (oc *OptimisticClient) Submit(ops []waveop.Operation) error {
+	return oc.SubmitWith(func(func(string) (op.DocOp, bool)) []waveop.Operation { return ops })
 }
 
 // BlipContent returns the optimistic content of a blip and whether it exists.
@@ -140,32 +161,149 @@ func (oc *OptimisticClient) Version() version.HashedVersion {
 }
 
 // WaitServerVersion blocks until the confirmed server version reaches v (or the
-// connection fails), returning the read error if it failed.
+// client fails/closes), returning any fatal error.
 func (oc *OptimisticClient) WaitServerVersion(v uint64) error {
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
-	for oc.cc.ServerVersion().Version() < v && oc.readErr == nil {
+	for oc.cc.ServerVersion().Version() < v && oc.fatal == nil && !oc.closed {
 		oc.cond.Wait()
 	}
-	return oc.readErr
+	if oc.fatal != nil {
+		return oc.fatal
+	}
+	if oc.closed {
+		return errClosed
+	}
+	return nil
 }
 
-// Updates returns a coalesced signal that fires when the optimistic replica
-// changes (a local edit, an applied server delta, or a settled ack).
+// Updates returns a coalesced signal that fires when the optimistic replica changes.
 func (oc *OptimisticClient) Updates() <-chan struct{} { return oc.notify }
 
 // Close ends the session and unblocks any waiters.
 func (oc *OptimisticClient) Close() error {
-	oc.fail(errClosed)
+	oc.closeOnce.Do(func() {
+		oc.mu.Lock()
+		oc.closed = true
+		oc.cond.Broadcast()
+		oc.mu.Unlock()
+		close(oc.done)
+	})
 	return nil
 }
 
-// --- internals ---
+// --- supervisor ---
+
+func (oc *OptimisticClient) supervise() {
+	first := true
+	for {
+		if oc.isDone() {
+			return
+		}
+		conn, err := oc.dial()
+		if err != nil {
+			oc.logger.Debug("optimistic dial failed; retrying", "err", err)
+			if !oc.sleep(reconnectDelay) {
+				return
+			}
+			continue
+		}
+		serr := oc.runSession(conn, first)
+		first = false
+		if oc.isDone() {
+			return
+		}
+		var fe fatalError
+		if errors.As(serr, &fe) {
+			oc.setFatal(fe.err)
+			return
+		}
+		oc.logger.Debug("optimistic session ended; reconnecting", "err", serr)
+		if !oc.sleep(reconnectDelay) {
+			return
+		}
+	}
+}
+
+// runSession drives one connection to completion. It sends Open (first) or Resync
+// (reconnect), pumps writes from a per-session queue, and reads+handles frames
+// until the connection fails or the client closes. The returned error is nil for a
+// clean teardown, a fatalError for a non-recoverable condition, or a plain error
+// for a recoverable one (the supervisor reconnects).
+func (oc *OptimisticClient) runSession(conn io.ReadWriteCloser, first bool) error {
+	out := make(chan []byte, 64)
+	sessDone := make(chan struct{})
+	var wg sync.WaitGroup
+
+	oc.mu.Lock()
+	oc.out = out
+	oc.mu.Unlock()
+
+	wg.Add(1)
+	go func() { // write pump
+		defer wg.Done()
+		for {
+			select {
+			case f := <-out:
+				if err := writeFrame(conn, f); err != nil {
+					return
+				}
+			case <-sessDone:
+				return
+			}
+		}
+	}()
+	// Close the connection when the client closes, to unblock an in-progress read.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		select {
+		case <-sessDone:
+		case <-oc.done:
+			_ = conn.Close()
+		}
+	}()
+
+	// Initiate the session: open or resync.
+	if first {
+		out <- encodeOpen(oc.name.Serialize(), true)
+	} else {
+		oc.mu.Lock()
+		v := oc.cc.ServerVersion()
+		oc.mu.Unlock()
+		out <- encodeResync(oc.name.Serialize(), v.Version(), v.HistoryHash())
+	}
+
+	serr := oc.readSession(conn)
+
+	oc.mu.Lock()
+	oc.out = nil
+	oc.mu.Unlock()
+	close(sessDone)
+	_ = conn.Close()
+	wg.Wait()
+	return serr
+}
+
+func (oc *OptimisticClient) readSession(conn io.ReadWriteCloser) error {
+	for {
+		data, err := readFrame(conn)
+		if err != nil {
+			if oc.isDone() {
+				return nil
+			}
+			return err // recoverable: reconnect
+		}
+		if err := oc.handle(data); err != nil {
+			return err
+		}
+	}
+}
 
 // sendDelta encodes and enqueues a client delta produced by the core, if any,
-// tagging it with the core's submission nonce. The core's one-in-flight invariant
-// serializes emissions, so frames stay ordered even though this runs outside the
-// lock.
+// tagging it with the core's submission nonce. A nil current queue (disconnected)
+// drops it: the core retains the delta and the supervisor re-submits it on
+// reconnect via AfterResync.
 func (oc *OptimisticClient) sendDelta(o *clientcc.Outgoing) {
 	if o == nil {
 		return
@@ -173,104 +311,62 @@ func (oc *OptimisticClient) sendDelta(o *clientcc.Outgoing) {
 	db := codec.EncodeClientDelta(codec.ClientDelta{
 		Author: o.Delta.Author(), TargetVersion: o.Delta.TargetVersion(), Ops: o.Delta.Ops(), Nonce: o.Nonce,
 	})
-	_ = oc.send(encodeSubmit(db))
+	oc.enqueue(encodeSubmit(db))
 }
 
-func (oc *OptimisticClient) send(f []byte) error {
-	select {
-	case oc.out <- f:
-		return nil
-	case <-oc.done:
-		return oc.err()
-	}
-}
-
-func (oc *OptimisticClient) err() error {
+// enqueue puts a frame on the current session's outbound queue, blocking only on
+// backpressure (a full queue) until the client closes; a no-op while disconnected.
+func (oc *OptimisticClient) enqueue(f []byte) {
 	oc.mu.Lock()
-	defer oc.mu.Unlock()
-	if oc.readErr != nil {
-		return oc.readErr
-	}
-	return errClosed
-}
-
-func (oc *OptimisticClient) writeLoop() {
-	for {
-		select {
-		case f := <-oc.out:
-			if err := writeFrame(oc.conn, f); err != nil {
-				oc.fail(err)
-				return
-			}
-		case <-oc.done:
-			return
-		}
-	}
-}
-
-func (oc *OptimisticClient) readLoop() {
-	for {
-		data, err := readFrame(oc.conn)
-		if err != nil {
-			oc.fail(err)
-			return
-		}
-		if err := oc.handle(data); err != nil {
-			oc.fail(err)
-			return
-		}
-	}
-}
-
-func (oc *OptimisticClient) fail(err error) {
-	oc.mu.Lock()
-	if oc.readErr == nil {
-		oc.readErr = err
-	}
-	oc.cond.Broadcast()
+	out := oc.out
 	oc.mu.Unlock()
-	oc.once.Do(func() {
-		close(oc.done)
-		if cl, ok := oc.conn.(io.Closer); ok {
-			_ = cl.Close()
-		}
-	})
+	if out == nil {
+		return
+	}
+	select {
+	case out <- f:
+	case <-oc.done:
+	}
 }
 
 func (oc *OptimisticClient) handle(data []byte) error {
 	kind, raw, err := messageKind(data)
 	if err != nil {
-		return err
+		return fatalError{err}
 	}
 	switch kind {
 	case mOpenResponse:
 		snapshotBlob, history, err := decodeOpenResponse(raw)
 		if err != nil {
-			return err
+			return fatalError{err}
 		}
 		return oc.applyOpen(snapshotBlob, history)
+	case mResyncResponse:
+		mode, tail, snapshotBlob, history, err := decodeResyncResponse(raw)
+		if err != nil {
+			return fatalError{err}
+		}
+		return oc.applyResync(mode, tail, snapshotBlob, history)
 	case mUpdate:
 		db, err := decodeUpdate(raw)
 		if err != nil {
-			return err
+			return fatalError{err}
 		}
 		return oc.applyServerDelta(db)
 	case mSubmitResponse:
 		r, err := decodeSubmitResponse(raw)
 		if err != nil {
-			return err
+			return fatalError{err}
 		}
 		return oc.applyAck(r)
 	case mResyncRequired:
-		// Reconnect/resync is not yet wired; a dropped live stream is fatal here.
-		return fmt.Errorf("transport: live stream dropped (resync required); reconnect not yet supported")
-	case mResyncResponse:
-		return fmt.Errorf("transport: unexpected resync response (resync not yet driven by this client)")
+		// The live stream was dropped; reconnect and resync (recoverable).
+		return errors.New("transport: live stream dropped; resyncing")
 	case mError:
 		msg, _ := decodeError(raw)
-		return fmt.Errorf("transport: server error: %s", msg)
+		return fatalError{fmt.Errorf("transport: server error: %s", msg)}
 	default:
-		return fmt.Errorf("transport: unexpected message kind %d", kind)
+		return fatalError{fmt.Errorf("transport: unexpected message kind %d", kind)}
 	}
 }
 
@@ -278,7 +374,7 @@ func (oc *OptimisticClient) applyOpen(snapshotBlob []byte, history [][]byte) err
 	oc.mu.Lock()
 	defer oc.mu.Unlock()
 	if oc.opened {
-		return fmt.Errorf("transport: duplicate open response")
+		return fatalError{fmt.Errorf("transport: duplicate open response")}
 	}
 	if err := oc.initLocked(snapshotBlob, history); err != nil {
 		oc.openErr = err
@@ -289,7 +385,41 @@ func (oc *OptimisticClient) applyOpen(snapshotBlob []byte, history [][]byte) err
 	return nil
 }
 
-// initLocked seeds the core from the starting view: a current-state snapshot, or a
+// applyResync reconciles a reconnection: a tail mode feeds the missed deltas (the
+// core recognizes its own committed delta in them by nonce) then re-submits any
+// still-unacked in-flight delta; a reset mode rebuilds the core from the full view,
+// discarding unacknowledged local edits (the bounded-state fallback when the known
+// version is no longer retained).
+func (oc *OptimisticClient) applyResync(mode uint64, tail [][]byte, snapshotBlob []byte, history [][]byte) error {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	switch mode {
+	case resyncReset:
+		oc.cc = clientcc.New(oc.name, oc.author, version.Zero(oc.name), oc.sessionID)
+		if err := oc.initLocked(snapshotBlob, history); err != nil {
+			return fatalError{err}
+		}
+		oc.logger.Debug("optimistic resync reset (local edits dropped)")
+	case resyncTail:
+		for _, db := range tail {
+			sd, err := codec.DecodeStoredDelta(db)
+			if err != nil {
+				return fatalError{err}
+			}
+			if _, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion, sd.Nonce); err != nil {
+				return fatalError{err}
+			}
+		}
+		oc.sendDeltaLocked(oc.cc.AfterResync())
+	default:
+		return fatalError{fmt.Errorf("transport: unknown resync mode %d", mode)}
+	}
+	oc.cond.Broadcast()
+	oc.signalLocked()
+	return nil
+}
+
+// initLocked seeds the core from a starting view: a current-state snapshot, or a
 // replayed delta history from version zero. Must hold oc.mu.
 func (oc *OptimisticClient) initLocked(snapshotBlob []byte, history [][]byte) error {
 	if len(snapshotBlob) > 0 {
@@ -303,8 +433,7 @@ func (oc *OptimisticClient) initLocked(snapshotBlob []byte, history [][]byte) er
 		}
 		blips := map[string]op.DocOp{}
 		for _, bid := range w.BlipIDs() {
-			b, ok := w.Blip(bid)
-			if ok {
+			if b, ok := w.Blip(bid); ok {
 				blips[bid] = b.Content()
 			}
 		}
@@ -326,43 +455,96 @@ func (oc *OptimisticClient) initLocked(snapshotBlob []byte, history [][]byte) er
 func (oc *OptimisticClient) applyServerDelta(db []byte) error {
 	sd, err := codec.DecodeStoredDelta(db)
 	if err != nil {
-		return err
+		return fatalError{err}
 	}
 	oc.mu.Lock()
-	d, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion, sd.Nonce)
+	o, err := oc.cc.OnServerDelta(sd.Ops, sd.ResultingVersion, sd.Nonce)
+	if err == nil {
+		oc.sendDeltaLocked(o)
+	}
 	oc.signalLocked()
 	oc.mu.Unlock()
 	if err != nil {
-		return err
+		return fatalError{err}
 	}
-	oc.sendDelta(d)
 	return nil
 }
 
 func (oc *OptimisticClient) applyAck(r submitResponse) error {
 	if !r.OK {
-		// Nack recovery (VersionError / TooOld → resync / InvalidOperation) is not
-		// yet implemented; treat as fatal for now.
-		return fmt.Errorf("transport: submit nacked (code %d): %s", r.Code, r.Msg)
+		if isRecoverableNack(r.Code) {
+			// Reconnect and resync; the in-flight delta is re-derived there.
+			return fmt.Errorf("transport: submit nacked (code %d): %s; resyncing", r.Code, r.Msg)
+		}
+		return fatalError{fmt.Errorf("transport: submit nacked (code %d): %s", r.Code, r.Msg)}
 	}
 	rv, err := codec.DecodeHashedVersion(r.ResultingVersion)
 	if err != nil {
-		return fmt.Errorf("transport: bad resulting version in ack: %w", err)
+		return fatalError{fmt.Errorf("transport: bad resulting version in ack: %w", err)}
 	}
 	oc.mu.Lock()
-	d := oc.cc.OnAck(rv, r.OpsApplied)
+	o := oc.cc.OnAck(rv, r.OpsApplied)
+	oc.sendDeltaLocked(o)
 	oc.signalLocked()
 	oc.mu.Unlock()
-	oc.sendDelta(d)
 	return nil
 }
 
-// signalLocked wakes version/open waiters and fires the coalesced replica-changed
-// notification. Must hold oc.mu.
+// sendDeltaLocked enqueues a core-produced delta. Must hold oc.mu; it releases and
+// reacquires the lock around the (potentially blocking) enqueue to avoid holding
+// the lock during backpressure.
+func (oc *OptimisticClient) sendDeltaLocked(o *clientcc.Outgoing) {
+	if o == nil {
+		return
+	}
+	oc.mu.Unlock()
+	oc.sendDelta(o)
+	oc.mu.Lock()
+}
+
+// signalLocked wakes version/open waiters and fires the replica-changed notify.
+// Must hold oc.mu.
 func (oc *OptimisticClient) signalLocked() {
 	oc.cond.Broadcast()
 	select {
 	case oc.notify <- struct{}{}:
 	default:
 	}
+}
+
+func (oc *OptimisticClient) isDone() bool {
+	select {
+	case <-oc.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// sleep waits d or until the client closes; returns false if the client closed.
+func (oc *OptimisticClient) sleep(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-oc.done:
+		return false
+	}
+}
+
+func (oc *OptimisticClient) setFatal(err error) {
+	oc.mu.Lock()
+	if oc.fatal == nil {
+		oc.fatal = err
+	}
+	oc.cond.Broadcast()
+	oc.mu.Unlock()
+}
+
+// isRecoverableNack reports whether a nack response code should trigger a resync
+// rather than fail the client. VersionError/TooOld mean the client's target was
+// stale or pruned — recover by reconnecting and resyncing.
+func isRecoverableNack(code uint64) bool {
+	return code == uint64(cc.VersionError) || code == uint64(cc.TooOld)
 }

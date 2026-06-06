@@ -46,7 +46,7 @@ func TestMessageRoundTrips(t *testing.T) {
 	}
 
 	// resync request
-	if _, raw, err := messageKind(encodeResync("example.com/w+a/~/conv+root", 7, []byte{1, 2, 3}, true)); err != nil {
+	if _, raw, err := messageKind(encodeResync("example.com/w+a/~/conv+root", 7, []byte{1, 2, 3})); err != nil {
 		t.Fatal(err)
 	} else if name, v, hash, suppress, err := decodeResync(raw); err != nil ||
 		name != "example.com/w+a/~/conv+root" || v != 7 || string(hash) != "\x01\x02\x03" || !suppress {

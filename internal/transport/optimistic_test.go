@@ -1,8 +1,11 @@
 package transport_test
 
 import (
+	"io"
 	"net"
+	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/op"
@@ -11,13 +14,112 @@ import (
 	"github.com/sgrankin/wave/internal/waveop"
 )
 
-// connectOptimistic dials a fresh connection to a Serve goroutine sharing wm and
-// opens the wavelet with an optimistic client (self-suppressed stream).
+// pipeDial returns a dial func that connects a fresh net.Pipe to a Serve goroutine
+// sharing wm — a new server session per (re)connect.
+func pipeDial(wm *server.WaveMap) func() (io.ReadWriteCloser, error) {
+	return func() (io.ReadWriteCloser, error) {
+		cConn, sConn := net.Pipe()
+		go func() { _ = transport.Serve(sConn, wm) }()
+		return cConn, nil
+	}
+}
+
+// dropDialer hands out net.Pipe connections to a Serve goroutine sharing wm and
+// can drop the current one (close it) to simulate a network failure, forcing the
+// client's supervisor to reconnect and resync.
+type dropDialer struct {
+	wm      *server.WaveMap
+	mu      sync.Mutex
+	current net.Conn
+}
+
+func (d *dropDialer) dial() (io.ReadWriteCloser, error) {
+	cConn, sConn := net.Pipe()
+	go func() { _ = transport.Serve(sConn, d.wm) }()
+	d.mu.Lock()
+	d.current = cConn
+	d.mu.Unlock()
+	return cConn, nil
+}
+
+func (d *dropDialer) drop() {
+	d.mu.Lock()
+	c := d.current
+	d.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+// TestOptimisticReconnectResync drops an optimistic client's connection mid-session
+// and verifies its supervisor reconnects, resyncs to catch up on deltas it missed,
+// and keeps converging — all under synctest (fake time, deterministic).
+func TestOptimisticReconnectResync(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		wm := newWaveMap(t)
+		name := waveletName(t)
+		alice := pid(t, "alice@example.com")
+		bob := pid(t, "bob@example.com")
+
+		dd := &dropDialer{wm: wm}
+		a := transport.NewOptimisticClient(dd.dial, name, alice)
+		defer a.Close()
+		if err := a.Open(); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		b := connectOptimistic(t, wm, name, bob)
+
+		// Create + converge to "hi" at v1.
+		if err := a.Submit(writeBlip(alice, "b", chars("hi"))); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := b.WaitServerVersion(1); err != nil {
+			t.Fatalf("bob v1: %v", err)
+		}
+
+		// Drop alice's connection. While she reconnects, bob appends "!" (v2).
+		dd.drop()
+		if err := b.SubmitWith(func(blip func(string) (op.DocOp, bool)) []waveop.Operation {
+			cur, _ := blip("b")
+			return insertAt(bob, "b", cur.DocumentLength(), cur.DocumentLength(), "!")
+		}); err != nil {
+			t.Fatalf("bob edit: %v", err)
+		}
+
+		// Alice must reconnect, resync, and see bob's edit (reaching v2).
+		if err := a.WaitServerVersion(2); err != nil {
+			t.Fatalf("alice v2 after reconnect: %v", err)
+		}
+		if got, _ := a.BlipContent("b"); !got.Equal(chars("hi!")) {
+			t.Errorf("alice after resync = %v, want hi!", got.Components())
+		}
+
+		// Alice edits post-reconnect; both converge.
+		if err := a.SubmitWith(func(blip func(string) (op.DocOp, bool)) []waveop.Operation {
+			cur, _ := blip("b")
+			return insertAt(alice, "b", cur.DocumentLength(), 0, "A")
+		}); err != nil {
+			t.Fatalf("alice edit: %v", err)
+		}
+		if err := b.WaitServerVersion(3); err != nil {
+			t.Fatalf("bob v3: %v", err)
+		}
+
+		ca, _ := a.BlipContent("b")
+		cb, _ := b.BlipContent("b")
+		if !ca.Equal(cb) {
+			t.Fatalf("divergence after reconnect: alice %v vs bob %v", ca.Components(), cb.Components())
+		}
+		if !ca.Equal(chars("Ahi!")) {
+			t.Errorf("converged = %v, want Ahi!", ca.Components())
+		}
+	})
+}
+
+// connectOptimistic opens an optimistic client (self-suppressed stream) against wm.
 func connectOptimistic(t *testing.T, wm *server.WaveMap, name id.WaveletName, author id.ParticipantID) *transport.OptimisticClient {
 	t.Helper()
-	cConn, sConn := net.Pipe()
-	go func() { _ = transport.Serve(sConn, wm) }()
-	cl := transport.NewOptimisticClient(cConn, name, author)
+	cl := transport.NewOptimisticClient(pipeDial(wm), name, author)
 	t.Cleanup(func() { cl.Close() })
 	if err := cl.Open(); err != nil {
 		t.Fatalf("open: %v", err)

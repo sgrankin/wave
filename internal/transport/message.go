@@ -206,11 +206,13 @@ func decodeError(raw []cbor.RawMessage) (string, error) {
 
 // --- resync: [mResync, waveletName, knownVersion, knownHash, suppressEcho] ---
 // A reconnecting client states the (version, history-hash) it already holds; the
-// server replies with the tail since then (or a reset). suppressEcho carries the
-// same meaning as in Open and applies to the continuation stream.
+// server replies with the tail since then (or a reset). The continuation stream is
+// always self-suppressed (only the optimistic client resyncs), so suppressEcho is
+// sent true; the field is kept on the wire for symmetry with Open and in case a
+// non-suppressing client ever resyncs.
 
-func encodeResync(waveletName string, knownVersion uint64, knownHash []byte, suppressEcho bool) []byte {
-	return marshal([]any{mResync, waveletName, knownVersion, knownHash, suppressEcho})
+func encodeResync(waveletName string, knownVersion uint64, knownHash []byte) []byte {
+	return marshal([]any{mResync, waveletName, knownVersion, knownHash, true})
 }
 
 func decodeResync(raw []cbor.RawMessage) (name string, knownVersion uint64, knownHash []byte, suppressEcho bool, err error) {

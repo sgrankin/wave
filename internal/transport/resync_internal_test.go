@@ -71,7 +71,7 @@ func TestResyncTailOverWire(t *testing.T) {
 
 	// New connection resyncs at head (suppressEcho=true, optimistic-style).
 	rc := serveConn(t, srv)
-	mustWrite(t, rc, encodeResync(name.Serialize(), head.Version(), head.HistoryHash(), true))
+	mustWrite(t, rc, encodeResync(name.Serialize(), head.Version(), head.HistoryHash()))
 	kind, raw, err := messageKind(mustRead(t, rc))
 	if err != nil || kind != mResyncResponse {
 		t.Fatalf("resync response kind=%d err=%v", kind, err)
@@ -114,7 +114,7 @@ func TestResyncResetOverWire(t *testing.T) {
 	forked[0] ^= 0xFF
 
 	rc := serveConn(t, srv)
-	mustWrite(t, rc, encodeResync(name.Serialize(), head.Version(), forked, true))
+	mustWrite(t, rc, encodeResync(name.Serialize(), head.Version(), forked))
 	kind, raw, err := messageKind(mustRead(t, rc))
 	if err != nil || kind != mResyncResponse {
 		t.Fatalf("resync response kind=%d err=%v", kind, err)
