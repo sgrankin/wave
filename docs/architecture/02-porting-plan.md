@@ -349,6 +349,16 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   with **open-or-create + server-side conversation seeding** (`conv.SeedConversation`
   + atomic `WaveletContainer.SeedIfEmpty`) replacing the client `maybeBootstrap` and
   killing the cold-start race. `-auth dev|proxy`, `-seed-conversations`.
+- **App shell & wave management — DONE 2026-06-07** (`#14`). The single-hardcoded-
+  wave client became an app: a new `internal/queryapi` serves authenticated
+  `GET /api/inbox` and `GET /api/search` (over the existing `internal/search`
+  index), turning index hits into wave "digests" (title/snippet/participants) read
+  under the container lock via the new `WaveletContainer.Read`. The client gained a
+  two-pane `<wave-app>` shell (`<wave-list>` search/inbox on the left, the active
+  `<wave-conversation>` on the right, switched via lit `keyed`), `?wave=` URL
+  navigation, and client-minted new-wave ids (`waveid.ts`) that the server seeds on
+  open. Validated by `internal/queryapi` unit tests + a Playwright app-shell e2e
+  (new-wave → seed → index → inbox → search) alongside the convergence e2e.
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
