@@ -1,6 +1,8 @@
 GO ?= go
+NPM ?= npm
 
-.PHONY: all build test test-race vet lint fmt tidy clean
+.PHONY: all build test test-race vet lint fmt tidy clean \
+	web-build web-test check check-all
 
 all: build test
 
@@ -32,7 +34,24 @@ fmt:
 tidy:
 	$(GO) mod tidy
 
+## web-build: build the browser bundle into web/dist
+web-build:
+	cd web && $(NPM) run build
+
+## web-test: type-check + unit (node) + component (headless Chromium) tests
+web-test:
+	cd web && $(NPM) run typecheck && $(NPM) test && $(NPM) run test:web
+
+## check: the fast pre-commit suite — Go build+test + web type/unit/component
+check: build test web-test
+
+## check-all: everything, including the heavy end-to-end browser convergence
+## test (builds the bundle, spawns waved, launches Chromium). May need the host
+## sandbox disabled for spawn/loopback/browser.
+check-all: check
+	cd web && $(NPM) run test:browser
+
 ## clean: remove build artifacts
 clean:
 	$(GO) clean
-	rm -rf dist/
+	rm -rf dist/ web/dist/
