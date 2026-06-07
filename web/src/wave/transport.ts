@@ -260,6 +260,11 @@ export class OptimisticClient {
     return this.cc.blipIds();
   }
 
+  /** Return the optimistic participant set as an array (unordered). */
+  participants(): Participant[] {
+    return this.cc.participants();
+  }
+
   /** Return the latest confirmed server version. */
   version(): HashedVersion {
     return this.cc.serverVersion();

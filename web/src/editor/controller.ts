@@ -32,6 +32,10 @@ export interface ConvController {
   continueThread(threadId: string): void;
   // Create a new reply thread under a blip (and its first blip), in one delta.
   replyToBlip(parentBlipId: string, inline: boolean): void;
+  // The current optimistic participant roster (may change on each re-render).
+  participants(): Participant[];
+  // Submit an addParticipant op for addr. Throws if addr is not a valid participant address.
+  addParticipant(addr: string): void;
 }
 
 // blipContentOp wraps a content DocOp as a wavelet blip operation authored by
@@ -46,5 +50,14 @@ export function blipContentOp(user: Participant, blipId: string, contentOp: DocO
       contentOp,
       method: CONTRIBUTOR_ADD,
     },
+  };
+}
+
+// addParticipantOp builds an addParticipant wavelet operation authored by user.
+export function addParticipantOp(user: Participant, p: Participant): Operation {
+  return {
+    kind: "addParticipant",
+    ctx: { creator: user, timestamp: Date.now(), versionIncrement: 1, hashedVersion: null },
+    participant: p,
   };
 }

@@ -63,6 +63,12 @@ function fakeController(contents?: Map<string, DocOp>): ConvController & {
     replyToBlip(parentBlipId: string, inline: boolean): void {
       replyCalls.push({ parentBlipId, inline });
     },
+    participants(): string[] {
+      return [];
+    },
+    addParticipant(_addr: string): void {
+      // no-op in thread/blip tests
+    },
     editCalls,
     continueCalls,
     replyCalls,

@@ -148,6 +148,11 @@ export class CC {
     return this.parts.has(p);
   }
 
+  // participants returns the optimistic participant set as an array (unordered).
+  participants(): Participant[] {
+    return [...this.parts];
+  }
+
   // edit applies locally-authored ops to the optimistic replica and queues them
   // for submission, returning a delta to send now or null if one is already in
   // flight (the ops wait in the queue). ops must be authored against the current

@@ -30,7 +30,7 @@ import {
   readManifest,
   replyToBlip as buildReplyOp,
 } from "../wave/conversation.ts";
-import { MANIFEST_ID, ROOT_BLIP_ID, blipContentOp } from "./controller.ts";
+import { MANIFEST_ID, ROOT_BLIP_ID, addParticipantOp, blipContentOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
 import "./wave-thread.ts";
 
@@ -127,6 +127,7 @@ export class WaveConversation extends LitElement {
     this.bootstrapAttempted = true;
     const manifestInit = compose(emptyManifest(), appendBlipToRootThread(emptyManifest(), ROOT_BLIP_ID));
     void client.submit([
+      addParticipantOp(this.author, this.author),
       blipContentOp(this.author, MANIFEST_ID, manifestInit),
       blipContentOp(this.author, ROOT_BLIP_ID, initialBlipContent()),
     ]);
@@ -162,6 +163,11 @@ export class WaveConversation extends LitElement {
           ];
         });
       },
+      participants: () => client.participants(),
+      addParticipant: (addr: string) => {
+        const p = participant(addr); // throws on invalid address
+        void client.submit([addParticipantOp(author, p)]);
+      },
     };
   }
 
@@ -184,10 +190,43 @@ export class WaveConversation extends LitElement {
       }
     }
 
+    const roster = controller !== null ? this._renderRoster(controller) : html``;
+
     return html`
       ${STYLES}
       <div class="conv-bar">${this.status}</div>
+      ${roster}
       ${body}
+    `;
+  }
+
+  private _renderRoster(controller: ConvController): TemplateResult {
+    const parts = controller.participants().slice().sort();
+    const onAdd = (e: Event): void => {
+      e.preventDefault();
+      const form = e.currentTarget as HTMLFormElement;
+      const input = form.querySelector<HTMLInputElement>(".add-participant-input");
+      if (input === null) return;
+      const val = input.value.trim();
+      if (val === "") return;
+      try {
+        controller.addParticipant(val);
+        input.value = "";
+      } catch {
+        // invalid address — shake the input briefly to signal error without crashing
+        input.classList.add("add-participant-error");
+        setTimeout(() => input.classList.remove("add-participant-error"), 600);
+      }
+    };
+    return html`
+      <div class="conv-roster">
+        <span class="roster-label">Participants:</span>
+        ${parts.map((p) => html`<span class="roster-chip">${p}</span>`)}
+        <form class="add-participant-form" @submit=${onAdd}>
+          <input class="add-participant-input" type="text" placeholder="user@domain" autocomplete="off" />
+          <button type="submit" class="add-participant-btn">+ Add</button>
+        </form>
+      </div>
     `;
   }
 }
@@ -241,6 +280,54 @@ const STYLES = html`
     }
     wave-conversation .thread-actions {
       margin: 4px 0 8px;
+    }
+    wave-conversation .conv-roster {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 10px;
+      font: 12px system-ui, sans-serif;
+    }
+    wave-conversation .roster-label {
+      color: #555;
+      margin-right: 2px;
+    }
+    wave-conversation .roster-chip {
+      background: #e8eaf6;
+      color: #3949ab;
+      border-radius: 12px;
+      padding: 1px 8px;
+      font-size: 11px;
+    }
+    wave-conversation .add-participant-form {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: 4px;
+    }
+    wave-conversation .add-participant-input {
+      font: 11px system-ui, sans-serif;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 1px 6px;
+      width: 140px;
+    }
+    wave-conversation .add-participant-input.add-participant-error {
+      border-color: #c62828;
+      background: #fff8f8;
+    }
+    wave-conversation .add-participant-btn {
+      font: 11px system-ui, sans-serif;
+      color: #4060c0;
+      background: none;
+      border: 1px solid #4060c0;
+      border-radius: 4px;
+      padding: 1px 6px;
+      cursor: pointer;
+    }
+    wave-conversation .add-participant-btn:hover {
+      background: #e8eeff;
     }
   </style>
 `;
