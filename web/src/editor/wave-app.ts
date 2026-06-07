@@ -53,6 +53,12 @@ export class WaveApp extends LitElement {
   // Monotonic id for list fetches; a response is applied only if it is still the
   // latest request (drops out-of-order inbox/search responses).
   private listSeq = 0;
+  // Wave names already surfaced as a desktop notification, so a wave that stays
+  // unread across polls is announced once (re-announced if it goes read then unread).
+  private notifiedUnread = new Set<string>();
+  // The first inbox load seeds notifiedUnread without notifying, so existing unread
+  // waves at startup are not announced as a burst.
+  private notifyReady = false;
 
   constructor() {
     super();
@@ -101,7 +107,10 @@ export class WaveApp extends LitElement {
     } catch {
       waves = [];
     }
-    if (seq === this.listSeq) this.waves = waves; // drop a stale (out-of-order) response
+    if (seq === this.listSeq) {
+      this.waves = waves; // drop a stale (out-of-order) response
+      this.notifyNewUnread(waves); // desktop notification for newly-unread waves
+    }
   }
 
   private async runSearch(q: string): Promise<void> {
@@ -138,13 +147,59 @@ export class WaveApp extends LitElement {
   };
 
   private handleSelect = (wave: string): void => {
+    this.requestNotifyPermission(); // ask on a user gesture (browsers require one)
     if (wave === this.activeWave) return;
     this.activeWave = wave;
     this.playback = false; // open a freshly-selected wave in the live editor
     history.pushState({ wave }, "", `?wave=${encodeURIComponent(wave)}`);
   };
 
+  // requestNotifyPermission asks for desktop-notification permission, but only on a
+  // user gesture (browsers reject the request otherwise) and only if not yet decided.
+  private requestNotifyPermission(): void {
+    if ("Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  // notifyNewUnread fires a desktop notification for each wave that has newly become
+  // unread (and is not the one currently open). It is fully guarded — a no-op when
+  // the Notification API is absent or permission is not granted — and de-duplicates
+  // so a persistently-unread wave is announced once. Read waves are forgotten so a
+  // later re-unread re-announces. The first call only seeds state (no startup burst).
+  //
+  // IMPORTANT: feed this ONLY the inbox — the `waves` argument must be inbox results,
+  // never search results. The dedup set keys on the full unread inbox; a filtered
+  // search view would drop the filtered-out waves and corrupt the set. It is thus
+  // called only from loadInbox; notifications pause while a search is active (the poll
+  // runs the search then) and resume when the inbox view returns.
+  private notifyNewUnread(waves: WaveDigest[]): void {
+    if (!("Notification" in window)) return;
+    const unread = waves.filter((w) => w.unread && w.wave !== this.activeWave);
+    const names = new Set(unread.map((w) => w.wave));
+    for (const name of this.notifiedUnread) {
+      if (!names.has(name)) this.notifiedUnread.delete(name); // read again → allow re-notify
+    }
+    if (!this.notifyReady) {
+      for (const w of unread) this.notifiedUnread.add(w.wave); // seed; don't announce the backlog
+      this.notifyReady = true;
+      return;
+    }
+    if (Notification.permission !== "granted") return;
+    for (const w of unread) {
+      if (this.notifiedUnread.has(w.wave)) continue;
+      this.notifiedUnread.add(w.wave);
+      const title = w.title.trim() !== "" ? w.title : "New wave activity";
+      try {
+        new Notification(title, { body: w.snippet || "Updated", tag: w.wave });
+      } catch {
+        /* notifications best-effort */
+      }
+    }
+  }
+
   private handleNew = (): void => {
+    this.requestNotifyPermission();
     const name = newConversationWave(domainOf(this.user)).serialize();
     this.handleSelect(name);
     // The server seeds the conversation on open; refresh once it has landed.
