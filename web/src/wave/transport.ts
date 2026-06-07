@@ -51,6 +51,7 @@ import {
 } from "./wire.ts";
 
 import { decodeHashedVersion, decodeStoredDelta, encodeClientDelta } from "./codec.ts";
+import { dlog } from "./debug.ts";
 
 // --- response codes (cc.ResponseCode; internal/cc/delta.go) ---
 // Mirror of the server's submit-response codes. Only the recoverable ones matter
@@ -203,15 +204,45 @@ export class OptimisticClient {
   ): Promise<void> {
     if (this.fatal !== null) throw this.fatal;
     const ops = build((id) => this.cc.blip(id));
+    dlog(
+      "submit ops",
+      ops.map((o) => (o.kind === "blip" ? `blip ${o.blipId}(${o.op.contentOp.size})` : o.kind)),
+    );
     let o: Outgoing | null;
     try {
       o = this.cc.edit(ops);
     } catch (e) {
+      dlog("cc.edit threw", errMsg(e));
       this.signal();
       throw new Error(`transport: optimistic submit: ${errMsg(e)}`);
     }
+    dlog("cc.edit ->", o === null ? "queued (in-flight busy)" : `send v${o.delta.targetVersion.version} nonce ${o.nonce}`);
     this.signal();
     this.sendDelta(o);
+  }
+
+  /**
+   * A read-only snapshot of the client's state for debug tooling (the `?debug=1`
+   * overlay / `window.__wave`). No effect on the protocol.
+   */
+  debugState(): {
+    opened: boolean;
+    fatal: string | null;
+    inflight: boolean;
+    queueLength: number;
+    version: number;
+    blips: Record<string, number>;
+  } {
+    const blips: Record<string, number> = {};
+    for (const id of this.cc.blipIds()) blips[id] = this.cc.blip(id)?.documentLength() ?? 0;
+    return {
+      opened: this.opened,
+      fatal: this.fatal === null ? null : this.fatal.message,
+      inflight: this.cc.inflightActive(),
+      queueLength: this.cc.queueLength(),
+      version: this.cc.serverVersion().version,
+      blips,
+    };
   }
 
   /** Apply and submit ops as a single edit. */
@@ -582,6 +613,7 @@ export class OptimisticClient {
     resultingVersion: Uint8Array;
     opsApplied: number;
   }): SessionResult | null {
+    dlog("ack", r.ok ? `ok opsApplied ${r.opsApplied}` : `NACK code ${r.code}: ${r.msg}`);
     if (!r.ok) {
       if (isRecoverableNack(r.code)) {
         // Reconnect and resync; the in-flight delta is re-derived there.
@@ -625,6 +657,7 @@ export class OptimisticClient {
       nonce: o.nonce,
     });
     const ws = this.ws;
+    dlog("sendDelta", ws === null ? "DROPPED (disconnected)" : `${db.length}B nonce ${o.nonce}`);
     if (ws === null) return; // disconnected: drop; re-derived on reconnect
     try {
       this.sendFrame(ws, encodeSubmit(db));
@@ -678,6 +711,7 @@ export class OptimisticClient {
   }
 
   private setFatal(err: Error): void {
+    dlog("FATAL", errMsg(err));
     if (this.fatal === null) this.fatal = err;
     this.broadcast();
   }

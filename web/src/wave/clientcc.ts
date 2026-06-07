@@ -131,6 +131,18 @@ export class CC {
     return this.blips.get(blipId);
   }
 
+  // inflightActive reports whether a delta is currently in flight (submitted,
+  // awaiting ack). Read-only introspection for debug tooling.
+  inflightActive(): boolean {
+    return this.inflight !== null;
+  }
+
+  // queueLength is the number of locally-authored ops queued but not yet sent
+  // (waiting for the in-flight slot). Read-only introspection for debug tooling.
+  queueLength(): number {
+    return this.queue.length;
+  }
+
   // hasParticipant reports whether p is in the optimistic participant set.
   hasParticipant(p: Participant): boolean {
     return this.parts.has(p);

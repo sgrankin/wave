@@ -20,6 +20,7 @@ import { DocOp, WaveletName, participant } from "../wave/types.ts";
 import type { Participant } from "../wave/types.ts";
 import { OptimisticClient } from "../wave/transport.ts";
 import { compose } from "../wave/compose.ts";
+import { debugEnabled } from "../wave/debug.ts";
 import {
   appendBlipToRootThread,
   appendBlipToThread,
@@ -61,6 +62,11 @@ export class WaveConversation extends LitElement {
     return this;
   }
 
+  /** The OptimisticClient, or null until connected. For debug tooling only. */
+  getClient(): OptimisticClient | null {
+    return this.client;
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
     void this.start();
@@ -86,6 +92,10 @@ export class WaveConversation extends LitElement {
     const client = new OptimisticClient(url, name, this.author);
     this.client = client;
     this.controller = this.makeController(client);
+    if (debugEnabled()) {
+      // Expose for console poking: window.__wave.debugState(), .version(), etc.
+      (globalThis as unknown as { __wave?: OptimisticClient }).__wave = client;
+    }
     client.onChange(() => {
       this.rev++;
       this.maybeBootstrap();
