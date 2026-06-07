@@ -18,6 +18,11 @@ modern, single-machine Go server.
    tsnet/OIDC/passkey/…), the credential↔address separation, address-minting
    authority, and wavelet access control. Deepens doc 01 §Authentication; the first
    slice is work item #10.
+5. [05-roadmap-and-working-agreement.md](05-roadmap-and-working-agreement.md) — the
+   working agreement (how the build proceeds autonomously) and the product roadmap
+   from the current editor to a fuller Wave (batches 1–7), including the **agent
+   channel** (LLM agents as participants over the OT client). The live tracker is
+   TaskList.
 
 Both were drafted from the specs, then put through an adversarial panel review
 (plan soundness, Go architecture, spec fidelity, simplicity, completeness) with
