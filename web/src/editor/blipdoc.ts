@@ -19,6 +19,8 @@ import type { Component, DocOp } from "../wave/types.ts";
 const BODY = "body";
 const LINE = "line";
 const REPLY = "reply"; // inline-reply anchor element (conv.tagReply)
+const IMAGE = "image"; // inline image/attachment element (conv.tagImage)
+const ATTACHMENT_ATTR = "attachment";
 const STYLE_PREFIX = "style/";
 
 /** A contiguous run of text sharing the same active style annotations. */
@@ -45,6 +47,9 @@ export interface Paragraph {
    *  that fall in its range), in document order. Rendered as a marker after the
    *  text; the inline reply thread itself attaches to this paragraph. */
   readonly anchors: readonly string[];
+  /** Inline image attachment ids (<image attachment=...>) in this paragraph, in
+   *  document order. Rendered as an <img> after the text, like reply anchors. */
+  readonly images: readonly string[];
 }
 
 /** The projected, renderable view of a blip body. */
@@ -62,6 +67,7 @@ interface MutParagraph {
   textLength: number;
   spans: Span[];
   anchors: string[];
+  images: string[];
 }
 
 /**
@@ -81,7 +87,7 @@ export function project(content: DocOp): BlipProjection {
   const ensureParagraph = (): MutParagraph => {
     if (cur === null) {
       // Text before any <line> (flat blip, or leading text): implicit plain paragraph.
-      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [], anchors: [] };
+      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [], anchors: [], images: [] };
       paras.push(cur);
     }
     return cur;
@@ -99,6 +105,7 @@ export function project(content: DocOp): BlipProjection {
             textLength: 0,
             spans: [],
             anchors: [],
+            images: [],
           };
           paras.push(cur);
         } else if (c.type === REPLY) {
@@ -106,6 +113,10 @@ export function project(content: DocOp): BlipProjection {
           // at a line boundary (after the paragraph's text), so it does NOT shift any
           // intra-paragraph caret offset — the caret mapping needs no adjustment.
           ensureParagraph().anchors.push(c.attributes.get("id") ?? "");
+        } else if (c.type === IMAGE) {
+          // An inline image, same line-boundary + caret-safe treatment as a reply
+          // anchor: recorded on the paragraph, rendered as an <img> after the text.
+          ensureParagraph().images.push(c.attributes.get(ATTACHMENT_ATTR) ?? "");
         }
         stack.push(c.type);
         pos += 1;

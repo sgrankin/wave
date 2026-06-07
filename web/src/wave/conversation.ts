@@ -20,6 +20,8 @@ const tagConversation = "conversation";
 const tagBlip = "blip";
 const tagThread = "thread";
 const tagReply = "reply"; // inline-reply anchor element placed in a blip body
+const tagImage = "image"; // inline image/attachment element in a blip body
+const attrAttachment = "attachment"; // <image attachment="<id>">: the attachment id
 
 const attrID = "id";
 const attrInline = "inline";
@@ -253,6 +255,60 @@ export function readReplyAnchors(body: DocOp): ReplyAnchor[] {
     }
   }
   return anchors;
+}
+
+// ImageRef is an inline image in a blip body: its attachment id and the document
+// offset of the <image> element. (Port of conv.ImageRef.)
+export interface ImageRef {
+  attachment: string;
+  offset: number;
+}
+
+// insertImage returns the operation inserting an inline image element
+// <image attachment="attachmentID"/> into a blip body at the given document offset
+// (the editor uses a line boundary so it does not shift an intra-paragraph caret,
+// like insertReplyAnchor). Compose it onto the parent blip's content. (Port of
+// conv.InsertImage.)
+export function insertImage(body: DocOp, attachmentID: string, offset: number): DocOp {
+  const n = body.documentLength();
+  if (offset < 0 || offset > n) {
+    throw new Error(`conv: image offset ${offset} out of range [0,${n}]`);
+  }
+  const comps: Component[] = [];
+  if (offset > 0) comps.push({ kind: "retain", count: offset });
+  comps.push(
+    { kind: "elementStart", type: tagImage, attributes: Attributes.of({ [attrAttachment]: attachmentID }) },
+    { kind: "elementEnd" },
+  );
+  if (offset < n) comps.push({ kind: "retain", count: n - offset });
+  return new DocOp(comps);
+}
+
+// readImages returns the inline images (<image attachment=.../>) in a blip body,
+// in document order, each with the item offset of its <image> element. (Port of
+// conv.ReadImages.)
+export function readImages(body: DocOp): ImageRef[] {
+  const images: ImageRef[] = [];
+  let pos = 0;
+  for (const c of body.components as readonly Component[]) {
+    switch (c.kind) {
+      case "elementStart":
+        if (c.type === tagImage) {
+          images.push({ attachment: c.attributes.get(attrAttachment) ?? "", offset: pos });
+        }
+        pos += 1;
+        break;
+      case "elementEnd":
+        pos += 1;
+        break;
+      case "characters":
+        pos += runeCount(c.text);
+        break;
+      default:
+        break; // annotation boundary is zero-width
+    }
+  }
+  return images;
 }
 
 // elementCloseOffset returns the document offset of the ElementEnd item that

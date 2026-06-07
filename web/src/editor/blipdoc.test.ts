@@ -399,3 +399,23 @@ test("a reply anchor does not shift a following paragraph's offsets", () => {
   assert.equal(paragraphText(proj.paragraphs[1]!), "bye");
   assert.equal(caretToOffset(proj, 1, 0), proj.paragraphs[1]!.textStart, "second paragraph offset intact");
 });
+
+test("project surfaces an inline image without disturbing the caret math", () => {
+  // <body><line/>hi<image attachment="att1"/></body>
+  const content = new DocOp([
+    es("body"),
+    es("line"),
+    ee,
+    ch("hi"),
+    es("image", { attachment: "att1" }),
+    ee,
+    ee,
+  ]);
+  const proj = project(content);
+  assert.equal(proj.paragraphs.length, 1);
+  const p = proj.paragraphs[0]!;
+  assert.deepEqual(p.images, ["att1"], "image recorded on the paragraph");
+  assert.equal(p.textLength, 2, "image is not counted in the text length");
+  assert.equal(caretToOffset(proj, 0, 2), p.textStart + 2, "caret at line end is before the image");
+  assert.equal(proj.length, 8, "8 doc items (body, line/, h, i, image/, body)");
+});

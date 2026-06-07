@@ -446,6 +446,8 @@ export class BlipView extends LitElement {
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
         .blip-doc .reply-anchor { user-select: none; cursor: default; }
         .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
+        .blip-doc .wave-image { display: block; margin: 4px 0; user-select: none; }
+        .blip-doc .wave-image img { max-width: 100%; max-height: 320px; border-radius: 6px; vertical-align: bottom; }
         .blip-toolbar {
           display: flex;
           gap: 2px;
@@ -560,6 +562,7 @@ const EMPTY_PARAGRAPH: Paragraph = {
   textLength: 0,
   spans: [],
   anchors: [],
+  images: [],
 };
 
 function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
@@ -570,7 +573,16 @@ function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
   const markers = p.anchors.map(
     (id) => html`<span class="reply-anchor" data-thread-id=${id} contenteditable="false"></span>`,
   );
-  return html`<div class="para" style=${style}>${body}${markers}</div>`;
+  // Inline images render as a non-editable <img> after the text — same caret-safe
+  // pattern (the wrapper carries no text node, so rune-count caret mapping is
+  // unaffected). The src is the attachment download URL.
+  const images = p.images.map(
+    (att) =>
+      html`<span class="wave-image" contenteditable="false"
+        ><img src=${"/attachments/" + att} alt="attachment"
+      /></span>`,
+  );
+  return html`<div class="para" style=${style}>${body}${markers}${images}</div>`;
 }
 
 function renderSpan(s: Span, selfAddress: string): TemplateResult {

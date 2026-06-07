@@ -39,6 +39,9 @@ export interface ConvController {
   participants(): Participant[];
   // Submit an addParticipant op for addr. Throws if addr is not a valid participant address.
   addParticipant(addr: string): void;
+  // Upload file as an attachment and insert an inline <image> referencing it into
+  // blipId at the given doc offset (a line boundary). Best-effort (no-op on failure).
+  attachImage(blipId: string, file: File, offset: number): void;
 }
 
 // blipContentOp wraps a content DocOp as a wavelet blip operation authored by

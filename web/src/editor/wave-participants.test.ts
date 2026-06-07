@@ -47,6 +47,9 @@ function fakeController(participants: string[] = []): ConvController & {
       }
       addCalls.push(addr.toLowerCase());
     },
+    attachImage(_blipId: string, _file: File, _offset: number): void {
+      // no-op in participant-roster tests
+    },
     addCalls,
   };
 }

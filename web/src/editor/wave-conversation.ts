@@ -23,6 +23,7 @@ import { debugEnabled } from "../wave/debug.ts";
 import {
   appendBlipToThread,
   initialBlipContent,
+  insertImage,
   insertReplyAnchor,
   newBlipID,
   readManifest,
@@ -99,7 +100,7 @@ export class WaveConversation extends LitElement {
     // client-side bootstrap (and no cold-start double-manifest race).
     const client = new OptimisticClient(this.url, name, this.author);
     this.client = client;
-    this.controller = this.makeController(client);
+    this.controller = this.makeController(client, name);
     if (debugEnabled()) {
       // Expose for console poking: window.__wave.debugState(), .version(), etc.
       (globalThis as unknown as { __wave?: OptimisticClient }).__wave = client;
@@ -117,7 +118,7 @@ export class WaveConversation extends LitElement {
     }
   }
 
-  private makeController(client: OptimisticClient): ConvController {
+  private makeController(client: OptimisticClient, name: WaveletName): ConvController {
     const author = this.author;
     return {
       user: author,
@@ -164,6 +165,40 @@ export class WaveConversation extends LitElement {
       addParticipant: (addr: string) => {
         const p = participant(addr); // throws on invalid address
         void client.submit([addParticipantOp(author, p)]);
+      },
+      attachImage: (blipId, file, offset) => {
+        const wave = `${name.waveDomain}/${name.waveId}`;
+        const wavelet = `${name.waveletDomain}/${name.waveletId}`;
+        void (async () => {
+          let id: string;
+          try {
+            const q = new URLSearchParams({
+              wave,
+              wavelet,
+              filename: file.name,
+              mime: file.type !== "" ? file.type : "application/octet-stream",
+            });
+            const resp = await fetch(`/attachments?${q.toString()}`, {
+              method: "POST",
+              body: file,
+              credentials: "same-origin",
+            });
+            if (!resp.ok) return; // best-effort
+            const body = (await resp.json()) as { id?: string };
+            if (typeof body.id !== "string" || body.id === "") return;
+            id = body.id;
+          } catch {
+            return; // best-effort
+          }
+          // Insert the inline image at the requested line boundary, clamped to
+          // before the final </body> (submitWith re-reads the live blip).
+          void client.submitWith((blip) => {
+            const content = blip(blipId);
+            if (content === undefined) return [];
+            const at = Math.max(0, Math.min(offset, content.documentLength() - 1));
+            return [blipContentOp(author, blipId, insertImage(content, id, at))];
+          });
+        })();
       },
     };
   }
@@ -269,6 +304,7 @@ const STYLES = html`
     }
     wave-conversation .reply-btn,
     wave-conversation .reply-inline-btn,
+    wave-conversation .attach-btn,
     wave-conversation .continue-btn {
       font: 11px system-ui, sans-serif;
       color: #4060c0;
@@ -279,6 +315,7 @@ const STYLES = html`
     }
     wave-conversation .reply-btn:hover,
     wave-conversation .reply-inline-btn:hover,
+    wave-conversation .attach-btn:hover,
     wave-conversation .continue-btn:hover {
       text-decoration: underline;
     }

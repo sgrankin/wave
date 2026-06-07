@@ -217,3 +217,38 @@ test("an inline reply anchors a marker in the parent text and keeps it editable"
   );
   assert.equal(markers, 1, "anchor marker intact after editing the parent");
 });
+
+test("attaching an image uploads it and renders an inline img from the server", async () => {
+  const page = await openApp("erin@example.com");
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  const blip = page.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("look", { delay: 5 });
+
+  // Attach a 1x1 PNG via the hidden file input (drives onAttachFile → upload).
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  await page
+    .locator(".attach-input")
+    .first()
+    .setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: png });
+
+  // The inline image appears, sourced from /attachments/<id>.
+  await page.waitForFunction(
+    () => {
+      const img = document.querySelector(".wave-image img");
+      return img !== null && (img.getAttribute("src") ?? "").startsWith("/attachments/");
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  // And it actually loaded — the server served the bytes through auth + membership.
+  const loaded = await page.evaluate(() => {
+    const img = document.querySelector(".wave-image img");
+    return img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0;
+  });
+  assert.equal(loaded, true, "the attachment image loaded from the server");
+});

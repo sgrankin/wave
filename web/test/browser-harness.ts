@@ -65,6 +65,7 @@ export async function startServer(): Promise<void> {
   execFileSync("node", ["esbuild.mjs"], { cwd: WEB, stdio: "inherit" });
   port = await freePort();
   const sock = path.join(os.tmpdir(), `waved-btest-${process.pid}.sock`);
+  const attachRoot = path.join(os.tmpdir(), `waved-btest-${process.pid}-attach`);
   proc = spawn(
     binPath,
     [
@@ -73,6 +74,7 @@ export async function startServer(): Promise<void> {
       "-http", "",
       "-ws", `127.0.0.1:${port}`,
       "-webroot", "web/dist",
+      "-attach-root", attachRoot,
       "-log-level", "warn",
     ],
     { cwd: REPO, stdio: "inherit" },

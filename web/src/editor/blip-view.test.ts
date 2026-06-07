@@ -311,3 +311,24 @@ export async function testUrlsAutoLinked(t: T): Promise<void> {
   const para = doc.querySelector<HTMLElement>(".para");
   eq(para?.textContent, "see https://example.com/x?a=1 now", "link wraps text without altering it");
 }
+
+export async function testInlineImageRenders(t: T): Promise<void> {
+  const content = new DocOp([
+    { kind: "elementStart", type: "body", attributes: Attributes.empty() },
+    { kind: "elementStart", type: "line", attributes: Attributes.empty() },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "see" },
+    { kind: "elementStart", type: "image", attributes: Attributes.of({ attachment: "att-xyz" }) },
+    { kind: "elementEnd" },
+    { kind: "elementEnd" },
+  ]);
+  const el = await render(html`<blip-view .content=${content}></blip-view>`);
+  await waitForUpdate(el);
+  const doc = findDoc(el);
+
+  const img = doc.querySelector<HTMLImageElement>(".wave-image img");
+  eq(img !== null, true, "inline image rendered");
+  eq(img!.getAttribute("src"), "/attachments/att-xyz", "img src is the attachment download URL");
+  // The image marker carries no editable text, so the paragraph text is unchanged.
+  eq(doc.querySelector<HTMLElement>(".para")?.textContent, "see", "image adds no editable text");
+}

@@ -46,15 +46,32 @@ export class WaveBlip extends LitElement {
   // onReplyInline anchors a reply within the parent blip's text, at the line the
   // caret is in (or the end of the blip if the caret is elsewhere).
   private onReplyInline = (): void => {
+    this.controller.replyToBlip(this.blip.id, true, this.anchorOffset());
+  };
+
+  // anchorOffset returns the doc offset (line boundary) where an inline element
+  // should attach — the caret's line, or the end of the blip if the caret is
+  // elsewhere.
+  private anchorOffset(): number {
     const view = this.querySelector("blip-view") as
       | (HTMLElement & { caretLineEndOffset(): number | null })
       | null;
-    let offset = view?.caretLineEndOffset() ?? null;
-    if (offset === null) {
-      const len = this.controller.blipContent(this.blip.id).documentLength();
-      offset = Math.max(0, len - 1); // before </body>
-    }
-    this.controller.replyToBlip(this.blip.id, true, offset);
+    const off = view?.caretLineEndOffset() ?? null;
+    if (off !== null) return off;
+    const len = this.controller.blipContent(this.blip.id).documentLength();
+    return Math.max(0, len - 1); // before </body>
+  }
+
+  private onAttachClick = (): void => {
+    this.querySelector<HTMLInputElement>(".attach-input")?.click();
+  };
+
+  private onAttachFile = (e: Event): void => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ""; // allow re-picking the same file
+    if (file === undefined) return;
+    this.controller.attachImage(this.blip.id, file, this.anchorOffset());
   };
 
   protected override render(): TemplateResult {
@@ -69,6 +86,14 @@ export class WaveBlip extends LitElement {
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
           <button class="reply-inline-btn" @click=${this.onReplyInline}>Reply inline</button>
+          <button class="attach-btn" @click=${this.onAttachClick}>Attach</button>
+          <input
+            class="attach-input"
+            type="file"
+            accept="image/*"
+            style="display:none"
+            @change=${this.onAttachFile}
+          />
         </div>
         ${this.blip.threads.map(
           (t) => html`<wave-thread .thread=${t} .controller=${this.controller}></wave-thread>`,
