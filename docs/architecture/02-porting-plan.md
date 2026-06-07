@@ -359,6 +359,18 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   navigation, and client-minted new-wave ids (`waveid.ts`) that the server seeds on
   open. Validated by `internal/queryapi` unit tests + a Playwright app-shell e2e
   (new-wave → seed → index → inbox → search) alongside the convergence e2e.
+- **Collaboration completeness — CORE DONE 2026-06-07** (`#12`, `#15`). Three of the
+  four Batch-3 features shipped: **inline replies** (a `<reply id>` anchor in the
+  parent blip body + manifest `inline=true`; `conv.InsertReplyAnchor`/`ReadReplyAnchors`
+  with a TS mirror, surfaced in the editor as a caret-safe marker anchored at the
+  caret's line boundary — see the §"inline replies" note below); **read/unread** (a
+  dedicated `storage.ReadStateStore`, an `unread` flag on inbox/search digests, and
+  `POST /api/read`, with a client unread indicator + mark-on-view + a 5s inbox poll);
+  and **mentions** (render-time `@address` highlighting, self emphasized). **Presence**
+  (live carets/typing) is deferred (`#20`): the live-content collaboration already
+  converges char-by-char, so presence is an awareness overlay that needs a separate
+  transient (non-OT) broadcast channel — a distinct subsystem, designed but not yet
+  built.
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
