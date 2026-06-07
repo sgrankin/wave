@@ -18,6 +18,7 @@ import type { OptimisticClient } from "../wave/transport.ts";
 import "./wave-conversation.ts";
 import type { WaveConversation } from "./wave-conversation.ts";
 import "./wave-list.ts";
+import "./wave-identity.ts";
 
 const SEARCH_DEBOUNCE_MS = 200;
 // Poll the wave list so changes by others (new waves you were added to, edits that
@@ -173,6 +174,7 @@ export class WaveApp extends LitElement {
       ${STYLES}
       <div class="app">
         <div class="app-left">
+          <wave-identity .address=${this.user}></wave-identity>
           <wave-list
             .waves=${this.waves}
             .selected=${this.activeWave}

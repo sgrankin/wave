@@ -31,6 +31,8 @@ import {
 } from "../wave/conversation.ts";
 import { MANIFEST_ID, addParticipantOp, blipContentOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
+import { contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
+import { participantChip } from "./participant.ts";
 import "./wave-thread.ts";
 
 export class WaveConversation extends LitElement {
@@ -53,6 +55,7 @@ export class WaveConversation extends LitElement {
   private client: OptimisticClient | null = null;
   private author: Participant = "";
   private controller: ConvController | null = null;
+  private profilesUnsub: (() => void) | null = null;
 
   constructor() {
     super();
@@ -71,11 +74,16 @@ export class WaveConversation extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // Re-render the whole tree when display names resolve, so the roster chips and
+    // any @-mention tooltips humanize without waiting for the next edit.
+    this.profilesUnsub = profiles.onChange(() => this.rev++);
     void this.start();
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.profilesUnsub?.();
+    this.profilesUnsub = null;
     this.client?.close();
     this.client = null;
   }
@@ -111,7 +119,9 @@ export class WaveConversation extends LitElement {
     });
     try {
       await client.open();
-      this.status = `connected as ${this.user}`;
+      // Who you are is shown by the shell's identity widget; the bar carries only
+      // connection state.
+      this.status = "connected";
       this.rev++;
     } catch (e) {
       this.status = `error: ${String(e)}`;
@@ -234,6 +244,13 @@ export class WaveConversation extends LitElement {
 
   private _renderRoster(controller: ConvController): TemplateResult {
     const parts = controller.participants().slice().sort();
+    // Resolve display names for the roster (one batched fetch); chips fall back to
+    // the address until the cache "change" re-renders.
+    profiles.ensure(parts);
+    // Contact suggestions for the add box: known names minus the current
+    // participants (shared helper, also unit-tested).
+    const suggestions = contactSuggestions(profiles, parts);
+
     const onAdd = (e: Event): void => {
       e.preventDefault();
       const form = e.currentTarget as HTMLFormElement;
@@ -253,9 +270,23 @@ export class WaveConversation extends LitElement {
     return html`
       <div class="conv-roster">
         <span class="roster-label">Participants:</span>
-        ${parts.map((p) => html`<span class="roster-chip">${p}</span>`)}
+        ${parts.map(
+          (p) => html`<span class="roster-chip">${participantChip(p, profiles.get(p))}</span>`,
+        )}
         <form class="add-participant-form" @submit=${onAdd}>
-          <input class="add-participant-input" type="text" placeholder="user@domain" autocomplete="off" />
+          <input
+            class="add-participant-input"
+            type="text"
+            list="roster-contacts"
+            placeholder="user@domain"
+            autocomplete="off"
+          />
+          <datalist id="roster-contacts">
+            ${suggestions.map(
+              (p) =>
+                html`<option value=${p.address} label=${displayNameFor(p.address, p)}></option>`,
+            )}
+          </datalist>
           <button type="submit" class="add-participant-btn">+ Add</button>
         </form>
       </div>
@@ -335,11 +366,14 @@ const STYLES = html`
       margin-right: 2px;
     }
     wave-conversation .roster-chip {
+      display: inline-flex;
+      align-items: center;
       background: #e8eaf6;
       color: #3949ab;
       border-radius: 12px;
-      padding: 1px 8px;
+      padding: 2px 8px 2px 3px;
       font-size: 11px;
+      max-width: 200px;
     }
     wave-conversation .add-participant-form {
       display: inline-flex;

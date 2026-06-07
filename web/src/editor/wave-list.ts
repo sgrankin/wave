@@ -10,6 +10,7 @@ import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
 
 import type { WaveDigest } from "../wave/api.ts";
+import { displayNameFor, profiles } from "../wave/profiles.ts";
 
 export class WaveList extends LitElement {
   static override properties = {
@@ -27,6 +28,8 @@ export class WaveList extends LitElement {
   onSelect: (wave: string) => void = () => {};
   onNew: () => void = () => {};
 
+  private unsub: (() => void) | null = null;
+
   constructor() {
     super();
     this.waves = [];
@@ -36,6 +39,18 @@ export class WaveList extends LitElement {
 
   protected override createRenderRoot(): HTMLElement {
     return this;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Re-render when participant display names resolve so the meta line humanizes.
+    this.unsub = profiles.onChange(() => this.requestUpdate());
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.unsub?.();
+    this.unsub = null;
   }
 
   private onInput = (e: Event): void => {
@@ -65,6 +80,9 @@ export class WaveList extends LitElement {
       const msg = this.query.trim() !== "" ? "No matching waves" : "No waves yet — create one";
       return html`<div class="wl-empty">${msg}</div>`;
     }
+    // Resolve display names for everyone shown (one batched fetch); names that
+    // are not cached yet fall back to the address until "change" re-renders.
+    profiles.ensure(this.waves.flatMap((w) => [w.creator, ...w.participants]));
     return html`${this.waves.map((w) => this.renderItem(w))}`;
   }
 
@@ -72,7 +90,7 @@ export class WaveList extends LitElement {
     const cls =
       "wl-item" + (w.wave === this.selected ? " selected" : "") + (w.unread ? " unread" : "");
     const title = w.title.trim() !== "" ? w.title : "(untitled wave)";
-    const others = w.participants.join(", ");
+    const others = w.participants.map((a) => displayNameFor(a, profiles.get(a))).join(", ");
     return html`
       <div class=${cls} @click=${() => this.onSelect(w.wave)} title=${w.wave}>
         <div class="wl-title">${w.unread ? html`<span class="wl-dot"></span>` : html``}${title}</div>

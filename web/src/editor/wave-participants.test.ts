@@ -20,6 +20,8 @@ import { eq, render } from "../../testing/harness.ts";
 import type { ConvController } from "./controller.ts";
 import { DocOp } from "../wave/types.ts";
 import type { Component } from "../wave/types.ts";
+import { contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
+import { participantChip } from "./participant.ts";
 
 // ---------------------------------------------------------------------------
 // Fake ConvController for roster tests
@@ -71,8 +73,14 @@ class RosterHost extends LitElement {
     return this;
   }
 
+  // Mirrors WaveConversation._renderRoster: humanized chips + a contact-picker
+  // datalist + the add form. Uses the real participantChip helper so the chip
+  // rendering under test is the production code.
   private _renderRoster(controller: ConvController): TemplateResult {
     const parts = controller.participants().slice().sort();
+    profiles.ensure(parts);
+    const suggestions = contactSuggestions(profiles, parts);
+
     const onAdd = (e: Event): void => {
       e.preventDefault();
       const form = e.currentTarget as HTMLFormElement;
@@ -91,9 +99,20 @@ class RosterHost extends LitElement {
     return html`
       <div class="conv-roster">
         <span class="roster-label">Participants:</span>
-        ${parts.map((p) => html`<span class="roster-chip">${p}</span>`)}
+        ${parts.map((p) => html`<span class="roster-chip">${participantChip(p, profiles.get(p))}</span>`)}
         <form class="add-participant-form" @submit=${onAdd}>
-          <input class="add-participant-input" type="text" placeholder="user@domain" autocomplete="off" />
+          <input
+            class="add-participant-input"
+            type="text"
+            list="roster-contacts"
+            placeholder="user@domain"
+            autocomplete="off"
+          />
+          <datalist id="roster-contacts">
+            ${suggestions.map(
+              (p) => html`<option value=${p.address} label=${displayNameFor(p.address, p)}></option>`,
+            )}
+          </datalist>
           <button type="submit" class="add-participant-btn">+ Add</button>
         </form>
       </div>
@@ -121,6 +140,12 @@ async function renderRoster(ctrl: ConvController): Promise<HTMLElement> {
 // Tests
 // ---------------------------------------------------------------------------
 
+// chipName reads the display-name text of the nth roster chip (the chip also
+// holds an avatar glyph, so we target the name span, not the whole chip text).
+function chipName(el: HTMLElement, nth: number): string {
+  return el.querySelectorAll(".roster-chip .wave-participant-name")[nth]?.textContent?.trim() ?? "";
+}
+
 export async function testRosterRendersParticipants(t: T): Promise<void> {
   void t;
   const ctrl = fakeController(["alice@example.com", "bob@example.com"]);
@@ -128,9 +153,13 @@ export async function testRosterRendersParticipants(t: T): Promise<void> {
 
   const chips = el.querySelectorAll(".roster-chip");
   eq(chips.length, 2, "two participant chips");
-  // Sorted alphabetically.
-  eq(chips[0]!.textContent!.trim(), "alice@example.com", "first chip");
-  eq(chips[1]!.textContent!.trim(), "bob@example.com", "second chip");
+  // Each chip carries a colored initials avatar plus the name (no profile cached
+  // ⇒ the name falls back to the address). Sorted alphabetically.
+  eq(el.querySelectorAll(".roster-chip .wave-avatar").length, 2, "every chip has an avatar");
+  eq(chipName(el, 0), "alice@example.com", "first chip name");
+  eq(chipName(el, 1), "bob@example.com", "second chip name");
+  // The contact-picker datalist is present for the add box.
+  eq(el.querySelector("datalist#roster-contacts") !== null, true, "contact datalist present");
 }
 
 export async function testRosterRendersEmptyList(t: T): Promise<void> {
@@ -217,7 +246,7 @@ export async function testRosterSortedAlphabetically(t: T): Promise<void> {
 
   const chips = el.querySelectorAll(".roster-chip");
   eq(chips.length, 3, "three chips");
-  eq(chips[0]!.textContent!.trim(), "alice@example.com");
-  eq(chips[1]!.textContent!.trim(), "mike@example.com");
-  eq(chips[2]!.textContent!.trim(), "zoe@example.com");
+  eq(chipName(el, 0), "alice@example.com");
+  eq(chipName(el, 1), "mike@example.com");
+  eq(chipName(el, 2), "zoe@example.com");
 }
