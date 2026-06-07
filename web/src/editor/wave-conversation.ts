@@ -533,6 +533,14 @@ const STYLES = html`
       background: #f7f9ff;
       border-radius: 0 6px 6px 0;
     }
+    /* On very narrow screens, shrink the per-level reply indent (34px → 18px) so a
+       deep reply chain keeps a usable text width when stacked. */
+    @media (max-width: 560px) {
+      wave-conversation .wave-thread.reply {
+        margin-left: 8px;
+        padding-left: 8px;
+      }
+    }
     wave-conversation .wave-blip {
       margin: 6px 0;
     }

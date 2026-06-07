@@ -618,14 +618,27 @@ export class BlipView extends LitElement {
         .blip-doc .wave-link { color: #1565c0; text-decoration: underline; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
-        .blip-doc .reply-anchor { user-select: none; cursor: default; }
+        .blip-doc .reply-anchor { user-select: none; cursor: pointer; }
         .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
         .blip-doc .wave-image { display: block; margin: 4px 0; user-select: none; }
         .blip-doc .wave-image img { max-width: 100%; max-height: 320px; border-radius: 6px; vertical-align: bottom; }
+        /* Floated out of flow so it reserves no vertical space when hidden and the
+           text never shifts on focus. The card (wave-conversation blip-view) is
+           position:relative, so this anchors to its top-right inside corner — over
+           the usually-empty whitespace beside a short first line, and always within
+           the card's own padding box so it can never reach the blip above. The opaque
+           background keeps it legible if it ever floats over a long first line. */
         .blip-toolbar {
+          position: absolute;
+          top: 4px;
+          right: 6px;
+          z-index: 1;
           display: flex;
           gap: 2px;
-          padding: 2px 0 4px;
+          padding: 2px;
+          border-radius: 5px;
+          background: rgba(255, 255, 255, 0.92);
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
           opacity: 0;
           pointer-events: none;
           transition: opacity 0.1s;
@@ -771,7 +784,20 @@ function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
   // Inline-reply anchors render as a non-editable marker (glyph via CSS ::after, no
   // text node) after the paragraph's text, so they do not affect the caret mapping.
   const markers = p.anchors.map(
-    (id) => html`<span class="reply-anchor" data-thread-id=${id} contenteditable="false"></span>`,
+    (id) => html`<span
+      class="reply-anchor"
+      data-thread-id=${id}
+      contenteditable="false"
+      title="Go to inline reply"
+      @mousedown=${(e: MouseEvent) => {
+        // preventDefault so clicking the glyph doesn't move the editor caret; dispatch
+        // a bubbling event the blip wrapper turns into a scroll/focus of the thread.
+        e.preventDefault();
+        (e.currentTarget as HTMLElement).dispatchEvent(
+          new CustomEvent<string>("anchor-activate", { detail: id, bubbles: true, composed: true }),
+        );
+      }}
+    ></span>`,
   );
   // Inline images render as a non-editable <img> after the text — same caret-safe
   // pattern (the wrapper carries no text node, so rune-count caret mapping is

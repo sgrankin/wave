@@ -33,7 +33,9 @@ test("the blip editor grows with the window width, up to the readable cap", asyn
   try {
     await page.setViewportSize({ width: 1400, height: 900 });
     const wide = await blipWidth(page);
-    await page.setViewportSize({ width: 760, height: 900 });
+    // 420px is below the 820px stacking breakpoint, so the panes stack and the editor
+    // is full-width-of-a-narrow-window (small); 1400px caps the conversation at 820px.
+    await page.setViewportSize({ width: 420, height: 900 });
     const narrow = await blipWidth(page);
 
     assert.ok(wide > narrow + 200, `editor should grow with width: wide=${wide} narrow=${narrow}`);

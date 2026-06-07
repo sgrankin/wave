@@ -48,6 +48,18 @@ export class WaveBlip extends LitElement {
     this.controller.setCaret?.(this.blip.id, anchor, focus);
   };
 
+  // onAnchorActivate scrolls to (and focuses) the inline-reply thread an in-text
+  // 💬 anchor points to. The thread renders as a sibling <wave-thread data-thread-id>;
+  // the anchor id equals the reply thread's id.
+  private onAnchorActivate = (e: Event): void => {
+    e.stopPropagation();
+    const id = (e as CustomEvent<string>).detail;
+    const thread = this.querySelector<HTMLElement>(`wave-thread[data-thread-id="${CSS.escape(id)}"]`);
+    if (thread === null) return;
+    thread.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    thread.querySelector<HTMLElement>(".blip-doc")?.focus();
+  };
+
   private onReply = (): void => {
     this.controller.replyToBlip(this.blip.id, false);
   };
@@ -93,6 +105,7 @@ export class WaveBlip extends LitElement {
           .remoteCarets=${this.controller.remoteCaretsFor?.(this.blip.id) ?? []}
           @edit=${this.onEdit}
           @caret=${this.onCaret}
+          @anchor-activate=${this.onAnchorActivate}
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
@@ -107,7 +120,12 @@ export class WaveBlip extends LitElement {
           />
         </div>
         ${this.blip.threads.map(
-          (t) => html`<wave-thread .thread=${t} .controller=${this.controller}></wave-thread>`,
+          (t) =>
+            html`<wave-thread
+              data-thread-id=${t.id}
+              .thread=${t}
+              .controller=${this.controller}
+            ></wave-thread>`,
         )}
       </div>
     `;

@@ -324,6 +324,7 @@ const STYLES = html`
     }
     wave-app .app-right {
       flex: 1;
+      min-width: 0; /* let the flex child shrink to fit instead of overflowing */
       overflow-y: auto;
       padding: 16px 20px;
     }
@@ -368,10 +369,11 @@ const STYLES = html`
       margin-top: 40px;
       text-align: center;
     }
-    /* Narrow widths: the fixed 300px list pane would squeeze the conversation to a
-       few dozen pixels (the right pane absorbs all width change), so stack the panes
-       — list on top (scrollable, capped height), conversation filling the rest. */
-    @media (max-width: 640px) {
+    /* Below the conversation's own max measure (820px) a two-pane split can no longer
+       give it a usable width — the fixed 300px nav is pure subtraction from an
+       already-capped column — so stack: list on top (scrollable, capped height),
+       conversation filling the rest. */
+    @media (max-width: 820px) {
       wave-app .app {
         flex-direction: column;
       }
