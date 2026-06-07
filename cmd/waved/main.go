@@ -42,6 +42,7 @@ import (
 	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
 	"github.com/sgrankin/wave/internal/waveop"
+	webui "github.com/sgrankin/wave/web"
 )
 
 // shutdownGrace bounds the operability server's drain during shutdown.
@@ -119,7 +120,33 @@ func parseFlags(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	// Env fallback for any flag not set on the command line: WAVED_<FLAG> with
+	// dashes as underscores (e.g. -db → WAVED_DB, -auth-domain → WAVED_AUTH_DOMAIN).
+	// An explicit flag always wins; this makes container/12-factor deployment ergonomic.
+	if err := applyEnvDefaults(fs); err != nil {
+		return config{}, err
+	}
 	return c, nil
+}
+
+// applyEnvDefaults sets each flag not given on the command line from its WAVED_<NAME>
+// environment variable, if present. Flag values explicitly passed take precedence.
+func applyEnvDefaults(fs *flag.FlagSet) error {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	var firstErr error
+	fs.VisitAll(func(f *flag.Flag) {
+		if firstErr != nil || set[f.Name] {
+			return
+		}
+		env := "WAVED_" + strings.ToUpper(strings.ReplaceAll(f.Name, "-", "_"))
+		if v, ok := os.LookupEnv(env); ok {
+			if err := fs.Set(f.Name, v); err != nil {
+				firstErr = fmt.Errorf("env %s=%q: %w", env, v, err)
+			}
+		}
+	})
+	return firstErr
 }
 
 func run(ctx context.Context, cfg config) error {
@@ -187,7 +214,7 @@ func run(ctx context.Context, cfg config) error {
 		return finishShutdown(store, srv, nil, nil, logger, serveErr)
 	}
 
-	httpSrv := startOperability(cfg, srv, wm, logger)
+	httpSrv := startOperability(cfg, srv, wm, store, logger)
 
 	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, store, attachStore, logger)
 	if err != nil {
@@ -259,7 +286,25 @@ func listen(cfg config) (net.Listener, error) {
 // startOperability publishes the server's metrics via expvar and serves
 // /healthz and /debug/vars on the configured HTTP address. Returns nil if
 // disabled (empty address).
-func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, logger *slog.Logger) *http.Server {
+// pinger is the readiness dependency: a store whose reachability backs /readyz.
+type pinger interface{ Ping(context.Context) error }
+
+// readyHandler reports readiness: 200 when the store responds to a bounded ping,
+// 503 otherwise. Liveness (/healthz) stays up regardless so the process is not
+// killed for a transient dependency blip.
+func readyHandler(store pinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := store.Ping(ctx); err != nil {
+			http.Error(w, "not ready: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, "ready\n")
+	}
+}
+
+func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, store pinger, logger *slog.Logger) *http.Server {
 	if cfg.httpAddr == "" {
 		return nil
 	}
@@ -272,9 +317,15 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, log
 	expvar.Publish("wave_submits_total", expvar.Func(func() any { return m.SubmitsTotal.Load() }))
 	expvar.Publish("wave_submit_errors", expvar.Func(func() any { return m.SubmitErrors.Load() }))
 	expvar.Publish("wave_loaded_wavelets", expvar.Func(func() any { return wm.Count() }))
+	expvar.NewString("wave_build_version").Set(buildVersion())
 
 	mux := http.NewServeMux()
+	// /healthz is liveness (the process is up); /readyz is readiness (it can serve —
+	// the database is reachable). Orchestrators gate traffic on /readyz and restart
+	// on /healthz.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
+	mux.HandleFunc("/readyz", readyHandler(store))
+	mux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, buildVersion()+"\n") })
 	mux.Handle("/debug/vars", expvar.Handler())
 
 	httpSrv := &http.Server{Addr: cfg.httpAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -285,7 +336,7 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, log
 			logger.Warn("operability http server error", "err", err)
 		}
 	}()
-	logger.Info("operability http listening", "addr", cfg.httpAddr, "paths", "/healthz /debug/vars")
+	logger.Info("operability http listening", "addr", cfg.httpAddr, "paths", "/healthz /readyz /version /debug/vars")
 	return httpSrv
 }
 
@@ -451,10 +502,15 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 		mux.Handle("/attachments", routes)
 		mux.Handle("/attachments/", routes)
 	}
-	if cfg.webRoot != "" {
-		// Serve the browser client from the same origin as the socket (so the page,
-		// the WebSocket, and the auth cookie share host/port). The more specific
-		// "/socket" etc. patterns still win over "/".
+	// Serve the browser client from the same origin as the socket (so the page, the
+	// WebSocket, and the auth cookie share host/port). The more specific "/socket"
+	// etc. patterns still win over "/". An embed build (-tags embed) ships the client
+	// inside the binary and takes precedence; otherwise -webroot serves it from disk.
+	switch {
+	case webui.DistFS != nil:
+		mux.Handle("/", http.FileServerFS(webui.DistFS))
+		logger.Info("serving embedded web client")
+	case cfg.webRoot != "":
 		mux.Handle("/", http.FileServer(http.Dir(cfg.webRoot)))
 		logger.Info("serving web root", "dir", cfg.webRoot)
 	}

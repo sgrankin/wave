@@ -1,7 +1,7 @@
 GO ?= go
 NPM ?= npm
 
-.PHONY: all build test test-race vet lint fmt tidy clean \
+.PHONY: all build test test-race vet lint fmt tidy clean release \
 	web-build web-test check check-all
 
 all: build test
@@ -51,7 +51,12 @@ check: build test web-test
 check-all: check
 	cd web && $(NPM) run test:browser
 
+## release: build the self-contained single binary — the web client embedded
+## (-tags embed) so it ships as one file with no -webroot. Output: ./waved.
+release: web-build
+	CGO_ENABLED=0 $(GO) build -tags embed -o waved ./cmd/waved
+
 ## clean: remove build artifacts
 clean:
 	$(GO) clean
-	rm -rf dist/ web/dist/
+	rm -rf dist/ web/dist/ waved

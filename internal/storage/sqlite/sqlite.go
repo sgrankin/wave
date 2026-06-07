@@ -7,6 +7,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -92,6 +93,9 @@ func (s *Store) Checkpoint() error {
 
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping verifies the database is reachable — the readiness check backing /readyz.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 // Open returns delta access for the named wavelet.
 func (s *Store) Open(name id.WaveletName) (storage.DeltasAccess, error) {
