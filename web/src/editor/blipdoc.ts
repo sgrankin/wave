@@ -13,7 +13,7 @@
 // character is one item (counted in runes), each element start/end is one item;
 // annotation boundaries are zero-width.
 
-import { Attributes, runeCount } from "../wave/types.ts";
+import { AnnotationBoundaryMap, Attributes, AttributesUpdate, runeCount } from "../wave/types.ts";
 import type { Component, DocOp } from "../wave/types.ts";
 
 const BODY = "body";
@@ -318,4 +318,268 @@ export function textBetween(content: DocOp, from: number, to: number): string {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(n, hi));
+}
+
+// --- annotation range scanning ---
+
+/**
+ * scanAnnotationKey walks a content DocInitialization tracking the active value
+ * of a single annotation key K, calling `cb` at each position where K's value
+ * changes (including position 0 with the initial null). Returns the final active
+ * value and the segments map: an array of {start, end, value} for each constant
+ * K-value run. This is a helper for setStyleRange / clearStyleRange / rangeStyle.
+ */
+interface KSegment {
+  start: number; // doc item offset where this value begins
+  value: string | null;
+}
+
+function scanAnnotationKey(content: DocOp, key: string): KSegment[] {
+  const segments: KSegment[] = [{ start: 0, value: null }];
+  let pos = 0;
+  let curValue: string | null = null;
+
+  for (const c of content.components) {
+    switch (c.kind) {
+      case "annotationBoundary": {
+        // Check endKeys
+        for (const k of c.boundary.endKeys) {
+          if (k === key) {
+            curValue = null;
+            segments.push({ start: pos, value: null });
+          }
+        }
+        // Check changes
+        for (const ch of c.boundary.changes) {
+          if (ch.key === key) {
+            curValue = ch.newValue;
+            segments.push({ start: pos, value: ch.newValue });
+          }
+        }
+        break; // zero-width
+      }
+      case "retain":
+        pos += c.count;
+        break;
+      case "characters":
+        pos += runeCount(c.text);
+        break;
+      case "elementStart":
+      case "elementEnd":
+        pos += 1;
+        break;
+      default:
+        break;
+    }
+  }
+  void curValue; // curValue is the final active value; segments encode all transitions
+  return segments;
+}
+
+/**
+ * valueAt returns the active value of K at position `pos` given the K-segments
+ * (as returned by scanAnnotationKey). The segments array is sorted by start
+ * position; we find the last segment whose start <= pos.
+ */
+function valueAt(segments: KSegment[], pos: number): string | null {
+  let v: string | null = null;
+  for (const seg of segments) {
+    if (seg.start > pos) break;
+    v = seg.value;
+  }
+  return v;
+}
+
+/**
+ * setStyleRange returns content-op components that set style/<prop> = value over
+ * the text range [from, to). Annotation oldValues match the document's actual
+ * values at each boundary, so compose() will accept the op without throwing.
+ *
+ * For each interior segment of [from, to) where the document has a different
+ * K-value, we emit a boundary that re-opens the key with the new value (with
+ * the correct oldValue for that segment). At `to` we restore whatever value
+ * the document had there.
+ */
+export function setStyleRange(content: DocOp, from: number, to: number, prop: string, value: string): Component[] {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+  if (a === b) return [...retain(len)];
+
+  const K = STYLE_PREFIX + prop;
+  const segments = scanAnnotationKey(content, K);
+
+  const out: Component[] = [];
+
+  // retain up to `a`
+  out.push(...retain(a));
+
+  // open boundary at `a`: change from current K-value to `value`
+  const vAtA = valueAt(segments, a);
+  if (vAtA !== value) {
+    out.push({
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: vAtA, newValue: value }]),
+    });
+  }
+
+  // for each segment transition point strictly inside (a, b), emit a retain + boundary
+  let prevPos = a;
+  for (const seg of segments) {
+    const p = seg.start;
+    if (p <= a) continue; // before or at `a`
+    if (p >= b) break; // at or after `b`
+    // Segment transition at p inside (a, b): retain from prevPos to p, then re-set key
+    out.push(...retain(p - prevPos));
+    prevPos = p;
+    // oldValue at p is seg.value (the new value the document has here)
+    // We must only emit a boundary if the key value is not already `value`
+    if (seg.value !== value) {
+      out.push({
+        kind: "annotationBoundary",
+        boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: seg.value, newValue: value }]),
+      });
+    }
+  }
+
+  // retain from prevPos to `b`
+  out.push(...retain(b - prevPos));
+
+  // close boundary at `b`: restore the document's K-value at `b`
+  const vAtB = valueAt(segments, b);
+  if (vAtB === value) {
+    // Document already has `value` at `b`; annotation continues naturally — no close.
+  } else if (vAtB === null) {
+    // Restore to null → endKey terminates the range.
+    out.push({
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([K], []),
+    });
+  } else {
+    // Restore to a different non-null value.
+    out.push({
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: value, newValue: vAtB }]),
+    });
+  }
+
+  // retain to end
+  out.push(...retain(len - b));
+
+  return out;
+}
+
+/**
+ * clearStyleRange returns content-op components that remove style/<prop> over
+ * [from, to). Equivalent to setStyleRange with newValue=null for the interior,
+ * with correct oldValues at each segment boundary.
+ */
+export function clearStyleRange(content: DocOp, from: number, to: number, prop: string): Component[] {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+  if (a === b) return [...retain(len)];
+
+  const K = STYLE_PREFIX + prop;
+  const segments = scanAnnotationKey(content, K);
+
+  const out: Component[] = [];
+
+  out.push(...retain(a));
+
+  // open at `a`: change K to null (endKey if already null, or change if set)
+  const vAtA = valueAt(segments, a);
+  if (vAtA !== null) {
+    out.push({
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: vAtA, newValue: null }]),
+    });
+  }
+  // if vAtA is already null, no opening boundary needed
+
+  let prevPos = a;
+  for (const seg of segments) {
+    const p = seg.start;
+    if (p <= a) continue;
+    if (p >= b) break;
+    out.push(...retain(p - prevPos));
+    prevPos = p;
+    if (seg.value !== null) {
+      // Document has a non-null value here; clear it to null
+      out.push({
+        kind: "annotationBoundary",
+        boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: seg.value, newValue: null }]),
+      });
+    }
+    // if seg.value is null, key was already cleared in a previous boundary
+  }
+
+  out.push(...retain(b - prevPos));
+
+  // close at `b`: restore to document's K-value at `b`
+  const vAtB = valueAt(segments, b);
+  if (vAtB !== null) {
+    // document has a value at `b`; we were painting null → restore
+    out.push({
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: null, newValue: vAtB }]),
+    });
+  }
+  // if vAtB is null, K is already null → no close boundary needed
+
+  out.push(...retain(len - b));
+
+  return out;
+}
+
+/**
+ * setLineType returns content-op components that change the `t` attribute of the
+ * <line> element-start at `lineOffset` (e.g. plain↔h1↔h2↔li). Uses an
+ * updateAttributes component. oldType/newType null means the attribute is absent.
+ */
+export function setLineType(
+  content: DocOp,
+  lineOffset: number,
+  oldType: string | null,
+  newType: string | null,
+): Component[] {
+  const len = content.documentLength();
+  const a = clamp(lineOffset, 0, len);
+  return [
+    ...retain(a),
+    {
+      kind: "updateAttributes",
+      update: AttributesUpdate.of([{ name: "t", oldValue: oldType, newValue: newType }]),
+    },
+    ...retain(len - a - 1),
+  ];
+}
+
+/**
+ * rangeStyle queries the active value of style/<prop> over [from, to):
+ * - Returns the value if uniform (same non-null value throughout).
+ * - Returns null if the style is absent throughout.
+ * - Returns "mixed" if the value varies within the range.
+ * - For an empty range (from===to), returns the value active at that point.
+ */
+export function rangeStyle(content: DocOp, from: number, to: number, prop: string): string | null | "mixed" {
+  const len = content.documentLength();
+  const a = clamp(from, 0, len);
+  const b = clamp(to, a, len);
+
+  const K = STYLE_PREFIX + prop;
+  const segments = scanAnnotationKey(content, K);
+
+  if (a === b) {
+    return valueAt(segments, a);
+  }
+
+  const first = valueAt(segments, a);
+  for (const seg of segments) {
+    if (seg.start <= a) continue; // before or at start
+    if (seg.start >= b) break; // at or after end
+    // There's a segment change inside (a, b)
+    if (seg.value !== first) return "mixed";
+  }
+  return first;
 }
