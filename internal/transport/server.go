@@ -196,7 +196,8 @@ type session struct {
 
 	container    *server.WaveletContainer // set on Open/Resync (one wavelet per connection)
 	sub          *server.Subscription
-	suppressEcho bool // omit this connection's own deltas from its update stream
+	suppressEcho bool   // omit this connection's own deltas from its update stream
+	waveletName  string // canonical name string, set on Open/Resync for logging
 
 	// authParticipant, when non-nil, is the connection's authenticated identity:
 	// every submitted delta must be authored by it. Nil on the trusted (socket /
@@ -311,6 +312,7 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		return nil
 	}
 	s.suppressEcho = suppressEcho
+	s.waveletName = nameStr
 	snapshotBlob, history, sub := c.Open()
 	s.container = c
 	s.sub = sub
@@ -352,6 +354,7 @@ func (s *session) handleResync(raw []cbor.RawMessage) error {
 		return nil
 	}
 	s.suppressEcho = suppressEcho
+	s.waveletName = nameStr
 
 	if tail, sub, ok := c.OpenAt(knownVersion, knownHash); ok {
 		s.container = c
@@ -395,6 +398,11 @@ func (s *session) forward(sub *server.Subscription) {
 				s.push(encodeResyncRequired())
 				return
 			}
+			s.srv.logger().Debug("delta delivered",
+				"wavelet", s.waveletName,
+				"resulting", u.Delta.ResultingVersion.Version(),
+				"nonce", u.Delta.Nonce,
+			)
 			s.push(encodeUpdate(encodeStored(u.Delta)))
 		case <-s.done:
 			return
@@ -416,14 +424,24 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 	if err != nil {
 		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest), "bad delta: "+err.Error(), nil, 0))
+		s.srv.logger().Debug("delta rejected", "wavelet", s.waveletName, "nonce", "", "code", cc.BadRequest, "err", "bad delta: "+err.Error())
 		return nil
 	}
+	s.srv.logger().Debug("delta submitted",
+		"wavelet", s.waveletName,
+		"author", cd.Author,
+		"target", cd.TargetVersion.Version(),
+		"ops", len(cd.Ops),
+		"blips", blipIDs(cd.Ops),
+		"nonce", cd.Nonce,
+	)
 	// On an authenticated connection, the delta must be authored by the verified
 	// participant: a client may not submit deltas as someone else.
 	if s.authParticipant != nil && cd.Author != *s.authParticipant {
 		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(cc.BadRequest),
 			"delta author does not match authenticated participant", nil, 0))
+		s.srv.logger().Debug("delta rejected", "wavelet", s.waveletName, "nonce", cd.Nonce, "code", cc.BadRequest, "err", "delta author does not match authenticated participant")
 		return nil
 	}
 	delta := waveop.NewWaveletDelta(cd.Author, cd.TargetVersion, cd.Ops)
@@ -440,8 +458,15 @@ func (s *session) handleSubmit(raw []cbor.RawMessage) error {
 		}
 		s.srv.m.SubmitErrors.Add(1)
 		s.push(encodeSubmitResponse(false, uint64(code), err.Error(), nil, 0))
+		s.srv.logger().Debug("delta rejected", "wavelet", s.waveletName, "nonce", cd.Nonce, "code", code, "err", err.Error())
 		return nil
 	}
+	s.srv.logger().Debug("delta applied",
+		"wavelet", s.waveletName,
+		"nonce", cd.Nonce,
+		"resulting", res.ResultingVersion.Version(),
+		"opsApplied", res.OpsApplied,
+	)
 	s.push(encodeSubmitResponse(true, uint64(cc.OK), "", codec.EncodeHashedVersion(res.ResultingVersion), uint64(res.OpsApplied)))
 	return nil
 }
@@ -456,4 +481,20 @@ func encodeStored(d cc.TransformedWaveletDelta) []byte {
 		Ops:              d.Ops,
 		Nonce:            d.Nonce,
 	})
+}
+
+// blipIDs extracts the distinct blip IDs touched by the given wavelet
+// operations. Used only in debug log lines (behind the Debug level).
+func blipIDs(ops []waveop.Operation) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, op := range ops {
+		if blip, ok := op.(waveop.WaveletBlipOperation); ok {
+			if !seen[blip.BlipID] {
+				seen[blip.BlipID] = true
+				ids = append(ids, blip.BlipID)
+			}
+		}
+	}
+	return ids
 }
