@@ -40,6 +40,7 @@ interface SavedSelection {
 export class BlipView extends LitElement {
   static override properties = {
     content: { attribute: false },
+    selfAddress: { attribute: false },
   };
 
   // `declare` (no field initializer) + assign in the constructor: a reactive
@@ -47,6 +48,8 @@ export class BlipView extends LitElement {
   // useDefineForClassFields, silently breaking reactivity (the view would never
   // re-render when content changes).
   declare content: DocOp;
+  // The signed-in participant's address, so @mentions of them render emphasized.
+  declare selfAddress: string;
 
   private proj: BlipProjection = project(DocOp.empty());
   private pendingCaret: number | null = null; // caret an edit wants after re-render
@@ -59,6 +62,7 @@ export class BlipView extends LitElement {
   constructor() {
     super();
     this.content = DocOp.empty();
+    this.selfAddress = "";
   }
 
   // Light DOM so window.getSelection() reaches the editable content.
@@ -423,6 +427,8 @@ export class BlipView extends LitElement {
       <style>
         .blip-doc { outline: none; font: 15px/1.6 system-ui, sans-serif; white-space: pre-wrap; }
         .blip-doc .para { min-height: 1.6em; }
+        .blip-doc .wave-mention { color: #3949ab; }
+        .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
         .blip-toolbar {
           display: flex;
           gap: 2px;
@@ -473,7 +479,7 @@ export class BlipView extends LitElement {
         @beforeinput=${this.onBeforeInput}
         @paste=${this.onPaste}
       >
-        ${this.proj.paragraphs.map((p) => renderParagraph(p))}
+        ${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}
       </div>
     `;
   }
@@ -538,15 +544,42 @@ const EMPTY_PARAGRAPH: Paragraph = {
   spans: [],
 };
 
-function renderParagraph(p: Paragraph): TemplateResult {
+function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
   const style = paragraphStyle(p);
-  const body = p.spans.length === 0 ? html`<br />` : p.spans.map((s) => renderSpan(s));
+  const body = p.spans.length === 0 ? html`<br />` : p.spans.map((s) => renderSpan(s, selfAddress));
   return html`<div class="para" style=${style}>${body}</div>`;
 }
 
-function renderSpan(s: Span): TemplateResult {
+function renderSpan(s: Span, selfAddress: string): TemplateResult {
   const css = spanStyle(s.styles);
-  return css === "" ? html`${s.text}` : html`<span style=${css}>${s.text}</span>`;
+  const inner = renderMentions(s.text, selfAddress);
+  return css === "" ? inner : html`<span style=${css}>${inner}</span>`;
+}
+
+// MENTION_RE matches an @-mention: '@' then a participant-ish token, optionally
+// with a domain ("@alice" or "@alice@example.com"). Highlighting is a render-time
+// decoration only — it wraps existing text in zero-width-changing spans, so the
+// document model and caret/offset mapping are untouched (the DOM caret helpers
+// walk all descendant text nodes by rune count).
+const MENTION_RE = /@[A-Za-z0-9._%+\-]+(?:@[A-Za-z0-9.\-]+)?/g;
+
+function renderMentions(text: string, selfAddress: string): TemplateResult {
+  if (!text.includes("@")) return html`${text}`;
+  const self = selfAddress.toLowerCase();
+  const selfName = self.split("@")[0] ?? "";
+  const out: TemplateResult[] = [];
+  let last = 0;
+  for (const m of text.matchAll(MENTION_RE)) {
+    const i = m.index ?? 0;
+    if (i > last) out.push(html`${text.slice(last, i)}`);
+    const ref = m[0].slice(1).toLowerCase();
+    const isSelf = self !== "" && (ref === self || ref === selfName);
+    const cls = isSelf ? "wave-mention wave-mention-self" : "wave-mention";
+    out.push(html`<span class=${cls}>${m[0]}</span>`);
+    last = i + m[0].length;
+  }
+  if (last < text.length) out.push(html`${text.slice(last)}`);
+  return html`${out}`;
 }
 
 function paragraphStyle(p: Paragraph): string {

@@ -47,7 +47,11 @@ export class WaveBlip extends LitElement {
     const content = this.controller.blipContent(this.blip.id);
     return html`
       <div class="wave-blip">
-        <blip-view .content=${content} @edit=${this.onEdit}></blip-view>
+        <blip-view
+          .content=${content}
+          .selfAddress=${this.controller.user}
+          @edit=${this.onEdit}
+        ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
         </div>

@@ -269,3 +269,30 @@ export async function testH1TogglesOffToPlain(t: T): Promise<void> {
   );
   eq(clearsType, true, "updateAttributes clears t attribute (plain)");
 }
+
+export async function testMentionsHighlighted(t: T): Promise<void> {
+  const content = makeContent(null, "hi @bob@example.com see @alice@example.com");
+  const el = await render(
+    html`<blip-view .content=${content} .selfAddress=${"alice@example.com"}></blip-view>`,
+  );
+  await waitForUpdate(el);
+  const doc = findDoc(el);
+
+  // Both @mentions are highlighted; the signed-in user's is emphasized as self.
+  const mentions = doc.querySelectorAll(".wave-mention");
+  eq(mentions.length, 2, "two @mentions highlighted");
+  const selfMentions = doc.querySelectorAll(".wave-mention-self");
+  eq(selfMentions.length, 1, "one self-mention emphasized");
+  eq(selfMentions[0]!.textContent, "@alice@example.com", "self-mention text is the signed-in user");
+  const other = Array.from(mentions).find((m) => !m.classList.contains("wave-mention-self"));
+  eq(other?.textContent, "@bob@example.com", "the other mention is bob");
+
+  // The decoration must not change the document text (caret/offset model intact):
+  // the paragraph wraps the mentions in spans but its text is exactly the source.
+  const para = doc.querySelector<HTMLElement>(".para");
+  eq(
+    para?.textContent,
+    "hi @bob@example.com see @alice@example.com",
+    "mention spans wrap text without altering it",
+  );
+}
