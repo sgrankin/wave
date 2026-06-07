@@ -29,7 +29,7 @@ import {
   readManifest,
   replyToBlip as buildReplyOp,
 } from "../wave/conversation.ts";
-import { MANIFEST_ID, addParticipantOp, blipContentOp } from "./controller.ts";
+import { MANIFEST_ID, addParticipantOp, blipContentOp, removeParticipantOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
 import { colorFor, contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
 import { avatar, participantChip } from "./participant.ts";
@@ -281,6 +281,10 @@ export class WaveConversation extends LitElement {
         const p = participant(addr); // throws on invalid address
         void client.submit([addParticipantOp(author, p)]);
       },
+      removeParticipant: (addr: string) => {
+        const p = participant(addr); // throws on invalid address
+        void client.submit([removeParticipantOp(author, p)]);
+      },
       attachImage: (blipId, file, offset) => {
         const wave = `${name.waveDomain}/${name.waveId}`;
         const wavelet = `${name.waveletDomain}/${name.waveletId}`;
@@ -400,11 +404,32 @@ export class WaveConversation extends LitElement {
         setTimeout(() => input.classList.remove("add-participant-error"), 600);
       }
     };
+    // Remove (or leave, if it's you). Confirm first — it's destructive and the op
+    // commits immediately. Playwright dialogs default to dismiss, so e2e must accept.
+    const onRemove = (p: string): void => {
+      const isSelf = p === controller.user;
+      const ok = globalThis.confirm?.(isSelf ? "Leave this wave?" : `Remove ${p} from this wave?`) ?? true;
+      if (!ok) return;
+      try {
+        controller.removeParticipant(p);
+      } catch {
+        /* invalid address — ignore */
+      }
+    };
     return html`
       <div class="conv-roster">
         <span class="roster-label">Participants:</span>
         ${parts.map(
-          (p) => html`<span class="roster-chip">${participantChip(p, profiles.get(p))}</span>`,
+          (p) => html`<span class="roster-chip"
+            >${participantChip(p, profiles.get(p))}<button
+              class="roster-remove"
+              title=${p === controller.user ? "Leave this wave" : "Remove " + p}
+              aria-label=${p === controller.user ? "Leave this wave" : "Remove " + p}
+              @click=${() => onRemove(p)}
+            >
+              ×
+            </button></span
+          >`,
         )}
         <form class="add-participant-form" @submit=${onAdd}>
           <input
@@ -572,9 +597,30 @@ const STYLES = html`
       background: #e8eaf6;
       color: #3949ab;
       border-radius: 12px;
-      padding: 2px 8px 2px 3px;
+      padding: 2px 4px 2px 3px;
       font-size: 11px;
       max-width: 200px;
+    }
+    wave-conversation .roster-remove {
+      margin-left: 3px;
+      border: none;
+      background: none;
+      color: #3949ab;
+      opacity: 0.5;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0 3px;
+      border-radius: 8px;
+    }
+    wave-conversation .roster-remove:hover {
+      opacity: 1;
+      background: rgba(57, 73, 171, 0.14);
+    }
+    wave-conversation .roster-remove:focus-visible {
+      opacity: 1;
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
     }
     wave-conversation .add-participant-form {
       display: inline-flex;

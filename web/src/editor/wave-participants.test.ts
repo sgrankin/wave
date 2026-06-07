@@ -29,8 +29,10 @@ import { participantChip } from "./participant.ts";
 
 function fakeController(participants: string[] = []): ConvController & {
   addCalls: string[];
+  removeCalls: string[];
 } {
   const addCalls: string[] = [];
+  const removeCalls: string[] = [];
   return {
     user: "creator@example.com",
     blipContent(_blipId: string): DocOp {
@@ -49,10 +51,14 @@ function fakeController(participants: string[] = []): ConvController & {
       }
       addCalls.push(addr.toLowerCase());
     },
+    removeParticipant(addr: string): void {
+      removeCalls.push(addr);
+    },
     attachImage(_blipId: string, _file: File, _offset: number): void {
       // no-op in participant-roster tests
     },
     addCalls,
+    removeCalls,
   };
 }
 

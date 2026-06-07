@@ -50,6 +50,8 @@ export interface ConvController {
   participants(): Participant[];
   // Submit an addParticipant op for addr. Throws if addr is not a valid participant address.
   addParticipant(addr: string): void;
+  // Submit a removeParticipant op for addr (removing yourself = leaving the wave).
+  removeParticipant(addr: string): void;
   // Upload file as an attachment and insert an inline <image> referencing it into
   // blipId at the given doc offset (a line boundary). Best-effort (no-op on failure).
   attachImage(blipId: string, file: File, offset: number): void;
@@ -80,6 +82,15 @@ export function blipContentOp(user: Participant, blipId: string, contentOp: DocO
 export function addParticipantOp(user: Participant, p: Participant): Operation {
   return {
     kind: "addParticipant",
+    ctx: { creator: user, timestamp: Date.now(), versionIncrement: 1, hashedVersion: null },
+    participant: p,
+  };
+}
+
+// removeParticipantOp builds a removeParticipant wavelet operation authored by user.
+export function removeParticipantOp(user: Participant, p: Participant): Operation {
+  return {
+    kind: "removeParticipant",
     ctx: { creator: user, timestamp: Date.now(), versionIncrement: 1, hashedVersion: null },
     participant: p,
   };

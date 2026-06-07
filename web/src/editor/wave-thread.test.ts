@@ -70,6 +70,9 @@ function fakeController(contents?: Map<string, DocOp>): ConvController & {
     addParticipant(_addr: string): void {
       // no-op in thread/blip tests
     },
+    removeParticipant(_addr: string): void {
+      // no-op in thread/blip tests
+    },
     attachImage(_blipId: string, _file: File, _offset: number): void {
       // no-op in thread/blip tests
     },

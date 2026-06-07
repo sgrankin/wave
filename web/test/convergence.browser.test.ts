@@ -87,6 +87,45 @@ test("a threaded reply converges to a fresh client", async () => {
   }
 });
 
+// Removing a participant via the roster 'x' takes them off the wave (the op already
+// round-trips; this guards the new UI). The remove is confirm()-gated, so accept the
+// dialog.
+test("removing a participant updates the roster", async () => {
+  const wave = "w+btest-removep";
+  const alice = await client("alice@example.com", wave);
+  try {
+    alice.on("dialog", (d) => void d.accept());
+    await alice.locator(".add-participant-input").fill("bob@example.com");
+    await alice.locator(".add-participant-btn").click();
+    // bob's chip appears.
+    await alice.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll(".roster-chip .wave-participant-name")).some((e) =>
+          (e.textContent ?? "").includes("bob@example.com"),
+        ),
+      undefined,
+      { timeout: 10_000 },
+    );
+    // Click the 'x' on bob's chip.
+    await alice.evaluate(() => {
+      const chips = Array.from(document.querySelectorAll(".roster-chip"));
+      const bob = chips.find((c) => (c.textContent ?? "").includes("bob@example.com"));
+      bob?.querySelector<HTMLButtonElement>(".roster-remove")?.click();
+    });
+    // bob's chip disappears.
+    await alice.waitForFunction(
+      () =>
+        !Array.from(document.querySelectorAll(".roster-chip .wave-participant-name")).some((e) =>
+          (e.textContent ?? "").includes("bob@example.com"),
+        ),
+      undefined,
+      { timeout: 10_000 },
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
 // Presence: a second client on the same wave sees the first as present, and sees a
 // "typing" indicator while they type — over the transient /presence channel,
 // independent of the OT delta socket.
