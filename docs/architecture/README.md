@@ -13,6 +13,11 @@ modern, single-machine Go server.
 3. [03-delta-channel-protocol.md](03-delta-channel-protocol.md) — the live
    client↔server delta-channel contract (open/resync, submit/ack, live stream)
    that client-side concurrency control builds on.
+4. [04-auth-model.md](04-auth-model.md) — the authentication & identity model:
+   how a request becomes a verified participant across many auth methods (header/
+   tsnet/OIDC/passkey/…), the credential↔address separation, address-minting
+   authority, and wavelet access control. Deepens doc 01 §Authentication; the first
+   slice is work item #10.
 
 Both were drafted from the specs, then put through an adversarial panel review
 (plan soundness, Go architecture, spec fidelity, simplicity, completeness) with
