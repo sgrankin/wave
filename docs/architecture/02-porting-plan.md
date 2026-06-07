@@ -403,6 +403,34 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   (minor):** @-mention display-name tooltips — left out deliberately so the
   caret-rune-mapped blip editor's visible text stays literal (the cited invariant);
   and uploaded-image avatars (initials avatars need no upload/serve infra).
+- **Signature features — DONE 2026-06-07** (`#18`; design doc
+  [06-agent-channel-and-playback](06-agent-channel-and-playback.md)). Three pieces:
+  **Playback** — `WaveletContainer.StateAt(version)` reconstructs a past delta-boundary
+  state by replaying the log onto a fresh wavelet (independent of live state,
+  hash-verified per step; `server.ErrNoVersion` sentinel distinguishes a bad version
+  from a storage fault) + `DeltaHeaders()` timeline; `internal/playbackapi`
+  (`/api/playback/deltas`, `/api/playback/state`, membership-gated, renders to plain
+  text so no DocOp wire codec); a read-only `<wave-playback>` scrubber toggled by an
+  Edit/History switch. **Agent channel** (LLM agents as participants over the OT
+  client) — `internal/agent`: a semantic event layer (`Extract` ops→events:
+  BlipAdded/Edited, Participant±, Mention), an intent translator (`Translate`
+  intents→ops via conv builders), an in-process `LocalClient` (subscribe + `SubmitFrom`
+  with self-exclude = loop-safe self-suppression, + a defense-in-depth submit rate
+  limiter), a `Runtime` loop + `EchoHarness` reference agent, and a `Gateway`
+  bridge (wave.opened snapshot + events out / newline-JSON intents in over any io);
+  `internal/agentgw` exposes it over WebSocket (`/agent/socket`, bearer-token auth via
+  `StrictMembershipChecker` — no open-or-create for agents — wired by `-agents`).
+  **Gadgets:** dropped (dead OpenSocial spec; `<gadget>` treated as opaque); the legacy
+  robots JSON-RPC/OAuth API is superseded by the agent channel, not ported. Validated:
+  Go race tests at every layer (StateAt boundaries, event/intent units, the echo loop
+  proving mention→reply + self-suppression, the gateway over pipes, a real
+  coder/websocket harness end-to-end) + a Playwright playback e2e; then an adversarial
+  review (4 dims → verify, 23 confirmed/0 refuted, no critical) whose findings were
+  fixed (open-or-create authz hole, stale event version, snapshot double-report,
+  404-vs-500, rate limit + corrected loop-safety doc, mention word-boundary,
+  header-only token). Deferred (see doc §A.9): stdio gateway transport, hashed
+  per-account tokens, container-cache eviction, agent add-participant allowlist,
+  mid-session membership revocation, wire `seq`.
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/

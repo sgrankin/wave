@@ -203,6 +203,47 @@ user can redirect when they return.
    `blip.edited`. *Open:* whether to emit presence/typing (deferred — Batch-deferred
    `#20`) or annotation-level events (deferred).
 
+### A.9 Status — what shipped (2026-06-07)
+
+The agent channel is **built and externally usable**, end-to-end tested (event
+extraction, intent translation, in-process echo loop, gateway-over-pipes, and a real
+WebSocket harness), then adversarially reviewed (4 dimensions → skeptic-verify: 23
+confirmed, 0 refuted, no critical) and hardened. The §A.8 decisions resolved as:
+
+1. **Transport for v1:** the agent runs **in-process** (`agent.LocalClient` over the
+   live container, raw deltas via the container subscription, self-suppression via
+   `SubmitFrom(exclude=ownSub)`). The external harness drives it over the gateway —
+   so we got the in-process path *and* external reachability in one shape, without an
+   OptimisticClient delta-hook.
+2. **Gateway wire transport:** **WebSocket** (`internal/agentgw`, `/agent/socket`)
+   shipped; the gateway core is transport-agnostic (`io.Reader/Writer`) so **stdio**
+   is a trivial add when a spawned-child harness is wanted.
+3. **Token storage:** v1 uses a **config token→agent map** (`agentgw.StaticAuth`, the
+   `-agents` flag) rather than a hashed `Token` on `RobotAccount`. Simpler for a
+   single machine; the hashed-on-account store is a clean later swap (the `Auth`
+   interface already abstracts it). Tokens are header-only bearer secrets — serve over
+   TLS.
+4. **Event taxonomy:** the six events shipped (no debounce yet — `blip.edited` fires
+   per applied delta; coalescing is a later refinement). `wave.opened` carries the
+   connect-time snapshot.
+
+**Loop-safety, as built:** self-suppression (an agent never sees its own writes) plus
+a defense-in-depth **submit rate limiter** on `LocalClient`. The runtime does **not**
+prevent higher-level loops (two agents mutually reacting); that is the harness's job
+(the `Harness` doc says so). The §A.6 "drop other agents' events" rule is **not**
+implemented in the runtime (it needs account-kind lookup) — left to the harness.
+
+**Deferred / known limitations** (most overlap Batch 7 operability): an unbounded
+container cache — `StrictMembershipChecker` denies non-members but still instantiates
+an empty container per looked-up name (bound/evict in Batch 7); `add.participant` by
+an agent is unrestricted (no per-agent allowlist) — acceptable while agents are
+operator-configured/trusted; membership is checked once at connect, not re-checked
+mid-session (matches the transport's once-at-Open model; ties into the
+RemoveParticipant revocation work in doc 04 §8); the wire `seq` field from §A.5 is not
+yet emitted (gap-detection deferred); blip text in events is read live (may be newer
+than the event's version under concurrent edits — fine for a reactive harness, since
+the mention *decision* is delta-accurate).
+
 ---
 
 ## Part B — Playback (history scrubber)
