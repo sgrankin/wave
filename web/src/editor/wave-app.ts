@@ -11,7 +11,7 @@ import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 
-import { fetchInbox, searchWaves } from "../wave/api.ts";
+import { fetchInbox, markRead, searchWaves } from "../wave/api.ts";
 import type { WaveDigest } from "../wave/api.ts";
 import { domainOf, newConversationWave } from "../wave/waveid.ts";
 import type { OptimisticClient } from "../wave/transport.ts";
@@ -20,6 +20,10 @@ import type { WaveConversation } from "./wave-conversation.ts";
 import "./wave-list.ts";
 
 const SEARCH_DEBOUNCE_MS = 200;
+// Poll the wave list so changes by others (new waves you were added to, edits that
+// (re)mark a wave unread) appear without a manual reload. A modest interval is fine
+// at single-machine scale; a server push channel could replace it later.
+const LIST_POLL_MS = 5000;
 
 export class WaveApp extends LitElement {
   static override properties = {
@@ -37,6 +41,11 @@ export class WaveApp extends LitElement {
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  // The (wave, version) last sent to /api/read, to suppress a redundant POST per
+  // delta while a wave is open (mark only when the read version advances).
+  private markedWave = "";
+  private markedVersion = 0;
   // Monotonic id for list fetches; a response is applied only if it is still the
   // latest request (drops out-of-order inbox/search responses).
   private listSeq = 0;
@@ -57,6 +66,7 @@ export class WaveApp extends LitElement {
     this.activeWave = waveFromURL();
     window.addEventListener("popstate", this.onPopState);
     void this.loadInbox();
+    this.pollTimer = setInterval(() => this.refreshList(), LIST_POLL_MS);
   }
 
   override disconnectedCallback(): void {
@@ -64,6 +74,7 @@ export class WaveApp extends LitElement {
     window.removeEventListener("popstate", this.onPopState);
     if (this.searchTimer !== null) clearTimeout(this.searchTimer);
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+    if (this.pollTimer !== null) clearInterval(this.pollTimer);
   }
 
   /** The active conversation's OT client, or null. For debug tooling. */
@@ -134,8 +145,26 @@ export class WaveApp extends LitElement {
   };
 
   // handleConvChange fires when the active conversation's replica changes (e.g.
-  // after seeding or an edit); refresh the list so titles/order stay current.
+  // after seeding or an edit). Viewing a wave marks it read through the current
+  // server version, then the list refreshes so the unread indicator + order stay
+  // current. The wave id is read from the conversation element itself (not
+  // this.activeWave) and matched against the active wave, so a late onChange from
+  // an outgoing wave during a switch cannot mark the wrong wave read. A redundant
+  // POST per delta is suppressed (mark only when the version advances).
   private handleConvChange = (): void => {
+    const conv = this.querySelector<WaveConversation>("wave-conversation");
+    if (conv !== null && conv.wave === this.activeWave) {
+      const client = conv.getClient();
+      if (client !== null) {
+        const v = client.version().version;
+        if (this.activeWave !== this.markedWave || v > this.markedVersion) {
+          this.markedWave = this.activeWave;
+          this.markedVersion = v;
+          void markRead(this.activeWave, v).then(() => this.refreshList());
+          return;
+        }
+      }
+    }
     this.refreshList();
   };
 

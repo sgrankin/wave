@@ -127,3 +127,48 @@ test("navigating between two waves switches the conversation", async () => {
     { timeout: 10_000 },
   );
 });
+
+test("a wave is unread for a participant until they open it", async () => {
+  const alice = await openApp("alice@example.com");
+
+  // Alice creates a wave with content and invites bob.
+  await alice.locator(".wl-new").click();
+  await alice.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  const blip = alice.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("Shared agenda", { delay: 5 });
+  await alice.locator(".add-participant-input").fill("bob@example.com");
+  await alice.locator(".add-participant-btn").click();
+  // Confirm the invite applied locally (so it has been submitted to the server).
+  await alice.waitForFunction(
+    () => Array.from(document.querySelectorAll(".roster-chip")).some((e) => (e.textContent ?? "").includes("bob@example.com")),
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Bob opens the app: the shared wave appears in his inbox, marked unread (the
+  // list polls, so it shows up without a manual reload).
+  const bob = await openApp("bob@example.com");
+  await bob.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll(".wl-item")).some(
+        (el) => (el.textContent ?? "").includes("Shared agenda") && el.classList.contains("unread"),
+      ),
+    undefined,
+    { timeout: 15_000 },
+  );
+
+  // Bob opens it → it becomes read (the unread marker clears).
+  await bob.locator(".wl-item").filter({ hasText: "Shared agenda" }).first().click();
+  await bob.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  await bob.waitForFunction(
+    () => {
+      const it = Array.from(document.querySelectorAll(".wl-item")).find((el) =>
+        (el.textContent ?? "").includes("Shared agenda"),
+      );
+      return it !== undefined && !it.classList.contains("unread");
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+});

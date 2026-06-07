@@ -69,12 +69,13 @@ export class WaveList extends LitElement {
   }
 
   private renderItem(w: WaveDigest): TemplateResult {
-    const cls = "wl-item" + (w.wave === this.selected ? " selected" : "");
+    const cls =
+      "wl-item" + (w.wave === this.selected ? " selected" : "") + (w.unread ? " unread" : "");
     const title = w.title.trim() !== "" ? w.title : "(untitled wave)";
     const others = w.participants.join(", ");
     return html`
       <div class=${cls} @click=${() => this.onSelect(w.wave)} title=${w.wave}>
-        <div class="wl-title">${title}</div>
+        <div class="wl-title">${w.unread ? html`<span class="wl-dot"></span>` : html``}${title}</div>
         ${w.snippet.trim() !== "" && w.snippet !== title
           ? html`<div class="wl-snippet">${w.snippet}</div>`
           : html``}
@@ -136,11 +137,24 @@ const STYLES = html`
       padding-left: 9px;
     }
     wave-list .wl-title {
-      font: 600 13px system-ui, sans-serif;
-      color: #222;
+      font: 400 13px system-ui, sans-serif;
+      color: #444;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    wave-list .wl-item.unread .wl-title {
+      font-weight: 700;
+      color: #111;
+    }
+    wave-list .wl-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #4060c0;
+      margin-right: 6px;
+      vertical-align: middle;
     }
     wave-list .wl-snippet {
       font: 12px system-ui, sans-serif;

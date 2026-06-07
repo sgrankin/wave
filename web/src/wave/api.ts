@@ -11,6 +11,7 @@ export interface WaveDigest {
   participants: string[];
   version: number;
   lastModifiedTime: number;
+  unread: boolean; // version > the signed-in participant's read version
 }
 
 async function fetchWaves(path: string): Promise<WaveDigest[]> {
@@ -28,4 +29,12 @@ export function fetchInbox(): Promise<WaveDigest[]> {
 /** Waves matching query (Wave operators: with:, creator:, orderby:modified, free text). */
 export function searchWaves(query: string): Promise<WaveDigest[]> {
   return fetchWaves(`/api/search?q=${encodeURIComponent(query)}`);
+}
+
+/** Mark a wave read through the given version (clears its unread state). Best-effort. */
+export async function markRead(wave: string, version: number): Promise<void> {
+  await fetch(`/api/read?wave=${encodeURIComponent(wave)}&version=${version}`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
 }
