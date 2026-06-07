@@ -196,6 +196,17 @@ func (c *WaveletContainer) HasParticipant(p id.ParticipantID) (exists, created b
 	return c.wavelet.HasParticipant(p), true
 }
 
+// Read runs fn under the container lock with the live wavelet (nil if no delta
+// has been applied yet), for read-only inspection that is safe concurrent with
+// Submit. fn must not retain the *wavelet.Data beyond the call or mutate it. It
+// is the lock-safe alternative to Wavelet() for readers (e.g. inbox/search digest
+// computation) that run while submits may be in flight.
+func (c *WaveletContainer) Read(fn func(*wavelet.Data)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fn(c.wavelet)
+}
+
 // Wavelet returns the live wavelet state for read-only inspection, or nil if no
 // delta has been applied yet.
 //

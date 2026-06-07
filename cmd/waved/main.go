@@ -30,6 +30,7 @@ import (
 	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/id"
+	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
@@ -126,8 +127,12 @@ func run(ctx context.Context, cfg config) error {
 		opts = append(opts, server.WithSnapshots(store, cfg.snapshotEvery))
 		logger.Info("snapshots enabled", "every", cfg.snapshotEvery)
 	}
+	// The read index backs the browser inbox/search API; keep a reference so the
+	// query endpoints can read it (nil disables both the maintenance and the API).
+	var idx *search.Index
 	if cfg.index {
-		opts = append(opts, server.WithIndexer(search.New(store, logger)))
+		idx = search.New(store, logger)
+		opts = append(opts, server.WithIndexer(idx))
 		logger.Info("index maintenance enabled")
 	}
 	wm := server.NewWaveMap(store, clock.System{}, opts...)
@@ -164,7 +169,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, logger)
 
-	wsSrv, err := startWebSocket(cfg, srv, authSvc, logger)
+	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -328,7 +333,7 @@ func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
 // authenticated participant is bound to the request (identify reads it from the
 // context). The static web root is intentionally NOT authenticated — the app
 // shell must load so its JS can call /whoami and redirect to /login when needed.
-func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, logger *slog.Logger) (*http.Server, error) {
+func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
@@ -347,6 +352,12 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, lo
 		mux.Handle("/login", authSvc.DevLoginHandler(cfg.authDomain))
 	case "proxy":
 		mux.Handle("/login", authSvc.LoginHandler())
+	}
+	// The read-side wave query API (inbox/search) backs the app shell's wave list;
+	// it is available only when the index is maintained (-index).
+	if idx != nil {
+		qh := queryapi.New(idx, queryapi.NewWaveMapReader(srv.WaveMap), identify, logger)
+		mux.Handle("/api/", authSvc.Middleware(qh.Routes()))
 	}
 	if cfg.webRoot != "" {
 		// Serve the browser client from the same origin as the socket (so the page,
