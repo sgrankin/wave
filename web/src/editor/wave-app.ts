@@ -259,18 +259,20 @@ export class WaveApp extends LitElement {
   // waves recreates them cleanly.
   private renderActiveWave(): TemplateResult {
     const toolbar = html`
-      <div class="app-modebar">
+      <div class="app-modebar" role="group" aria-label="View mode">
         <button
           class=${"mode-btn" + (this.playback ? "" : " active")}
+          aria-pressed=${this.playback ? "false" : "true"}
           @click=${() => (this.playback = false)}
         >
-          ✎ Edit
+          <span aria-hidden="true">✎</span> Edit
         </button>
         <button
           class=${"mode-btn" + (this.playback ? " active" : "")}
+          aria-pressed=${this.playback ? "true" : "false"}
           @click=${() => (this.playback = true)}
         >
-          🕘 History
+          <span aria-hidden="true">🕘</span> History
         </button>
       </div>
     `;
@@ -343,11 +345,23 @@ const STYLES = html`
       color: #4060c0;
       background: #e8eeff;
     }
-    wave-app .mode-btn:hover {
+    /* :not(.active) so hovering the selected mode keeps its brand tint instead of
+       reverting to grey (which read as deselected). */
+    wave-app .mode-btn:not(.active):hover {
       background: #f0f0f0;
     }
+    wave-app .mode-btn.active:hover {
+      background: #dde6ff;
+    }
+    wave-app .mode-btn:active {
+      background: #dde6ff;
+    }
+    wave-app .mode-btn:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 2px;
+    }
     wave-app .app-placeholder {
-      color: #999;
+      color: #6a6a6a;
       font: 14px system-ui, sans-serif;
       margin-top: 40px;
       text-align: center;

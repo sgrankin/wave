@@ -58,6 +58,15 @@ export class WaveList extends LitElement {
     this.onSearch(this.query);
   };
 
+  // onItemKey makes a wave row activatable by keyboard (it is a role="button"):
+  // Enter or Space opens it, matching a click.
+  private onItemKey(e: KeyboardEvent, wave: string): void {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      this.onSelect(wave);
+    }
+  }
+
   protected override render(): TemplateResult {
     return html`
       ${STYLES}
@@ -66,6 +75,7 @@ export class WaveList extends LitElement {
         <input
           class="wl-search"
           type="search"
+          aria-label="Search waves"
           placeholder="Search waves…"
           .value=${this.query}
           @input=${this.onInput}
@@ -92,12 +102,21 @@ export class WaveList extends LitElement {
     const title = w.title.trim() !== "" ? w.title : "(untitled wave)";
     const others = w.participants.map((a) => displayNameFor(a, profiles.get(a))).join(", ");
     return html`
-      <div class=${cls} @click=${() => this.onSelect(w.wave)} title=${w.wave}>
-        <div class="wl-title">${w.unread ? html`<span class="wl-dot"></span>` : html``}${title}</div>
+      <div
+        class=${cls}
+        role="button"
+        tabindex="0"
+        aria-label=${title + (w.unread ? " (unread)" : "")}
+        aria-current=${w.wave === this.selected ? "true" : "false"}
+        title=${title}
+        @click=${() => this.onSelect(w.wave)}
+        @keydown=${(e: KeyboardEvent) => this.onItemKey(e, w.wave)}
+      >
+        <div class="wl-title">${w.unread ? html`<span class="wl-dot" aria-hidden="true"></span>` : html``}${title}</div>
         ${w.snippet.trim() !== "" && w.snippet !== title
           ? html`<div class="wl-snippet">${w.snippet}</div>`
           : html``}
-        <div class="wl-meta">${others}</div>
+        ${others !== "" ? html`<div class="wl-meta">${others}</div>` : html``}
       </div>
     `;
   }
@@ -126,11 +145,26 @@ const STYLES = html`
     wave-list .wl-new:hover {
       background: #e8eeff;
     }
+    wave-list .wl-new:active {
+      background: #d9e3ff;
+    }
+    wave-list .wl-new:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 2px;
+    }
     wave-list .wl-search {
       font: 13px system-ui, sans-serif;
       padding: 6px 8px;
       border: 1px solid #ccc;
       border-radius: 6px;
+    }
+    wave-list .wl-search:hover {
+      border-color: #b0b0b0;
+    }
+    wave-list .wl-search:focus-visible {
+      outline: none;
+      border-color: #4060c0;
+      box-shadow: 0 0 0 3px rgba(64, 96, 192, 0.18);
     }
     wave-list .wl-items {
       overflow-y: auto;
@@ -138,15 +172,21 @@ const STYLES = html`
     }
     wave-list .wl-empty {
       padding: 16px 12px;
-      color: #999;
+      color: #666;
       font: 13px system-ui, sans-serif;
     }
     wave-list .wl-item {
       padding: 10px 12px;
       border-bottom: 1px solid #f0f0f0;
       cursor: pointer;
+      outline: none; /* :focus-visible below supplies the ring */
     }
     wave-list .wl-item:hover {
+      background: #f7f9ff;
+    }
+    wave-list .wl-item:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: -2px;
       background: #f7f9ff;
     }
     wave-list .wl-item.selected {
@@ -184,7 +224,7 @@ const STYLES = html`
     }
     wave-list .wl-meta {
       font: 11px system-ui, sans-serif;
-      color: #999;
+      color: #5a5a5a;
       margin-top: 3px;
       white-space: nowrap;
       overflow: hidden;

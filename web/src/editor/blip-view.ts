@@ -501,6 +501,7 @@ export class BlipView extends LitElement {
           min-width: 26px;
         }
         .blip-toolbar button:hover { background: #e8e8e8; }
+        .blip-toolbar button:focus-visible { outline: 2px solid #4060c0; outline-offset: 1px; }
         .blip-toolbar button[aria-pressed="true"] {
           background: #c8d8f0;
           border-color: #7aa;
@@ -523,6 +524,9 @@ export class BlipView extends LitElement {
         class="blip-doc"
         contenteditable="true"
         spellcheck="false"
+        role="textbox"
+        aria-multiline="true"
+        aria-label="Blip content"
         @beforeinput=${this.onBeforeInput}
         @paste=${this.onPaste}
       >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>

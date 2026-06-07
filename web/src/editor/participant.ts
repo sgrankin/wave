@@ -47,7 +47,7 @@ export function participantChip(address: string, profile?: Profile, extraClass =
     style="display:inline-flex;align-items:center;gap:5px;max-width:100%;"
     >${avatar(address, profile)}<span
       class="wave-participant-name"
-      style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+      style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;"
       >${displayNameFor(address, profile)}</span
     ></span
   >`;

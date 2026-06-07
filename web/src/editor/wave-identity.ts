@@ -96,6 +96,7 @@ export class WaveIdentity extends LitElement {
             class="identity-input"
             type="text"
             value=${profile?.displayName ?? ""}
+            aria-label="Your display name"
             placeholder="Your name"
             autocomplete="off"
             autofocus
@@ -158,6 +159,14 @@ const STYLES = html`
     wave-identity .identity-cancel:hover {
       text-decoration: underline;
     }
+    wave-identity .identity-edit:focus-visible,
+    wave-identity .identity-save:focus-visible,
+    wave-identity .identity-cancel:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
+      border-radius: 4px;
+      text-decoration: underline;
+    }
     wave-identity .wave-identity.editing {
       display: flex;
       align-items: center;
@@ -168,8 +177,13 @@ const STYLES = html`
       flex: 1;
       font: 13px system-ui, sans-serif;
       border: 1px solid #ccc;
-      border-radius: 4px;
+      border-radius: 6px;
       padding: 3px 6px;
+    }
+    wave-identity .identity-input:focus-visible {
+      outline: none;
+      border-color: #4060c0;
+      box-shadow: 0 0 0 2px rgba(64, 96, 192, 0.18);
     }
     wave-identity .identity-error {
       color: #c62828;

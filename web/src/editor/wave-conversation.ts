@@ -272,7 +272,7 @@ export class WaveConversation extends LitElement {
 
     return html`
       ${STYLES}
-      <div class="conv-bar">${this.status}</div>
+      <div class=${"conv-bar" + (/^(error|bad)/.test(this.status) ? " error" : "")}>${this.status}</div>
       ${roster}
       ${this._renderPresence()}
       ${body}
@@ -342,6 +342,7 @@ export class WaveConversation extends LitElement {
             class="add-participant-input"
             type="text"
             list="roster-contacts"
+            aria-label="Add participant by address"
             placeholder="user@domain"
             autocomplete="off"
           />
@@ -377,18 +378,25 @@ const STYLES = html`
       font: 12px system-ui, sans-serif;
       color: #555;
       margin-bottom: 10px;
+      overflow-wrap: break-word;
     }
-    wave-conversation .conv-empty,
+    wave-conversation .conv-bar.error {
+      color: #c62828;
+    }
+    wave-conversation .conv-empty {
+      font: 13px system-ui, sans-serif;
+      color: #6a6a6a;
+    }
     wave-conversation .conv-error {
       font: 13px system-ui, sans-serif;
-      color: #888;
+      color: #c62828;
     }
     wave-conversation .conv-presence {
       display: flex;
       align-items: center;
       gap: 4px;
       min-height: 20px;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
       font: 12px system-ui, sans-serif;
       color: #4060c0;
     }
@@ -400,8 +408,6 @@ const STYLES = html`
       opacity: 1;
     }
     wave-conversation .presence-typing {
-      margin-left: 4px;
-      color: #4060c0;
       font-style: italic;
     }
     wave-conversation .wave-thread.reply {
@@ -444,6 +450,18 @@ const STYLES = html`
     wave-conversation .continue-btn:hover {
       text-decoration: underline;
     }
+    /* Borderless link-style buttons get a deliberate ring so keyboard focus is
+       visible (the faint UA outline barely shows on a button with no border). */
+    wave-conversation .reply-btn:focus-visible,
+    wave-conversation .reply-inline-btn:focus-visible,
+    wave-conversation .attach-btn:focus-visible,
+    wave-conversation .continue-btn:focus-visible,
+    wave-conversation .add-participant-btn:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
+      border-radius: 4px;
+      text-decoration: underline;
+    }
     wave-conversation .thread-actions {
       margin: 4px 0 8px;
     }
@@ -478,9 +496,14 @@ const STYLES = html`
     wave-conversation .add-participant-input {
       font: 11px system-ui, sans-serif;
       border: 1px solid #ccc;
-      border-radius: 4px;
-      padding: 1px 6px;
+      border-radius: 6px;
+      padding: 2px 6px;
       width: 140px;
+    }
+    wave-conversation .add-participant-input:focus-visible {
+      outline: none;
+      border-color: #4060c0;
+      box-shadow: 0 0 0 2px rgba(64, 96, 192, 0.18);
     }
     wave-conversation .add-participant-input.add-participant-error {
       border-color: #c62828;
@@ -491,12 +514,15 @@ const STYLES = html`
       color: #4060c0;
       background: none;
       border: 1px solid #4060c0;
-      border-radius: 4px;
+      border-radius: 6px;
       padding: 1px 6px;
       cursor: pointer;
     }
     wave-conversation .add-participant-btn:hover {
       background: #e8eeff;
+    }
+    wave-conversation .add-participant-btn:active {
+      background: #d9e3ff;
     }
   </style>
 `;

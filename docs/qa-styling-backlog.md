@@ -1,9 +1,10 @@
 # QA & Styling Backlog
 
-Status: **in progress** (2026-06-07). Captured from a user demo session, now being
-worked as the QA & styling pass. The functional stack is complete and tested (see
-[02-porting-plan](architecture/02-porting-plan.md)); these are correctness/polish
-defects found by eye, not regressions in the OT/convergence core.
+Status: **complete** (2026-06-07). Captured from a user demo session and worked as
+the QA & styling pass; all three demo defects (B1/B2/B3) plus the cross-cutting
+polish pass are done and browser-verified. The functional stack is complete and
+tested (see [02-porting-plan](architecture/02-porting-plan.md)); these were
+correctness/polish defects found by eye, not regressions in the OT/convergence core.
 
 Progress:
 - **B3 (caret) — DONE.** Root-caused and fixed; see the "blip-view caret mapping"
@@ -16,6 +17,15 @@ Progress:
   (index.html) and the editor's custom elements were `display:inline` (shrink-wrap);
   fixed both, added long-word/URL wrapping, and a narrow-width pane-stacking
   breakpoint. Guard: `web/test/layout.browser.test.ts`.
+- **Cross-cutting polish pass — DONE.** A 5-dimension static audit (a11y, contrast,
+  focus/hover, empty/edge, visual-fit) surfaced 37 findings; applied all 12 high +
+  14 med + the clear lows. Highlights: wave-list rows made keyboard-operable
+  (role=button, Tab/Enter/Space, focus ring); `:focus-visible` rings on every
+  interactive control; greyed text + avatar colors darkened to clear WCAG AA;
+  Edit/History hover no longer overrides the active state; roster/playback flex
+  overflow (min-width:0) so long names ellipsize; slider gets `accent-color` + aria;
+  connection-error states reddened; favicon 404 removed. Console is clean (0
+  errors/warnings) across empty / editor / history flows. Modern look preserved.
 
 Verify with two browser clients against a real `waved` (`make release && ./waved
 -ws 127.0.0.1:8140 -auth dev`), or extend `web/test/*.browser.test.ts`.

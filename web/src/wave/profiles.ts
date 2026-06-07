@@ -47,7 +47,9 @@ export function initialsFor(address: string, profile?: Profile): string {
 export function colorFor(address: string): string {
   let h = 0;
   for (let i = 0; i < address.length; i++) h = (Math.imul(h, 31) + address.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360}, 52%, 42%)`;
+  // Lightness 30%: the lightest value where white avatar text clears WCAG AA (4.5:1)
+  // for every hue (42% failed for ~half the hue wheel — yellow/green/cyan especially).
+  return `hsl(${h % 360}, 52%, 30%)`;
 }
 
 const PROFILES_CHANGED = "change";

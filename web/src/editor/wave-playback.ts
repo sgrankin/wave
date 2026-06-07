@@ -118,6 +118,8 @@ export class WavePlayback extends LitElement {
           min="0"
           max=${this.deltas.length - 1}
           .value=${String(this.idx)}
+          aria-label="History version"
+          aria-valuetext=${`version ${d.version}, ${this.idx + 1} of ${this.deltas.length}`}
           @input=${this.onScrub}
         />
         <span class="pb-pos">v${d.version} · ${this.idx + 1}/${this.deltas.length}</span>
@@ -174,18 +176,27 @@ const STYLES = html`
     wave-playback .pb-slider {
       flex: 1;
       max-width: 360px;
+      accent-color: #4060c0;
+    }
+    wave-playback .pb-slider:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 4px;
+      border-radius: 4px;
     }
     wave-playback .pb-pos {
       font: 12px ui-monospace, monospace;
       color: #555;
       white-space: nowrap;
+      margin-left: 4px;
     }
     wave-playback .pb-meta {
       font: 12px system-ui, sans-serif;
-      color: #888;
+      color: #6a6a6a;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      min-width: 0;
+      flex: 1 1 auto;
     }
     wave-playback .pb-roster {
       display: flex;
@@ -201,6 +212,7 @@ const STYLES = html`
       border-radius: 12px;
       padding: 2px 8px 2px 3px;
       font-size: 11px;
+      max-width: 200px;
     }
     wave-playback .pb-blip {
       border: 1px solid #ddd;
@@ -219,7 +231,7 @@ const STYLES = html`
       color: #222;
     }
     wave-playback .pb-status {
-      color: #999;
+      color: #6a6a6a;
       font: 13px system-ui, sans-serif;
       padding: 12px 0;
     }
