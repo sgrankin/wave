@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Wave</title>
     <meta name="theme-color" content="#4060c0" />
-    <!-- PWA: installable app shell. Icon + manifest + (iOS) home-screen hints. -->
+    <!-- PWA: installable app shell. SVG favicon for modern browsers, PNG fallback so
+         Chrome stops warning; PNG apple-touch-icon for the iOS home screen. -->
     <link rel="icon" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Wave" />
