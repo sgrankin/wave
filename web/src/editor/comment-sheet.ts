@@ -15,7 +15,7 @@
 // VisualViewport API) so its reply input is never hidden behind the keyboard.
 
 import { LitElement, html } from "lit";
-import type { PropertyValues, TemplateResult } from "lit";
+import type { TemplateResult } from "lit";
 
 import type { Thread } from "../wave/conversation.ts";
 import type { ConvController } from "./controller.ts";
@@ -42,6 +42,12 @@ export class CommentSheet extends LitElement {
 
   // onClose is set by the parent to dismiss the sheet (clears the open thread).
   onClose: (() => void) | null = null;
+
+  // Whether we've already auto-focused this open. The parent re-supplies a fresh
+  // `thread` object every conversation re-render, so we must NOT key auto-focus off
+  // "thread changed" — that would re-grab focus on every keystroke while the user
+  // types a comment. The sheet remounts per open, so this instance flag focuses once.
+  private didAutoFocus = false;
 
   constructor() {
     super();
@@ -93,10 +99,13 @@ export class CommentSheet extends LitElement {
     if (e.target === e.currentTarget) this.close();
   };
 
-  protected override updated(changed: PropertyValues): void {
-    // On open of a freshly-created comment, focus the reply input so the user can type
-    // (which raises the keyboard → measureKeyboard lifts the panel above it).
-    if (changed.has("thread") && this.thread !== null && this.autoFocus) {
+  protected override updated(): void {
+    // On open of a freshly-created comment, focus the reply input ONCE so the user can
+    // type (which raises the keyboard → measureKeyboard lifts the panel above it). Gated
+    // on didAutoFocus, not "thread changed": the parent re-supplies a new thread object
+    // each re-render, so keying off the change would re-focus on every keystroke.
+    if (!this.didAutoFocus && this.autoFocus && this.thread !== null) {
+      this.didAutoFocus = true;
       const docs = this.querySelectorAll<HTMLElement>(".blip-doc");
       docs[docs.length - 1]?.focus(); // the new (empty) comment blip is last
     }
