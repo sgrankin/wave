@@ -19,6 +19,7 @@ import "./wave-conversation.ts";
 import type { WaveConversation } from "./wave-conversation.ts";
 import "./wave-list.ts";
 import "./wave-identity.ts";
+import "./wave-playback.ts";
 
 const SEARCH_DEBOUNCE_MS = 200;
 // Poll the wave list so changes by others (new waves you were added to, edits that
@@ -31,6 +32,7 @@ export class WaveApp extends LitElement {
     activeWave: { state: true },
     waves: { state: true },
     query: { state: true },
+    playback: { state: true },
   };
 
   wsUrl = "";
@@ -39,6 +41,7 @@ export class WaveApp extends LitElement {
   declare activeWave: string; // serialized WaveletName, or "" for none
   declare waves: WaveDigest[];
   declare query: string;
+  declare playback: boolean; // right pane shows the history scrubber instead of the editor
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -56,6 +59,7 @@ export class WaveApp extends LitElement {
     this.activeWave = "";
     this.waves = [];
     this.query = "";
+    this.playback = false;
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -86,6 +90,7 @@ export class WaveApp extends LitElement {
 
   private onPopState = (): void => {
     this.activeWave = waveFromURL();
+    this.playback = false; // navigation returns to the live editor
   };
 
   private async loadInbox(): Promise<void> {
@@ -135,6 +140,7 @@ export class WaveApp extends LitElement {
   private handleSelect = (wave: string): void => {
     if (wave === this.activeWave) return;
     this.activeWave = wave;
+    this.playback = false; // open a freshly-selected wave in the live editor
     history.pushState({ wave }, "", `?wave=${encodeURIComponent(wave)}`);
   };
 
@@ -187,18 +193,44 @@ export class WaveApp extends LitElement {
         <div class="app-right">
           ${this.activeWave === ""
             ? html`<div class="app-placeholder">Select a wave, or create a new one.</div>`
-            : keyed(
-                this.activeWave,
-                html`<wave-conversation
-                  .url=${this.wsUrl}
-                  .wave=${this.activeWave}
-                  .user=${this.user}
-                  .onChange=${this.handleConvChange}
-                ></wave-conversation>`,
-              )}
+            : this.renderActiveWave()}
         </div>
       </div>
     `;
+  }
+
+  // renderActiveWave shows the live editor or the read-only history scrubber for the
+  // active wave, with a toggle between them. Both are keyed on the wave so switching
+  // waves recreates them cleanly.
+  private renderActiveWave(): TemplateResult {
+    const toolbar = html`
+      <div class="app-modebar">
+        <button
+          class=${"mode-btn" + (this.playback ? "" : " active")}
+          @click=${() => (this.playback = false)}
+        >
+          ✎ Edit
+        </button>
+        <button
+          class=${"mode-btn" + (this.playback ? " active" : "")}
+          @click=${() => (this.playback = true)}
+        >
+          🕘 History
+        </button>
+      </div>
+    `;
+    const body = this.playback
+      ? keyed(this.activeWave, html`<wave-playback .wave=${this.activeWave}></wave-playback>`)
+      : keyed(
+          this.activeWave,
+          html`<wave-conversation
+            .url=${this.wsUrl}
+            .wave=${this.activeWave}
+            .user=${this.user}
+            .onChange=${this.handleConvChange}
+          ></wave-conversation>`,
+        );
+    return html`${toolbar}${body}`;
   }
 }
 
@@ -236,6 +268,28 @@ const STYLES = html`
       flex: 1;
       overflow-y: auto;
       padding: 16px 20px;
+    }
+    wave-app .app-modebar {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 12px;
+    }
+    wave-app .mode-btn {
+      font: 12px system-ui, sans-serif;
+      padding: 3px 10px;
+      border: 1px solid #ccc;
+      background: #fff;
+      color: #555;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    wave-app .mode-btn.active {
+      border-color: #4060c0;
+      color: #4060c0;
+      background: #e8eeff;
+    }
+    wave-app .mode-btn:hover {
+      background: #f0f0f0;
     }
     wave-app .app-placeholder {
       color: #999;

@@ -223,6 +223,50 @@ test("setting a display name humanizes the identity widget and roster, and persi
   );
 });
 
+test("the history scrubber renders past versions of a wave read-only", async () => {
+  const page = await openApp("gwen@example.com");
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+
+  // Build up history with several edits (each keystroke is its own delta).
+  const blip = page.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("First second", { delay: 5 });
+  await page.waitForFunction(
+    () => (document.querySelector(".blip-doc")?.textContent ?? "").includes("First second"),
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Switch to History mode: the scrubber loads the timeline and shows the latest state.
+  await page.locator(".mode-btn").filter({ hasText: "History" }).click();
+  await page.locator(".pb-slider").waitFor({ state: "attached", timeout: 10_000 });
+  await page.waitForFunction(
+    () => (document.querySelector(".pb-blip-text")?.textContent ?? "").includes("First second"),
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // There is real history to scrub (more than one delta), and the editor is gone
+  // (read-only mode).
+  const max = await page.locator(".pb-slider").getAttribute("max");
+  assert.ok(Number(max) >= 1, `expected multiple deltas, max=${max}`);
+  assert.equal(await page.locator(".blip-doc").count(), 0, "no live editor in history mode");
+
+  // Scrub to the earliest version: the rendered text changes to an earlier (shorter)
+  // state — proving the scrubber fetches and renders a different version.
+  const latest = (await page.locator(".pb-blip-text").first().textContent()) ?? "";
+  await page.locator(".pb-slider").fill("0");
+  await page.waitForFunction(
+    (full: string) => {
+      const t = document.querySelector(".pb-blip-text")?.textContent ?? "";
+      return t !== full; // an earlier version differs from the latest
+    },
+    latest,
+    { timeout: 10_000 },
+  );
+});
+
 test("an inline reply anchors a marker in the parent text and keeps it editable", async () => {
   const page = await openApp("dave@example.com");
   await page.locator(".wl-new").click();
