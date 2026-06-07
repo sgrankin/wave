@@ -13,8 +13,10 @@ import {
   appendBlipToThread,
   emptyManifest,
   initialBlipContent,
+  insertReplyAnchor,
   newBlipID,
   readManifest,
+  readReplyAnchors,
   replyToBlip,
 } from "./conversation.ts";
 
@@ -240,4 +242,56 @@ test("readManifest ignores stray non-blip children of the root thread", () => {
   const m = readManifest(manifest);
   assert.equal(m.rootThread.blips.length, 1);
   assert.equal(m.rootThread.blips[0]!.id, "b+1");
+});
+
+// --- inline reply anchors (mirror internal/conv/anchor_test.go) ---
+
+function bodyWithText(text: string): DocOp {
+  // <body><line/>{text}</body>: insert after the line marker (retain 3, then text).
+  return compose(
+    initialBlipContent(),
+    new DocOp([{ kind: "retain", count: 3 }, { kind: "characters", text }, { kind: "retain", count: 1 }]),
+  );
+}
+
+test("insert and read an inline reply anchor", () => {
+  const body = bodyWithText("hello"); // offset 5 = after "he"
+  const withAnchor = compose(body, insertReplyAnchor(body, "b+r1", 5));
+  const anchors = readReplyAnchors(withAnchor);
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0]!.threadId, "b+r1");
+  assert.equal(anchors[0]!.offset, 5);
+});
+
+test("inline reply anchor offset range is validated", () => {
+  const body = initialBlipContent();
+  const n = body.documentLength();
+  assert.throws(() => insertReplyAnchor(body, "b+r", -1));
+  assert.throws(() => insertReplyAnchor(body, "b+r", n + 1));
+  // offset == len is allowed and applies cleanly.
+  const out = compose(body, insertReplyAnchor(body, "b+r", n));
+  const anchors = readReplyAnchors(out);
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0]!.offset, n);
+});
+
+test("reply anchors are read in document order", () => {
+  const body = bodyWithText("abcdef");
+  const b1 = compose(body, insertReplyAnchor(body, "b+early", 4));
+  const b2 = compose(b1, insertReplyAnchor(b1, "b+late", b1.documentLength() - 1));
+  const anchors = readReplyAnchors(b2);
+  assert.deepEqual(
+    anchors.map((a) => a.threadId),
+    ["b+early", "b+late"],
+  );
+});
+
+test("inline replyToBlip marks the manifest thread inline", () => {
+  let manifest = compose(emptyManifest(), appendBlipToRootThread(emptyManifest(), "b+root"));
+  manifest = compose(manifest, replyToBlip(manifest, "b+root", "b+r1", true));
+  const m = readManifest(manifest);
+  const threads = m.rootThread.blips[0]!.threads;
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0]!.inline, true);
+  assert.equal(threads[0]!.id, "b+r1");
 });

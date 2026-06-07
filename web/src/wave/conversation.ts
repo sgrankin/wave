@@ -19,6 +19,7 @@ export const ManifestDocumentID = "conversation";
 const tagConversation = "conversation";
 const tagBlip = "blip";
 const tagThread = "thread";
+const tagReply = "reply"; // inline-reply anchor element placed in a blip body
 
 const attrID = "id";
 const attrInline = "inline";
@@ -190,6 +191,68 @@ export function replyToBlip(manifest: DocOp, parentBlipID: string, newBlipID: st
     { kind: "elementEnd" }, // thread
     { kind: "retain", count: n - close },
   ]);
+}
+
+// ReplyAnchor is an inline-reply anchor found in a blip body: the reply thread's
+// id and the document offset of its <reply> element (an item offset). (Port of
+// conv.ReplyAnchor.)
+export interface ReplyAnchor {
+  threadId: string;
+  offset: number;
+}
+
+// insertReplyAnchor returns the operation inserting an inline-reply anchor
+// <reply id="threadID"/> into a blip body at the given document offset (a caret
+// position). Apply it by composing onto the parent blip's content. Pair it with
+// replyToBlip(..., inline=true) on the manifest and initialBlipContent for the new
+// blip, in one wavelet delta. threadID equals the new reply blip's id. (Port of
+// conv.InsertReplyAnchor.)
+export function insertReplyAnchor(body: DocOp, threadID: string, offset: number): DocOp {
+  const n = body.documentLength();
+  if (offset < 0 || offset > n) {
+    throw new Error(`conv: reply anchor offset ${offset} out of range [0,${n}]`);
+  }
+  const comps: Component[] = [];
+  if (offset > 0) comps.push({ kind: "retain", count: offset });
+  comps.push(
+    { kind: "elementStart", type: tagReply, attributes: Attributes.of({ [attrID]: threadID }) },
+    { kind: "elementEnd" },
+  );
+  if (offset < n) comps.push({ kind: "retain", count: n - offset });
+  return new DocOp(comps);
+}
+
+// readReplyAnchors returns the inline-reply anchors (<reply id=.../>) in a blip
+// body, in document order, each with the item offset of its <reply> element. The
+// offset positions the inline thread within the parent blip's rendered text.
+// (Port of conv.ReadReplyAnchors.)
+export function readReplyAnchors(body: DocOp): ReplyAnchor[] {
+  const anchors: ReplyAnchor[] = [];
+  const seen = new Set<string>();
+  let pos = 0;
+  for (const c of body.components as readonly Component[]) {
+    switch (c.kind) {
+      case "elementStart":
+        if (c.type === tagReply) {
+          const id = c.attributes.get(attrID) ?? "";
+          if (!seen.has(id)) {
+            seen.add(id);
+            anchors.push({ threadId: id, offset: pos });
+          }
+        }
+        pos += 1;
+        break;
+      case "elementEnd":
+        pos += 1;
+        break;
+      case "characters":
+        pos += runeCount(c.text);
+        break;
+      default:
+        break; // annotation boundary is zero-width
+    }
+  }
+  return anchors;
 }
 
 // elementCloseOffset returns the document offset of the ElementEnd item that
