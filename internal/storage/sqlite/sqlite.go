@@ -91,6 +91,18 @@ func (s *Store) Checkpoint() error {
 	return nil
 }
 
+// Backup writes a consistent snapshot of the whole database to destPath using
+// SQLite's `VACUUM INTO`. It is safe to run on a live database (WAL active): the
+// snapshot is transactionally consistent, fully checkpointed, and defragmented —
+// unlike a raw file copy, which can be torn while the WAL has uncommitted frames.
+// destPath must not already exist (SQLite refuses to overwrite an existing file).
+func (s *Store) Backup(ctx context.Context, destPath string) error {
+	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", destPath); err != nil {
+		return fmt.Errorf("sqlite: backup to %q: %w", destPath, err)
+	}
+	return nil
+}
+
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
 

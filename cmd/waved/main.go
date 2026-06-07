@@ -71,6 +71,18 @@ type config struct {
 }
 
 func main() {
+	// Subcommands are dispatched before flag parsing. `waved backup [-db path] <dest>`
+	// takes a consistent online snapshot of the database (safe while the server runs).
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		if err := runBackup(os.Args[2:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintln(os.Stderr, "waved backup:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -95,6 +107,37 @@ func runMain(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return run(ctx, cfg)
+}
+
+// runBackup implements `waved backup [-db path] <dest>`: a consistent online
+// snapshot of the SQLite database (VACUUM INTO), safe to run while the server is
+// live. -db defaults to WAVED_DB then "waved.db", matching the server's config.
+func runBackup(args []string) error {
+	fs := flag.NewFlagSet("waved backup", flag.ContinueOnError)
+	defaultDB := "waved.db"
+	if v := os.Getenv("WAVED_DB"); v != "" {
+		defaultDB = v
+	}
+	dbPath := fs.String("db", defaultDB, "sqlite database path to back up")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: waved backup [-db path] <dest> (dest must not already exist)")
+	}
+	dest := fs.Arg(0)
+	store, err := sqlite.Open(*dbPath)
+	if err != nil {
+		return fmt.Errorf("open db %q: %w", *dbPath, err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := store.Backup(ctx, dest); err != nil {
+		return err
+	}
+	fmt.Printf("backed up %q -> %q\n", *dbPath, dest)
+	return nil
 }
 
 func parseFlags(args []string) (config, error) {
