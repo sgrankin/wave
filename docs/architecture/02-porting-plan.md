@@ -381,6 +381,28 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   file and inserts the element. A Playwright e2e uploads a real PNG and asserts it
   loads from the server through auth + membership. Deferred (minor): link
   previews/embeds and a manual-link toolbar (auto-linking covers the common case).
+- **Profiles & contacts — DONE 2026-06-07** (`#17`). Addresses are humanized into
+  display names + initials avatars everywhere they surface. Server: a `DisplayName`
+  field on `HumanAccount` (zero-migration — the account record is JSON-encoded in one
+  column) and a new `internal/profileapi` serving `GET /api/profiles?addr=…` (batch
+  resolve, one entry per valid address incl. unknowns so the client caches and never
+  refetches) and `POST /api/profile` (set **own** name; identity from the session,
+  never the body; trimmed, 128-rune cap, auto-provisions a human account, refuses
+  robot accounts). Mounted at the specific `/api/profile(s)` paths so they win over
+  queryapi's `/api/` subtree. Client: `wave/profiles.ts` — a `ProfileCache` that
+  coalesces lookups (components call `ensure()` per render; one batched fetch per
+  microtask; converges) and fires `"change"`; deterministic pure helpers
+  (`displayNameFor`/`initialsFor`/`colorFor`); `editor/participant.ts` avatar+chip
+  render helpers; a `<wave-identity>` widget (avatar + name + inline editor) in the
+  shell. Roster chips, the inbox meta line, and the identity widget all humanize and
+  subscribe to the cache; the add-participant box gained a contact-picker `datalist`.
+  The address stays the identity (empty name ⇒ falls back to the address). Validated:
+  `profileapi` Go tests, `profiles.ts` unit tests (cache coalescing/fallback/setOwn),
+  the roster + identity component tests, and a Playwright e2e (set name → identity +
+  roster humanize with a derived avatar → persists across reopen). **Deferred
+  (minor):** @-mention display-name tooltips — left out deliberately so the
+  caret-rune-mapped blip editor's visible text stays literal (the cited invariant);
+  and uploaded-image avatars (initials avatars need no upload/serve infra).
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
