@@ -1,8 +1,8 @@
 // <wave-conversation> — the top-level editor: it owns the OptimisticClient for
 // one wavelet, reads the conversation manifest, and renders the root thread as a
 // recursive <wave-thread>/<wave-blip> tree. It also provides the ConvController
-// the tree edits through (content edits, continue-thread, reply-to-blip), and
-// bootstraps an empty wavelet into a one-blip conversation.
+// the tree edits through (content edits, continue-thread, reply-to-blip). The
+// conversation is seeded server-side at first open (no client-side bootstrap).
 //
 // Re-render model: the manifest and every blip's content live in the client's
 // optimistic replica, not in Lit reactive state. We subscribe to the client's
@@ -19,18 +19,15 @@ import type { TemplateResult } from "lit";
 import { DocOp, WaveletName, participant } from "../wave/types.ts";
 import type { Participant } from "../wave/types.ts";
 import { OptimisticClient } from "../wave/transport.ts";
-import { compose } from "../wave/compose.ts";
 import { debugEnabled } from "../wave/debug.ts";
 import {
-  appendBlipToRootThread,
   appendBlipToThread,
-  emptyManifest,
   initialBlipContent,
   newBlipID,
   readManifest,
   replyToBlip as buildReplyOp,
 } from "../wave/conversation.ts";
-import { MANIFEST_ID, ROOT_BLIP_ID, addParticipantOp, blipContentOp } from "./controller.ts";
+import { MANIFEST_ID, addParticipantOp, blipContentOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
 import "./wave-thread.ts";
 
@@ -50,7 +47,6 @@ export class WaveConversation extends LitElement {
   private client: OptimisticClient | null = null;
   private author: Participant = "";
   private controller: ConvController | null = null;
-  private bootstrapAttempted = false;
 
   constructor() {
     super();
@@ -86,10 +82,17 @@ export class WaveConversation extends LitElement {
       this.status = `bad wavelet name: ${String(e)}`;
       return;
     }
-    this.author = participant(this.user);
-    const sep = this.url.includes("?") ? "&" : "?";
-    const url = `${this.url}${sep}user=${encodeURIComponent(this.user)}`;
-    const client = new OptimisticClient(url, name, this.author);
+    try {
+      this.author = participant(this.user); // throws on an invalid/empty address
+    } catch (e) {
+      this.status = `bad identity: ${String(e)}`;
+      return;
+    }
+    // Identity rides the session cookie on the WebSocket handshake (same origin),
+    // so the URL carries no ?user= — the server resolves the participant from the
+    // cookie. The conversation is seeded server-side at first open, so there is no
+    // client-side bootstrap (and no cold-start double-manifest race).
+    const client = new OptimisticClient(this.url, name, this.author);
     this.client = client;
     this.controller = this.makeController(client);
     if (debugEnabled()) {
@@ -98,39 +101,14 @@ export class WaveConversation extends LitElement {
     }
     client.onChange(() => {
       this.rev++;
-      this.maybeBootstrap();
     });
     try {
       await client.open();
       this.status = `connected as ${this.user}`;
       this.rev++;
-      this.maybeBootstrap();
     } catch (e) {
       this.status = `error: ${String(e)}`;
     }
-  }
-
-  // maybeBootstrap creates the conversation manifest + a root blip if the wavelet
-  // has none yet. It attempts this at most once per client. NOTE: this is not
-  // safe against two clients cold-starting the same empty wavelet simultaneously
-  // (both would create a manifest, producing a malformed two-root document). The
-  // realistic flow is sequential (one client creates, others join); a robust fix
-  // is server-side seeding of the conversation, deferred to the auth/access work.
-  private maybeBootstrap(): void {
-    if (this.bootstrapAttempted) return;
-    const client = this.client;
-    if (client === null) return;
-    if (client.blipContent(MANIFEST_ID) !== undefined) {
-      this.bootstrapAttempted = true; // already exists; nothing to do
-      return;
-    }
-    this.bootstrapAttempted = true;
-    const manifestInit = compose(emptyManifest(), appendBlipToRootThread(emptyManifest(), ROOT_BLIP_ID));
-    void client.submit([
-      addParticipantOp(this.author, this.author),
-      blipContentOp(this.author, MANIFEST_ID, manifestInit),
-      blipContentOp(this.author, ROOT_BLIP_ID, initialBlipContent()),
-    ]);
   }
 
   private makeController(client: OptimisticClient): ConvController {

@@ -3,8 +3,11 @@
 // it exercises the whole stack (CBOR codec, OT, clientcc, framing, the WS
 // transport) against the authoritative Go implementation, not a simulated server.
 //
-// It builds and spawns `waved -ws`, connects clients (carrying identity in the
-// `?user=` query param the dev server honors), and asserts convergence.
+// It builds and spawns `waved -ws`, logs each client in via the dev /login
+// endpoint (capturing the session cookie and carrying it on the WebSocket
+// handshake), and asserts convergence. It runs with -seed-conversations=false so
+// the wavelet starts empty and the raw version assertions below hold (server-side
+// conversation seeding is exercised by the browser harness instead).
 // Run from web/:  node --test test/integration.test.ts
 // (Loopback networking + process spawn may require the sandbox to be disabled.)
 
@@ -118,6 +121,7 @@ before(async () => {
       "-http", "",
       "-index=false",
       "-ws", `127.0.0.1:${port}`,
+      "-seed-conversations=false",
       "-log-level", "warn",
     ],
     { cwd: REPO, stdio: "inherit" },
@@ -129,12 +133,26 @@ after(() => {
   proc?.kill("SIGTERM");
 });
 
-// connectAs opens a client for `name` authoring as `user`, carrying identity in
-// the URL query (?user=), which the dev waved identify honors and binds to the
-// session (submitted deltas must be authored by it).
+// loginCookie hits the dev /login endpoint for `user` and returns the session
+// cookie (the "wave_session=…" pair) to carry on the WebSocket handshake. The
+// endpoint redirects on success; we read Set-Cookie without following it.
+async function loginCookie(user: string): Promise<string> {
+  const resp = await fetch(`http://127.0.0.1:${port}/login?user=${encodeURIComponent(user)}`, {
+    redirect: "manual",
+  });
+  const setCookie = resp.headers.get("set-cookie");
+  if (setCookie === null) throw new Error(`no session cookie from /login for ${user}`);
+  return setCookie.split(";")[0]; // "wave_session=<token>"
+}
+
+// connectAs logs `user` in (session cookie) and opens a client for `name`
+// authoring as them; the cookie rides the WebSocket handshake and the server
+// binds the authenticated participant to the session (deltas must be authored by
+// it).
 async function connectAs(name: WaveletName, user: string): Promise<OptimisticClient> {
-  const url = `ws://127.0.0.1:${port}/socket?user=${encodeURIComponent(user)}`;
-  const c = new OptimisticClient(url, name, participant(user));
+  const cookie = await loginCookie(user);
+  const url = `ws://127.0.0.1:${port}/socket`;
+  const c = new OptimisticClient(url, name, participant(user), { headers: { Cookie: cookie } });
   await c.open();
   return c;
 }

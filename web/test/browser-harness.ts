@@ -93,11 +93,15 @@ export async function stopServer(): Promise<void> {
 
 function pageURL(user: string, waveLocal: string): string {
   const wave = `example.com/${waveLocal}/~/conv+root`;
-  return `http://127.0.0.1:${port}/?user=${encodeURIComponent(user)}&wave=${encodeURIComponent(wave)}`;
+  // Go through the dev login endpoint: it trusts the address, sets the session
+  // cookie, and redirects (303) to the app at ?wave=… . Identity then rides the
+  // cookie on the WebSocket handshake — there is no ?user= on the app URL.
+  const redirect = `/?wave=${encodeURIComponent(wave)}`;
+  return `http://127.0.0.1:${port}/login?user=${encodeURIComponent(user)}&redirect=${encodeURIComponent(redirect)}`;
 }
 
 /** Open a connected editor page for `user` on `waveLocal` (e.g. "w+demo"); waits
- *  until at least one editable blip has rendered (connected + bootstrapped). */
+ *  until at least one editable blip has rendered (logged in + connected + seeded). */
 export async function client(user: string, waveLocal: string): Promise<Page> {
   if (browser === undefined) throw new Error("browser-harness: startServer() not called");
   const page = await browser.newPage();
