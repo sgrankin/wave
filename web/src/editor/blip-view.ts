@@ -327,31 +327,53 @@ export class BlipView extends LitElement {
   private domToOffset(node: Node, domOffset: number): number | null {
     const root = this.renderRoot.querySelector<HTMLElement>(".blip-doc");
     if (root === null) return null;
+    if (node !== root && !root.contains(node)) return null;
     const paras = Array.from(root.querySelectorAll<HTMLElement>(".para"));
 
-    // Selection anchored directly on the editable container: domOffset indexes paragraphs.
-    if (node === root) {
-      const p = this.proj.paragraphs[Math.min(domOffset, this.proj.paragraphs.length - 1)];
-      return p === undefined ? 0 : p.textStart;
-    }
-
+    // Common case: the caret is within a rendered paragraph — map by rune count.
     let el: Node | null = node;
     while (el !== null && !(el instanceof HTMLElement && el.classList.contains("para"))) el = el.parentNode;
-    if (el === null) {
-      // The selection is inside .blip-doc but not within any rendered .para — the
-      // browser sometimes parks the caret in a stray text node at the editable
-      // root, notably right after a freshly-rendered empty paragraph gains focus.
-      // Map it to the START of the paragraph nearest the node in document order so
-      // the edit still lands in the model (the next re-render drops the stray
-      // node). For the common single-empty-paragraph blip this is paragraph 0.
-      if (!root.contains(node)) return null;
-      const near = this.proj.paragraphs[nearestParagraphIndex(paras, node)];
-      return near === undefined ? (this.proj.paragraphs[0]?.textStart ?? 0) : near.textStart;
+    if (el instanceof HTMLElement) {
+      const idx = paras.indexOf(el);
+      const para = this.proj.paragraphs[idx];
+      if (para === undefined) return null;
+      return para.textStart + runeOffsetWithin(el, node, domOffset);
     }
-    const idx = paras.indexOf(el as HTMLElement);
-    const para = this.proj.paragraphs[idx];
-    if (para === undefined) return null;
-    return para.textStart + runeOffsetWithin(el as HTMLElement, node, domOffset);
+
+    // The caret is NOT inside any paragraph: the browser parked it on the editable
+    // root or in a stray node between/around paragraphs (a whitespace text node or
+    // a Lit marker comment). Resolve it to a real paragraph boundary. The reference
+    // is the node the caret sits *before*:
+    //   - on the root, that is root.childNodes[domOffset] (undefined ⇒ past the end);
+    //   - otherwise the stray node itself.
+    // A root-anchored domOffset is a CHILD-NODE index (paras interleaved with marker
+    // comments), NOT a paragraph index — so it must be resolved positionally, not
+    // used to index proj.paragraphs directly.
+    const ref: Node | null = node === root ? (root.childNodes[domOffset] ?? null) : node;
+    return this.offsetAtParagraphBoundary(paras, ref);
+  }
+
+  // offsetAtParagraphBoundary maps a caret that is not inside any paragraph to a doc
+  // offset. `ref` is the DOM node the caret sits before (null ⇒ it sits after the
+  // last child). The result is the START of the first paragraph at/after `ref` in
+  // document order, or — if `ref` follows every paragraph — the END of the last one.
+  private offsetAtParagraphBoundary(paras: HTMLElement[], ref: Node | null): number | null {
+    const ps = this.proj.paragraphs;
+    const lastEnd = (): number | null => {
+      const last = ps[ps.length - 1];
+      return last === undefined ? null : last.textStart + last.textLength;
+    };
+    if (ref === null) return lastEnd();
+    for (let i = 0; i < paras.length; i++) {
+      if (ref === paras[i]) return ps[i]?.textStart ?? null;
+      const pos = paras[i]!.compareDocumentPosition(ref);
+      // ref precedes paras[i] (or is contained by it) → caret sits at this para's start.
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING || pos & Node.DOCUMENT_POSITION_CONTAINED_BY) {
+        return ps[i]?.textStart ?? null;
+      }
+      // else ref follows paras[i]; keep scanning.
+    }
+    return lastEnd(); // ref follows every paragraph
   }
 
   // offsetToDom maps a doc offset to a DOM (node, offset) for caret placement.
@@ -439,8 +461,11 @@ export class BlipView extends LitElement {
 
     return html`
       <style>
-        .blip-doc { outline: none; font: 15px/1.6 system-ui, sans-serif; white-space: pre-wrap; }
-        .blip-doc .para { min-height: 1.6em; }
+        .blip-doc { outline: none; font: 15px/1.6 system-ui, sans-serif; }
+        /* pre-wrap lives on the paragraph (where the text is), not the container:
+           on the container it made stray whitespace text nodes between block-level
+           paragraphs render as a visible leading gap (B1). */
+        .blip-doc .para { min-height: 1.6em; white-space: pre-wrap; }
         .blip-doc .wave-link { color: #1565c0; text-decoration: underline; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
@@ -497,9 +522,7 @@ export class BlipView extends LitElement {
         spellcheck="false"
         @beforeinput=${this.onBeforeInput}
         @paste=${this.onPaste}
-      >
-        ${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}
-      </div>
+      >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>
     `;
   }
 
@@ -656,24 +679,6 @@ function camelToKebab(s: string): string {
 }
 
 // --- DOM caret helpers ---
-
-// nearestParagraphIndex returns the index of the last .para at or before `node`
-// in document order (0 if node precedes all paragraphs). Used to localise a caret
-// that the browser placed outside any .para (a stray text node at the editable
-// root) to a paragraph.
-function nearestParagraphIndex(paras: HTMLElement[], node: Node): number {
-  let idx = 0;
-  for (let i = 0; i < paras.length; i++) {
-    const pos = paras[i]!.compareDocumentPosition(node);
-    // node follows paras[i], or paras[i] contains node → paras[i] is a candidate.
-    if (pos & Node.DOCUMENT_POSITION_FOLLOWING || pos & Node.DOCUMENT_POSITION_CONTAINED_BY || pos === 0) {
-      idx = i;
-    } else {
-      break; // node precedes paras[i]; earlier candidate (idx) is the nearest
-    }
-  }
-  return idx;
-}
 
 function currentRange(host: HTMLElement): Range | null {
   const sel = window.getSelection();
