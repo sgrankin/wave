@@ -46,6 +46,17 @@ type Waves interface {
 	Read(name id.WaveletName, fn func(*wavelet.Data)) error
 }
 
+// ReadState is the per-participant read-progress store backing the unread
+// indicator (satisfied by *sqlite.Store).
+type ReadState interface {
+	// ReadVersions returns the participant's read versions keyed by serialized
+	// wavelet name (absent ⇒ 0).
+	ReadVersions(participant id.ParticipantID) (map[string]uint64, error)
+	// SetReadVersion records that the participant has read the wavelet through
+	// version (monotonic).
+	SetReadVersion(participant id.ParticipantID, wavelet id.WaveletName, version uint64) error
+}
+
 // Digest is one wave's summary for the list view.
 type Digest struct {
 	Wave             string   `json:"wave"`    // serialized WaveletName
@@ -55,21 +66,24 @@ type Digest struct {
 	Participants     []string `json:"participants"`
 	Version          uint64   `json:"version"`
 	LastModifiedTime int64    `json:"lastModifiedTime"`
+	Unread           bool     `json:"unread"` // version > the participant's read version
 }
 
-// Handler serves /api/inbox and /api/search.
+// Handler serves /api/inbox, /api/search, and /api/read.
 type Handler struct {
 	index    Index
 	waves    Waves
+	reads    ReadState
 	identify func(*http.Request) (id.ParticipantID, bool)
 	logger   *slog.Logger
 }
 
-// New builds a Handler over the index and wave source. identify resolves the
-// authenticated participant from the request (e.g. auth.ParticipantFrom when
-// mounted behind auth.Service.Middleware). A nil logger uses slog.Default().
-func New(index Index, waves Waves, identify func(*http.Request) (id.ParticipantID, bool), logger *slog.Logger) *Handler {
-	return &Handler{index: index, waves: waves, identify: identify, logger: logger}
+// New builds a Handler over the index, wave source, and read-state store.
+// identify resolves the authenticated participant from the request (e.g.
+// auth.ParticipantFrom when mounted behind auth.Service.Middleware). A nil logger
+// uses slog.Default().
+func New(index Index, waves Waves, reads ReadState, identify func(*http.Request) (id.ParticipantID, bool), logger *slog.Logger) *Handler {
+	return &Handler{index: index, waves: waves, reads: reads, identify: identify, logger: logger}
 }
 
 func (h *Handler) log() *slog.Logger {
@@ -79,12 +93,13 @@ func (h *Handler) log() *slog.Logger {
 	return slog.Default()
 }
 
-// Routes returns the API mux (GET /api/inbox, GET /api/search). Mount it behind
-// the authentication middleware.
+// Routes returns the API mux (GET /api/inbox, GET /api/search, POST /api/read).
+// Mount it behind the authentication middleware.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/inbox", h.inbox)
 	mux.HandleFunc("GET /api/search", h.search)
+	mux.HandleFunc("POST /api/read", h.markRead)
 	return mux
 }
 
@@ -105,7 +120,7 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request) {
 	if limit := parseLimit(r); len(names) > limit {
 		names = names[:limit]
 	}
-	h.writeDigests(w, names)
+	h.writeDigests(w, p, names)
 }
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
@@ -123,13 +138,45 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	for i, res := range results {
 		names[i] = res.Wavelet
 	}
-	h.writeDigests(w, names)
+	h.writeDigests(w, p, names)
 }
 
-func (h *Handler) writeDigests(w http.ResponseWriter, names []id.WaveletName) {
+// markRead records that the participant has read a wavelet through a version
+// (POST /api/read?wave=<name>&version=<n>), clearing its unread state.
+func (h *Handler) markRead(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.identify(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name, err := id.ParseWaveletName(r.FormValue("wave"))
+	if err != nil {
+		http.Error(w, "bad wave: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	version, err := strconv.ParseUint(r.FormValue("version"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad version", http.StatusBadRequest)
+		return
+	}
+	if err := h.reads.SetReadVersion(p, name, version); err != nil {
+		http.Error(w, "mark read: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, names []id.WaveletName) {
+	readVersions, err := h.reads.ReadVersions(p)
+	if err != nil {
+		// Degrade gracefully: show everything as read rather than failing the list.
+		h.log().Warn("queryapi: read versions", "participant", p, "err", err)
+		readVersions = map[string]uint64{}
+	}
 	digests := make([]Digest, 0, len(names))
 	for _, name := range names {
 		if d, ok := h.digest(name); ok {
+			d.Unread = d.Version > readVersions[d.Wave]
 			digests = append(digests, d)
 		}
 	}

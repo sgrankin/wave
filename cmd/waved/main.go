@@ -169,7 +169,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, logger)
 
-	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, logger)
+	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, store, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -333,7 +333,7 @@ func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
 // authenticated participant is bound to the request (identify reads it from the
 // context). The static web root is intentionally NOT authenticated — the app
 // shell must load so its JS can call /whoami and redirect to /login when needed.
-func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, logger *slog.Logger) (*http.Server, error) {
+func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
@@ -356,7 +356,7 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 	// The read-side wave query API (inbox/search) backs the app shell's wave list;
 	// it is available only when the index is maintained (-index).
 	if idx != nil {
-		qh := queryapi.New(idx, queryapi.NewWaveMapReader(srv.WaveMap), identify, logger)
+		qh := queryapi.New(idx, queryapi.NewWaveMapReader(srv.WaveMap), store, identify, logger)
 		mux.Handle("/api/", authSvc.Middleware(qh.Routes()))
 	}
 	if cfg.webRoot != "" {
