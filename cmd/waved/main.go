@@ -23,9 +23,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/sgrankin/wave/internal/agentgw"
 	"github.com/sgrankin/wave/internal/attachapi"
 	"github.com/sgrankin/wave/internal/auth"
 	"github.com/sgrankin/wave/internal/clock"
@@ -58,6 +60,7 @@ type config struct {
 	sessionTTL    time.Duration
 	seed          bool   // server-side-seed a new wavelet's conversation at first open
 	attachRoot    string // filesystem root for attachment blobs; "" disables attachments
+	agents        string // agent gateway tokens: "addr=token,addr2=token2"; "" disables
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
@@ -107,6 +110,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&c.sessionTTL, "session-ttl", 24*time.Hour, "session cookie lifetime")
 	fs.BoolVar(&c.seed, "seed-conversations", true, "server-side-seed a brand-new wavelet's conversation (manifest + root blip) at first open")
 	fs.StringVar(&c.attachRoot, "attach-root", "", "filesystem root for attachment blobs on the -ws server (\"\" to disable attachments)")
+	fs.StringVar(&c.agents, "agents", "", "agent-gateway bearer tokens as \"addr=token\" pairs, comma-separated (\"\" disables the /agent/socket endpoint); tokens are secrets — prefer TLS")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
@@ -339,6 +343,35 @@ func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
 	return svc, nil
 }
 
+// parseAgents parses the -agents flag ("addr=token,addr2=token2") into a
+// token→agent map. Tokens must be unique; addresses must be valid participant ids.
+func parseAgents(s string) (agentgw.StaticAuth, error) {
+	out := agentgw.StaticAuth{}
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		addr, token, ok := strings.Cut(pair, "=")
+		addr, token = strings.TrimSpace(addr), strings.TrimSpace(token)
+		if !ok || addr == "" || token == "" {
+			return nil, fmt.Errorf("agent %q: want addr=token", pair)
+		}
+		p, err := id.NewParticipantID(addr)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: %w", pair, err)
+		}
+		if _, dup := out[token]; dup {
+			return nil, fmt.Errorf("duplicate agent token")
+		}
+		out[token] = p
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no agents parsed from %q", s)
+	}
+	return out, nil
+}
+
 // startWebSocket serves the browser transport on the configured address: the
 // WebSocket session at /socket and the auth endpoints /login and /whoami, plus
 // the static web root. Returns (nil, nil) when disabled (empty address), or an
@@ -394,6 +427,18 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 			transport.MembershipChecker{WaveMap: srv.WaveMap},
 			identify, logger)
 		mux.Handle("/api/playback/", authSvc.Middleware(pbh.Routes()))
+	}
+	// Agent gateway: external harnesses drive in-process agents over WebSocket,
+	// authenticated by a bearer token (NOT the session cookie — agents are not
+	// browser users), gated by wavelet membership. Disabled unless -agents is set.
+	if cfg.agents != "" {
+		agentAuth, err := parseAgents(cfg.agents)
+		if err != nil {
+			return nil, fmt.Errorf("parse -agents: %w", err)
+		}
+		gh := agentgw.New(srv.WaveMap, agentAuth, transport.MembershipChecker{WaveMap: srv.WaveMap}, clock.System{}, logger)
+		mux.Handle("/agent/socket", gh)
+		logger.Info("agent gateway enabled", "endpoint", "/agent/socket", "agents", len(agentAuth))
 	}
 	// Attachment blobs (upload/download/thumbnail), gated by wavelet membership.
 	// Both patterns are needed: "/attachments" matches the bare upload path and
