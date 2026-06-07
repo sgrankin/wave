@@ -122,13 +122,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = c.Close(websocket.StatusNormalClosure, "")
 }
 
-// bearerToken reads the token from an Authorization: Bearer header, or a ?token=
-// query param as a fallback (for clients that cannot set headers).
+// bearerToken reads the token from the Authorization: Bearer header. It is
+// deliberately header-only — a ?token= query param would leak the secret into
+// access logs, browser history, and Referer headers (coder/websocket and any
+// non-browser harness can set request headers).
 func bearerToken(r *http.Request) string {
-	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
-		return strings.TrimSpace(strings.TrimPrefix(a, "Bearer "))
+	a := r.Header.Get("Authorization")
+	if !strings.HasPrefix(a, "Bearer ") {
+		return ""
 	}
-	return strings.TrimSpace(r.FormValue("token"))
+	return strings.TrimSpace(strings.TrimPrefix(a, "Bearer "))
 }
 
 // newBlipID mints a random id for blips the agent creates.

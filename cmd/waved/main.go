@@ -436,7 +436,9 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 		if err != nil {
 			return nil, fmt.Errorf("parse -agents: %w", err)
 		}
-		gh := agentgw.New(srv.WaveMap, agentAuth, transport.MembershipChecker{WaveMap: srv.WaveMap}, clock.System{}, logger)
+		// StrictMembershipChecker (no open-or-create): an agent token must not be
+		// able to read or instantiate arbitrary wave names it was never added to.
+		gh := agentgw.New(srv.WaveMap, agentAuth, transport.StrictMembershipChecker{WaveMap: srv.WaveMap}, clock.System{}, logger)
 		mux.Handle("/agent/socket", gh)
 		logger.Info("agent gateway enabled", "endpoint", "/agent/socket", "agents", len(agentAuth))
 	}

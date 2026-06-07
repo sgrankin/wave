@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -26,15 +27,23 @@ type LocalClient struct {
 	author    id.ParticipantID
 	clk       clock.Clock
 	newBlipID func() string
+	limiter   *rateLimiter
 	sub       *server.Subscription
 	nonce     int
 }
+
+// ErrRateLimited is returned by SubmitIntent when the agent has exceeded its
+// submit rate (the defense-in-depth loop bound). The intent is dropped, not queued.
+var ErrRateLimited = errors.New("agent: submit rate limited")
 
 // NewLocalClient builds an in-process client for container, acting as author.
 // newBlipID mints ids for blips the agent creates (a real generator in production,
 // a fixed one in tests).
 func NewLocalClient(container *server.WaveletContainer, author id.ParticipantID, clk clock.Clock, newBlipID func() string) *LocalClient {
-	return &LocalClient{container: container, author: author, clk: clk, newBlipID: newBlipID}
+	return &LocalClient{
+		container: container, author: author, clk: clk, newBlipID: newBlipID,
+		limiter: newRateLimiter(clk, defaultRateBurst, defaultRatePerSec),
+	}
 }
 
 // Open subscribes to the wavelet and returns the deltas applied so far (the join
@@ -67,7 +76,8 @@ func (lc *LocalClient) Events(self id.ParticipantID, update server.WaveletUpdate
 		return nil
 	}
 	var events []Event
-	lc.read(func(w *wavelet.Data) { events = Extract(update.Delta.Author, update.Delta.Ops, w) })
+	version := update.ResultingVersion.Version()
+	lc.read(func(w *wavelet.Data) { events = Extract(update.Delta.Author, update.Delta.Ops, version, w) })
 	return events
 }
 
@@ -78,6 +88,9 @@ func (lc *LocalClient) Events(self id.ParticipantID, update server.WaveletUpdate
 // concurrent delta landed in between. A translate error (invalid/no-op intent) is
 // returned and nothing is submitted.
 func (lc *LocalClient) SubmitIntent(intent Intent) error {
+	if !lc.limiter.allow() {
+		return ErrRateLimited
+	}
 	ts := lc.clk.Now().UnixMilli()
 	var (
 		ops     []waveop.Operation
@@ -114,8 +127,15 @@ func (lc *LocalClient) SubmitIntent(intent Intent) error {
 }
 
 // Harness is the decision-maker (the LLM, or a rule set). React receives one
-// semantic event and returns the intents to act on (nil for none). It must be
-// pure-ish: the runtime owns submission, rate-limiting, and loop-safety.
+// semantic event and returns the intents to act on (nil for none).
+//
+// The runtime owns submission, a defense-in-depth submit rate limit
+// (ErrRateLimited), and SELF-suppression — it never reacts to the agent's own
+// writes (the container excludes them from the agent's subscription). It does NOT
+// prevent higher-level reaction loops: two agents that each react to the other, or
+// a harness whose reply re-triggers itself, will loop until the rate limit throttles
+// them. Avoiding such loops (e.g. don't react to other agents' edits, or to your
+// own kind) is the harness's responsibility.
 type Harness interface {
 	React(ev Event) []Intent
 }

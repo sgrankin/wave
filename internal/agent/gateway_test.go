@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,4 +115,79 @@ func TestGatewayBridgesEventsAndIntents(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("gateway Run did not return after cancel")
 	}
+}
+
+// TestGatewayIntentKindsAndResilience exercises the other intent kinds and the
+// malformed-line resilience over the gateway: a bad JSON line is skipped (not
+// fatal), then an add.participant and an edit.blip both apply.
+func TestGatewayIntentKindsAndResilience(t *testing.T) {
+	c, _ := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(3000)), func() string { return "b+gw" })
+	lc.Open()
+	defer lc.Close()
+
+	eventsR, eventsW := io.Pipe()
+	intentsR, intentsW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.NewGateway(lc, bot, nil).Run(ctx, eventsW, intentsR) }()
+
+	// Read (and discard) the snapshot so the gateway proceeds.
+	var snap struct{ Kind string }
+	if err := json.NewDecoder(eventsR).Decode(&snap); err != nil {
+		t.Fatal(err)
+	}
+	// Drain remaining event output so the gateway's event-writer never blocks while
+	// the intent goroutine works.
+	go func() { _, _ = io.Copy(io.Discard, eventsR) }()
+
+	// A malformed line (must be skipped, not fatal), then two valid intents.
+	lines := "this is not json\n" +
+		`{"type":"intent","kind":"add.participant","participant":"carol@example.com"}` + "\n" +
+		`{"type":"intent","kind":"edit.blip","blipId":"b+root","text":"appended by agent"}` + "\n"
+	if _, err := intentsW.Write([]byte(lines)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both intents take effect (the malformed line between/before them did not abort
+	// the stream): carol is a participant and b+root gained the appended text.
+	deadline := time.Now().Add(3 * time.Second)
+	var carolIn, appended bool
+	for time.Now().Before(deadline) && !(carolIn && appended) {
+		c.Read(func(w *wavelet.Data) {
+			carolIn = false
+			for _, p := range w.Participants() {
+				if p == pid(t, "carol@example.com") {
+					carolIn = true
+				}
+			}
+			if b, ok := w.Blip("b+root"); ok {
+				if txt, _ := doc.PlainText(b.Content()); strings.Contains(txt, "appended by agent") {
+					appended = true
+				}
+			}
+		})
+		if !(carolIn && appended) {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+	if !carolIn {
+		t.Error("add.participant intent did not take effect")
+	}
+	if !appended {
+		t.Error("edit.blip intent did not take effect (or malformed line aborted the stream)")
+	}
+
+	cancel()
+	_ = eventsR.Close()
+	_ = intentsW.Close()
+	<-done
 }

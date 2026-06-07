@@ -41,31 +41,38 @@ const (
 // populated per Kind (see each constant); the rest are zero.
 type Event struct {
 	Kind    EventKind
-	Version uint64           // the wavelet version after the delta that produced this
+	Version uint64           // the wavelet version reached by the delta that produced this
 	Author  id.ParticipantID // who caused the change (the delta author)
 
 	BlipID string // blip.added / blip.edited / mention
-	Text   string // blip.added / blip.edited: the blip's full plain text after the change
+	Text   string // blip.added / blip.edited: the blip's current plain text (read live)
 
 	Participant id.ParticipantID // participant.added / participant.removed
 	Target      string           // mention: the mentioned reference (the text after '@')
 }
 
-// mentionRE matches an @-mention: a local part, optionally @domain. Mirrors the
-// browser client's inline decorator so detection is consistent across both.
-var mentionRE = regexp.MustCompile(`@[A-Za-z0-9._%+\-]+(?:@[A-Za-z0-9.\-]+)?`)
+// mentionRE matches an @-mention preceded by a word boundary (start of the
+// inserted text, or a non-address character), so an email/URL like
+// "bob@example.com" or "http://x@y" — where the '@' follows an address character —
+// is NOT read as a mention of "@example.com"/"@y". Group 1 is the boundary; group 2
+// is the mention (a local part, optionally @domain).
+var mentionRE = regexp.MustCompile(`(^|[^A-Za-z0-9._%+\-@])(@[A-Za-z0-9._%+\-]+(?:@[A-Za-z0-9.\-]+)?)`)
 
 // Extract derives semantic events from one applied delta: its author, its
-// operations, and the resulting wavelet state (after the delta applied). It is
+// operations, the version the delta reached (stamped on every event), and the
+// wavelet state used to read blip text. version is the delta's own resulting
+// version — pass it explicitly rather than reading state.Version(), since the live
+// state may have advanced past this delta by the time it is observed. It is
 // stateless — blip creation versus edit is distinguished by whether the content op
 // is an initialization, so no prior state is threaded through. Edits to the
 // conversation manifest document are structural and emit no events (a blip's
-// arrival is observed from its own content op). state == nil yields no events.
-func Extract(author id.ParticipantID, ops []waveop.Operation, state *wavelet.Data) []Event {
+// arrival is observed from its own content op). state == nil yields no events; blip
+// text is read from state (the current content — may be newer than version under
+// concurrent edits, which is acceptable for a reactive harness).
+func Extract(author id.ParticipantID, ops []waveop.Operation, version uint64, state *wavelet.Data) []Event {
 	if state == nil {
 		return nil
 	}
-	version := state.Version()
 	var events []Event
 	for _, o := range ops {
 		switch wo := o.(type) {
@@ -111,10 +118,10 @@ func mentionsIn(d op.DocOp) []string {
 			inserted.WriteString(ch.Text)
 		}
 	}
-	matches := mentionRE.FindAllString(inserted.String(), -1)
+	matches := mentionRE.FindAllStringSubmatch(inserted.String(), -1)
 	refs := make([]string, 0, len(matches))
 	for _, m := range matches {
-		refs = append(refs, strings.TrimPrefix(m, "@"))
+		refs = append(refs, strings.TrimPrefix(m[2], "@")) // m[2] is the mention; m[1] the boundary
 	}
 	return refs
 }

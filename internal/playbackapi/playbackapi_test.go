@@ -3,6 +3,7 @@ package playbackapi_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,19 +36,24 @@ type fakeAccess struct{ allow bool }
 func (f fakeAccess) CanAccess(id.ParticipantID, id.WaveletName) (bool, error) { return f.allow, nil }
 
 type fakeWaves struct {
-	headers []server.DeltaHeader
-	states  map[uint64]*wavelet.Data
+	headers   []server.DeltaHeader
+	states    map[uint64]*wavelet.Data
+	stateErr  error // if set, StateAt returns it (a storage/replay failure)
 }
 
 func (f fakeWaves) DeltaHeaders(id.WaveletName) ([]server.DeltaHeader, error) { return f.headers, nil }
 
 func (f fakeWaves) StateAt(_ id.WaveletName, version uint64) (*wavelet.Data, error) {
+	if f.stateErr != nil {
+		return nil, f.stateErr
+	}
 	if version == 0 {
 		return nil, nil
 	}
 	w, ok := f.states[version]
 	if !ok {
-		return nil, errors.New("no such version")
+		// A bad version is the sentinel error (→ 404); other errors are storage faults (→ 500).
+		return nil, fmt.Errorf("%w %d", server.ErrNoVersion, version)
 	}
 	return w, nil
 }
@@ -151,6 +157,15 @@ func TestStateUnknownVersionIs404(t *testing.T) {
 		"GET", "/api/playback/state?wave="+url.QueryEscape(waveName)+"&version=7", "alice@example.com")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestStateStorageErrorIs500(t *testing.T) {
+	// A non-sentinel error from StateAt is a server fault, not a bad-version 404.
+	waves := fakeWaves{stateErr: errors.New("disk on fire")}
+	rec := do(t, handler(waves, true), "GET", "/api/playback/state?wave="+url.QueryEscape(waveName)+"&version=3", "alice@example.com")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (storage error must not be a 404)", rec.Code)
 	}
 }
 

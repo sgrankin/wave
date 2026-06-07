@@ -12,6 +12,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -250,6 +251,11 @@ func (c *WaveletContainer) DeltaHeaders() ([]DeltaHeader, error) {
 	return headers, nil
 }
 
+// ErrNoVersion is returned by StateAt when the requested version is not a valid
+// delta-boundary (mid-delta, or past the log's end) — a client error, distinct
+// from a storage/replay failure (which surfaces as a different, wrapped error).
+var ErrNoVersion = errors.New("server: no such version")
+
 // StateAt reconstructs the wavelet's state at a past version by replaying the
 // persisted delta log from zero onto a fresh wavelet — independent of the live
 // container (it reads only storage, so it is safe concurrent with submits, and the
@@ -286,7 +292,7 @@ func (c *WaveletContainer) StateAt(targetVersion uint64) (*wavelet.Data, error) 
 		}
 	}
 	if w == nil || w.HashedVersion().Version() != targetVersion {
-		return nil, fmt.Errorf("server: no such version %d for %s", targetVersion, c.name)
+		return nil, fmt.Errorf("%w %d for %s", ErrNoVersion, targetVersion, c.name)
 	}
 	return w, nil
 }

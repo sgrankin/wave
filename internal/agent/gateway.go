@@ -84,7 +84,12 @@ func (g *Gateway) log() *slog.Logger {
 // subscription closes, or the intent reader reaches EOF — whichever comes first.
 func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Reader) error {
 	enc := json.NewEncoder(eventsOut)
-	if err := enc.Encode(g.snapshot()); err != nil {
+	// The snapshot reflects state at some version V; the live subscription started
+	// at or before V, so any buffered delta with ResultingVersion <= V is already
+	// in the snapshot. Skip those to avoid double-reporting a connect-time delta.
+	snap := g.snapshot()
+	snapVersion := snap.Version
+	if err := enc.Encode(snap); err != nil {
 		return fmt.Errorf("agent gateway: write snapshot: %w", err)
 	}
 
@@ -121,6 +126,9 @@ func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Rea
 		case u, ok := <-updates:
 			if !ok {
 				return nil // subscription ended
+			}
+			if u.ResultingVersion.Version() <= snapVersion {
+				continue // already reflected in the connect-time snapshot
 			}
 			for _, ev := range g.client.Events(g.self, u) {
 				if err := enc.Encode(wireEventFrom(ev)); err != nil {

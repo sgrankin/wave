@@ -177,6 +177,48 @@ func TestAgentGatewayWebSocket(t *testing.T) {
 	}
 }
 
+// TestAgentGatewayForbidsNonMember confirms a valid token cannot drive a wave the
+// agent is not a participant of (StrictMembershipChecker, no open-or-create).
+func TestAgentGatewayForbidsNonMember(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)))
+	wid, _ := id.NewWaveID("example.com", "w+priv")
+	wlid, _ := id.NewWaveletID("example.com", "conv+root")
+	name := id.NewWaveletName(wid, wlid)
+	c, err := wm.Container(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	// Seed with alice only — the bot is NOT added.
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+
+	// Strict checker (as wired in waved) — no open-or-create for agents.
+	h := agentgw.New(wm, agentgw.StaticAuth{"s3cret": bot},
+		transport.StrictMembershipChecker{WaveMap: wm}, clock.System{}, nil)
+	hs := httptest.NewServer(h)
+	defer hs.Close()
+
+	req, _ := http.NewRequest("GET", hs.URL+"/agent/socket?wave="+url.QueryEscape(name.Serialize()), nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (non-member agent)", resp.StatusCode)
+	}
+}
+
 // TestAgentGatewayRejectsBadToken confirms an unknown bearer token is rejected
 // before any upgrade.
 func TestAgentGatewayRejectsBadToken(t *testing.T) {

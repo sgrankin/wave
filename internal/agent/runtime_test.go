@@ -120,14 +120,17 @@ func TestEchoAgentRepliesToMention(t *testing.T) {
 		t.Fatalf("echo blip text = %q, want the acknowledgement", echoText)
 	}
 
-	// Self-suppression: the agent's own reply must NOT have arrived on its stream.
+	// Self-suppression: the agent's own reply must NOT have arrived on its stream —
+	// and the stream must still be open (a closed channel would also yield ok=false,
+	// which must not be mistaken for "suppressed").
 	select {
 	case u, ok := <-lc.Updates():
 		if ok {
 			t.Fatalf("agent observed its own delta (self-suppression failed): %+v", u.Delta.Author)
 		}
+		t.Fatal("agent subscription unexpectedly closed")
 	default:
-		// good: nothing waiting
+		// good: nothing waiting, channel still open
 	}
 }
 

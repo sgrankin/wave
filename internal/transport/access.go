@@ -40,3 +40,21 @@ func (m MembershipChecker) CanAccess(p id.ParticipantID, name id.WaveletName) (b
 	}
 	return exists, nil
 }
+
+// StrictMembershipChecker is MembershipChecker WITHOUT the open-or-create
+// exemption: access requires the wavelet to already exist AND p to be a member.
+// Use it where open-or-create must not apply — notably the agent gateway, where a
+// bearer token must never let an agent read or instantiate arbitrary wave names it
+// was not explicitly added to (an agent joins only waves a human invited it to).
+type StrictMembershipChecker struct{ WaveMap *server.WaveMap }
+
+// CanAccess reports whether p is a member of an existing named wavelet. A
+// never-created wavelet is denied (no open-or-create).
+func (m StrictMembershipChecker) CanAccess(p id.ParticipantID, name id.WaveletName) (bool, error) {
+	c, err := m.WaveMap.Container(name)
+	if err != nil {
+		return false, err
+	}
+	exists, created := c.HasParticipant(p)
+	return created && exists, nil
+}

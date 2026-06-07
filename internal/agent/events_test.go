@@ -50,7 +50,7 @@ func TestExtractBlipAddedWithMention(t *testing.T) {
 	content := chars("hi @bob@example.com") // pure insert ⇒ an initialization ⇒ BlipAdded
 	state := stateWithBlip(t, 5, "alice@example.com", "b1", content)
 
-	events := agent.Extract(alice, []waveop.Operation{blipOp(alice, "b1", content)}, state)
+	events := agent.Extract(alice, []waveop.Operation{blipOp(alice, "b1", content)}, 5, state)
 
 	if len(events) != 2 {
 		t.Fatalf("got %d events, want 2 (added + mention): %+v", len(events), events)
@@ -74,7 +74,7 @@ func TestExtractBlipEdited(t *testing.T) {
 	// The resulting blip text (what state holds) is the composed result.
 	state := stateWithBlip(t, 9, "alice@example.com", "b1", chars("hi @carol@example.com"))
 
-	events := agent.Extract(alice, []waveop.Operation{blipOp(alice, "b1", edit)}, state)
+	events := agent.Extract(alice, []waveop.Operation{blipOp(alice, "b1", edit)}, 9, state)
 
 	if len(events) != 2 || events[0].Kind != agent.BlipEdited || events[1].Kind != agent.Mention {
 		t.Fatalf("got %+v, want edited + mention", events)
@@ -96,7 +96,7 @@ func TestExtractParticipantAddAndRemove(t *testing.T) {
 	events := agent.Extract(alice, []waveop.Operation{
 		waveop.AddParticipant{Ctx: ctx, Participant: bob},
 		waveop.RemoveParticipant{Ctx: ctx, Participant: bob},
-	}, state)
+	}, 3, state)
 
 	if len(events) != 2 {
 		t.Fatalf("got %d events, want 2: %+v", len(events), events)
@@ -119,7 +119,7 @@ func TestExtractIgnoresManifestAndNoMention(t *testing.T) {
 	events := agent.Extract(alice, []waveop.Operation{
 		blipOp(alice, conv.ManifestDocumentID, plain), // ignored
 		blipOp(alice, "b1", plain),                    // one BlipEdited, no mention
-	}, state)
+	}, 4, state)
 
 	if len(events) != 1 || events[0].Kind != agent.BlipEdited || events[0].BlipID != "b1" {
 		t.Fatalf("got %+v, want a single blip.edited for b1", events)
@@ -127,7 +127,7 @@ func TestExtractIgnoresManifestAndNoMention(t *testing.T) {
 }
 
 func TestExtractNilState(t *testing.T) {
-	if got := agent.Extract(pid(t, "a@example.com"), nil, nil); got != nil {
+	if got := agent.Extract(pid(t, "a@example.com"), nil, 0, nil); got != nil {
 		t.Errorf("Extract(nil state) = %+v, want nil", got)
 	}
 }

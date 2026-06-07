@@ -11,6 +11,7 @@ package playbackapi
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -148,9 +149,14 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wv, err := h.waves.StateAt(name, version)
+	if errors.Is(err, server.ErrNoVersion) {
+		http.Error(w, "no such version", http.StatusNotFound) // bad version: client error
+		return
+	}
 	if err != nil {
-		// An unknown/mid-delta version is a client error, not a server fault.
-		http.Error(w, "no such version", http.StatusNotFound)
+		// A storage/replay/corruption failure is a server fault — log it, don't 404.
+		h.log().Error("playbackapi: reconstruct state", "wavelet", name, "version", version, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
