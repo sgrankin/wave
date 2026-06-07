@@ -58,6 +58,19 @@ func (lc *LocalClient) Close() {
 // read runs fn under the container lock with the live wavelet (nil if uncreated).
 func (lc *LocalClient) read(fn func(*wavelet.Data)) { lc.container.Read(fn) }
 
+// Events derives the semantic events from one applied-delta update, reading the
+// live wavelet for blip text. Deltas authored by self yield no events (defensive —
+// self-suppression already keeps them off the subscription). Shared by the
+// in-process Runtime and the out-of-process Gateway.
+func (lc *LocalClient) Events(self id.ParticipantID, update server.WaveletUpdate) []Event {
+	if update.Delta.Author == self {
+		return nil
+	}
+	var events []Event
+	lc.read(func(w *wavelet.Data) { events = Extract(update.Delta.Author, update.Delta.Ops, w) })
+	return events
+}
+
 // SubmitIntent translates intent against the live wavelet and submits the
 // resulting delta authored by the agent, suppressed from the agent's own
 // subscription. The ops are built against the version captured at read time and
@@ -132,13 +145,7 @@ func (r *Runtime) log() *slog.Logger {
 
 // step processes one applied-delta update: extract events, react, submit intents.
 func (r *Runtime) step(update server.WaveletUpdate) {
-	d := update.Delta
-	if d.Author == r.self {
-		return // our own delta (shouldn't arrive given self-suppression); never react
-	}
-	var events []Event
-	r.client.read(func(w *wavelet.Data) { events = Extract(d.Author, d.Ops, w) })
-	for _, ev := range events {
+	for _, ev := range r.client.Events(r.self, update) {
 		for _, intent := range r.harness.React(ev) {
 			if err := r.client.SubmitIntent(intent); err != nil {
 				r.log().Warn("agent: submit intent", "kind", intent.Kind, "err", err)
