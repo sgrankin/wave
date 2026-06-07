@@ -166,8 +166,10 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   deferrals are **done** (2026-06-06); the backend is wrapped up. The **8a server
   WebSocket adapter is done** (`#4`, 2026-06-06; see Phase 8 below) — next is the
   JS `OptimisticClient` port (`#9`) — **also done** (2026-06-06; see Phase 8 below):
-  the TS client converges with the Go server over a real WebSocket. Next is 8b, the
-  Lit editor (`#5`).
+  the TS client converges with the Go server over a real WebSocket. **8b, the Lit
+  editor (`#5`), is in progress** (2026-06-06): the collaborative conversation editor
+  — recursive thread/blip view, replies, bold/italic — works browser-to-browser and
+  has a committed Playwright convergence test (see Phase 8 below).
 
 ### Phase 0 — Skeleton & primitives
 - `go.mod`, layout, CI (build + `go test` + `golangci-lint`, **cross-compiled
@@ -370,26 +372,45 @@ What's on the fork's `main`, and how execution deviated from the plan above:
     (insert/replace/delete text, splitLine=Enter, deleteLineMarker=line-merge),
     verified through the ported composer. `blip-view.ts` is a **controlled
     contenteditable** Lit element: render the projection, translate `beforeinput`
-    into content ops (no diffing), preserve the caret across re-renders. `wave-editor`
-    hosts it and submits edits as blip operations. `cmd/waved -webroot` serves the
-    esbuild bundle same-origin with `/socket`.
-  - **Conversation/manifest model ported** (`web/src/wave/doc.ts` reader +
-    `conversation.ts` — port of `internal/doc` + `internal/conv`): the recursive
-    threaded structure (`<conversation>/<blip>/<thread>`, inline replies, anchors),
-    ready for the conversation view.
-  - **Component test harness** (`web/testing/`, vendored from sgrankin/cs):
-    Go-`test`-style Lit rendering in headless Chromium (`npm run test:web`); node
-    vs browser tests separated by their `node:` imports. Three testing layers now:
-    pure logic (`node --test` vs the Go composer/fixtures), components (harness),
-    end-to-end (Playwright).
-  - **Three real bugs found via the browser loop** (none caught by unit tests):
+    into content ops (no diffing), preserve the caret across re-renders.
+    `cmd/waved -webroot` serves the esbuild bundle same-origin with `/socket`.
+  - **Conversation view — DONE** (`web/src/editor/{controller,wave-conversation,
+    wave-thread,wave-blip}.ts`): the manifest drives a recursive
+    `<wave-conversation>`→`<wave-thread>`→`<wave-blip>` tree. `<wave-conversation>`
+    owns the `OptimisticClient`, bootstraps an empty wavelet into a one-blip
+    conversation, and authors edits/replies through a `ConvController` the tree edits
+    through (so the views never touch the connection). Reply (start a reply thread on
+    a blip) and continue-thread (append a blip to a thread / new root message) each
+    submit one delta = manifest mutation + new-blip init. Built on the ported
+    **conversation/manifest model** (`web/src/wave/doc.ts` reader + `conversation.ts`,
+    port of `internal/doc` + `internal/conv`), which gained general thread authoring
+    (`AppendBlipToThread`/`ReplyToBlip`, Go + TS, symmetric, both tested).
+  - **Rich-text formatting**: bold/italic via Cmd/Ctrl+B/I (the `formatBold`/
+    `formatItalic` `beforeinput` events), toggling `style/*` annotations over the
+    selection using pure command builders (`setStyleRange`/`clearStyleRange`/
+    `setLineType`/`rangeStyle` in `blipdoc.ts`). A line-type toolbar UI is still TODO.
+  - **Testing — three layers, all wired**: pure logic (`node --test` vs the Go
+    composer/fixtures); **components** via the vendored harness (`web/testing/`,
+    sgrankin/cs) — Lit rendering in headless Chromium (`npm run test:web`), incl.
+    conversation-tree render + controller-wiring tests; **end-to-end** browser
+    convergence (`npm run test:browser`) — a committed Playwright test driving the
+    real UI against a real `waved`, asserting a fresh client converges (covers the
+    create-then-edit-a-blip case + threaded reply). Node vs browser tests separated
+    by their `node:` imports.
+  - **Four real bugs found via the browser loop** (none caught by unit tests):
     empty-doc projection/DOM mismatch (offset null → native edit), a Lit
-    reactive-field-initializer shadow that killed re-render, and a Lit comment marker
-    counted as text when mapping the caret.
-  - **Remaining for #5**: the **conversation view** (manifest → recursive thread/blip
-    components, reply + inline-reply commands, multiple blips), rich-text formatting
-    toolbar (annotations), and a committed Playwright convergence test (validated
-    interactively so far). Then participants UI / polish.
+    reactive-field-initializer shadow that killed re-render, a Lit comment marker
+    counted as text when mapping the caret, and — the big one — a controlled
+    contenteditable that returned from `beforeinput` *without* `preventDefault` on a
+    mapping miss, letting the browser edit natively so the edit showed locally but
+    was never submitted (surfaced as: typing into a just-created blip never reached
+    other clients; the caret had landed in a stray text node at the editable root).
+  - **Remaining for #5**: a line-type formatting **toolbar** (headings/lists; the
+    annotation builders exist), **inline replies** (anchored within blip text),
+    **participants UI**, and selection-preserving formatting. Then polish.
+    A cold-start race (two clients bootstrapping one empty wavelet at once) is noted
+    in `wave-conversation`; the real fix is server-side conversation seeding (ties
+    into auth/access, `#10`).
 
 ### Deferred
 - **Indexed mutable document model** (Java `model/document/`: live editable doc
