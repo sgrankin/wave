@@ -648,6 +648,11 @@ export class BlipView extends LitElement {
         }
         .blip-toolbar button:hover { background: #e8e8e8; }
         .blip-toolbar button:focus-visible { outline: 2px solid #4060c0; outline-offset: 1px; }
+        /* Touch devices get larger, comfortably-tappable toolbar buttons. */
+        @media (pointer: coarse) {
+          .blip-toolbar { gap: 4px; }
+          .blip-toolbar button { min-width: 38px; min-height: 34px; padding: 6px 10px; font-size: 13px; }
+        }
         /* Remote-caret overlay: an absolutely-positioned, non-interactive layer over
            the text. It sits OUTSIDE .blip-doc (a stray element inside the contenteditable
            would corrupt the caret↔offset mapping); positions are computed in updated(). */

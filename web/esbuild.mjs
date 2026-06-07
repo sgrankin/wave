@@ -19,6 +19,9 @@ const options = {
 
 await mkdir("dist", { recursive: true });
 await cp("index.html", "dist/index.html");
+// Static PWA assets (manifest, service worker, icon) live in public/ and are copied
+// verbatim into the web root.
+await cp("public", "dist", { recursive: true });
 
 if (watch) {
   const ctx = await esbuild.context(options);

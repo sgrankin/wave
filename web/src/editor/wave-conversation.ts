@@ -573,5 +573,19 @@ const STYLES = html`
     wave-conversation .add-participant-btn:active {
       background: #d9e3ff;
     }
+    /* Touch devices: give the small text-link actions a comfortable tap area without
+       changing the desktop (mouse) look. */
+    @media (pointer: coarse) {
+      wave-conversation .reply-btn,
+      wave-conversation .reply-inline-btn,
+      wave-conversation .attach-btn,
+      wave-conversation .continue-btn,
+      wave-conversation .add-participant-btn {
+        padding: 8px 10px;
+      }
+      wave-conversation .add-participant-input {
+        padding: 7px 8px;
+      }
+    }
   </style>
 `;

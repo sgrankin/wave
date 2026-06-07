@@ -302,7 +302,8 @@ const STYLES = html`
   <style>
     wave-app {
       display: block;
-      height: 100vh;
+      height: 100vh; /* fallback */
+      height: 100dvh; /* dynamic viewport: correct under a mobile collapsing address bar */
     }
     wave-app .app {
       display: flex;

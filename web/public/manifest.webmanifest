@@ -1,0 +1,14 @@
+{
+  "name": "Wave",
+  "short_name": "Wave",
+  "description": "Real-time collaborative editor",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#4060c0",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any maskable" }
+  ]
+}

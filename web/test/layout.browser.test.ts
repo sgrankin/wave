@@ -44,6 +44,24 @@ test("the blip editor grows with the window width, up to the readable cap", asyn
   }
 });
 
+// PWA: the app links a manifest and registers a service worker (installable). The
+// harness serves over http://127.0.0.1, a secure context, so the SW registers.
+test("the app is an installable PWA (service worker + manifest)", async () => {
+  const page = await client("alice@example.com", "w+pwa");
+  try {
+    // clients.claim() in the SW makes it control this page; wait for that.
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, {
+      timeout: 10_000,
+    });
+    const manifest = await page.evaluate(
+      () => document.querySelector("link[rel=manifest]")?.getAttribute("href") ?? null,
+    );
+    assert.equal(manifest, "/manifest.webmanifest", "a web manifest is linked");
+  } finally {
+    await page.close();
+  }
+});
+
 // Narrow widths must stay usable: the panes stack and the conversation keeps a
 // workable width instead of being squeezed to a sliver by the fixed list pane.
 test("a narrow viewport keeps the conversation usable (no horizontal scroll)", async () => {
