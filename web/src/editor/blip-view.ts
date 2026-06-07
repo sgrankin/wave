@@ -692,11 +692,19 @@ export class BlipView extends LitElement {
     // then savedSelection (a live selection captured across a non-edit re-render).
     const restoreSel = this.pendingSelection ?? this.savedSelection;
     if (restoreSel !== null) {
-      const sel = restoreSel;
       this.pendingSelection = null;
       this.savedSelection = null;
       this.pendingCaret = null;
       this.savedCaret = null;
+      // Clamp to the (possibly shrunk) doc: a non-edit re-render may be a peer delta
+      // that removed text, leaving saved offsets past the end. Unclamped, offsetToDom
+      // falls back to the last paragraph's START (offset 0) — silently mis-placing the
+      // selection. Clamping maps an out-of-range offset to the true document end.
+      const docLen = this.proj.length;
+      const sel = {
+        anchor: Math.max(0, Math.min(restoreSel.anchor, docLen)),
+        focus: Math.max(0, Math.min(restoreSel.focus, docLen)),
+      };
       const anchorPos = this.offsetToDom(sel.anchor);
       const focusPos = this.offsetToDom(sel.focus);
       if (anchorPos !== null && focusPos !== null) {

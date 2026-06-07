@@ -12,8 +12,9 @@
 // It reaches the right editor by climbing the DOM from the selection node (the whole
 // tree is light DOM): format commands go to the enclosing <blip-view> via its public
 // applyCommand(); "Comment" goes to the enclosing <wave-blip> via commentInline().
-// Buttons preventDefault their pointerdown so tapping them never blurs the editor or
-// collapses the selection.
+// Buttons preventDefault their mousedown/pointerdown so tapping them never blurs the
+// editor or collapses the selection (touchstart is deliberately NOT used — see
+// keepSelection).
 //
 // Touch vs. mouse: on a coarse pointer the bar docks to the bottom of the viewport
 // instead of floating at the selection — a floating bar there collides with the
@@ -154,21 +155,24 @@ export class SelectionToolbar extends LitElement {
   }
 
   // run applies a format command (or creates a comment) against the resolved editor.
-  // Called from a button click; the button already preventDefaulted pointerdown, so
-  // the selection is intact. Returns focus is not needed — applyCommand restores the
-  // selection through the blip-view's own re-render path.
+  // Called from a button click; the button already preventDefaulted mousedown/
+  // pointerdown, so the selection is intact. applyCommand restores the selection
+  // through the blip-view's own re-render path (so the bar stays put for a follow-up
+  // command); creating a comment leaves the selection alone too.
   private run(cmd: string): void {
     if (cmd === "comment") {
       this.waveBlip?.commentInline();
-      this.hide();
       return;
     }
     this.blipView?.applyCommand(cmd);
   }
 
   // keepSelection stops a button press from blurring the editor / collapsing the
-  // selection. mousedown covers desktop; touchstart covers iOS Safari, where a tap
-  // outside the contenteditable would otherwise clear the selection before click.
+  // selection. Bound to mousedown AND pointerdown — NOT touchstart: preventDefault on
+  // touchstart suppresses the whole emulated mouse sequence INCLUDING the click, which
+  // would make every button dead on touch. preventDefault on mousedown (desktop, plus
+  // iOS's emulated mousedown) and pointerdown (pen/touch) preserves the selection
+  // without canceling the click that actually runs the command.
   private keepSelection = (e: Event): void => {
     e.preventDefault();
   };
@@ -212,7 +216,7 @@ export class SelectionToolbar extends LitElement {
         role="toolbar"
         aria-label="Text formatting"
         @mousedown=${this.keepSelection}
-        @touchstart=${this.keepSelection}
+        @pointerdown=${this.keepSelection}
       >
         ${btn("bold", "Bold", s.bold, html`<b>B</b>`)}
         ${btn("italic", "Italic", s.italic, html`<i>I</i>`)}

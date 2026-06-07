@@ -151,6 +151,32 @@ export async function testCommandStatesReflectSelection(t: T): Promise<void> {
   eq(commandStates(el).bold, true, "commandStates reports bold over a bold selection");
 }
 
+// A live non-collapsed selection must survive a NON-edit re-render (an ack settling
+// or a peer's delta feeding equivalent content back), so the floating toolbar anchored
+// to it does not vanish. Guards the savedSelection save/restore path in willUpdate/updated.
+export async function testSelectionSurvivesNonEditRerender(t: T): Promise<void> {
+  const el = await render(html`<blip-view .content=${makeContent(null, "hello world")}></blip-view>`);
+  await waitForUpdate(el);
+
+  // Focus so willUpdate preserves the selection (it only does so while focused).
+  findDoc(el).dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  await waitForUpdate(el);
+
+  const para = findDoc(el).querySelector<HTMLElement>(".para");
+  if (para === null) throw new Error("no .para");
+  eq(selectInPara(para, 0, 5), true, "selection placed over 'hello'");
+
+  // Force a re-render that is NOT a local edit: feed back an equivalent (distinct
+  // object) content — like an ack/peer delta round-tripping the same text.
+  (el as HTMLElement & { content: DocOp }).content = makeContent(null, "hello world");
+  await waitForUpdate(el);
+
+  const sel = window.getSelection();
+  if (sel === null) throw new Error("no selection");
+  eq(sel.isCollapsed, false, "selection survived the non-edit re-render (not collapsed)");
+  eq(sel.toString(), "hello", "the same text is still selected after re-render");
+}
+
 export async function testH1ButtonEmitsSetLineType(t: T): Promise<void> {
   const content = makeContent(null, "Title");
   const el = await render(html`<blip-view .content=${content}></blip-view>`);
