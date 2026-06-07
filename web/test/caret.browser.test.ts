@@ -148,6 +148,13 @@ test("a peer's caret renders as a labeled colored bar in the other client", asyn
       });
       assert.equal(info.count, 1, "exactly one remote caret (alice's) is shown");
       assert.ok(info.insideBlip, `the caret bar sits within the blip (left=${info.left})`);
+
+      // When alice's focus leaves the editor entirely, her caret clears in bob's view
+      // (rather than lingering) — the focusout clear path.
+      await alice.locator(".wl-search").click();
+      await bob.waitForFunction(() => document.querySelector(".remote-caret") === null, undefined, {
+        timeout: 10_000,
+      });
     } finally {
       await bob.close();
     }

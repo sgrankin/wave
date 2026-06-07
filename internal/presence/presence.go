@@ -46,8 +46,12 @@ const (
 type State struct {
 	Typing bool   `json:"typing"`
 	BlipID string `json:"blipId"` // the focused blip, "" for none
-	Anchor int    `json:"anchor"` // selection anchor rune offset, -1 for none
-	Focus  int    `json:"focus"`  // selection focus (caret) rune offset, -1 for none
+	// Selection rune offsets in the focused blip. POINTERS so "no caret" is an absent
+	// field (nil), not a zero value: a typing-only client that omits them must not be
+	// read as "caret at offset 0" (which would render a spurious caret at the blip
+	// start). Focus is the moving end; Anchor==Focus is a collapsed caret.
+	Anchor *int `json:"anchor,omitempty"`
+	Focus  *int `json:"focus,omitempty"`
 }
 
 // Update is one participant's presence change (server → client). Online=false is a
@@ -56,8 +60,8 @@ type Update struct {
 	Participant string `json:"participant"`
 	Typing      bool   `json:"typing"`
 	BlipID      string `json:"blipId"`
-	Anchor      int    `json:"anchor"`
-	Focus       int    `json:"focus"`
+	Anchor      *int   `json:"anchor,omitempty"`
+	Focus       *int   `json:"focus,omitempty"`
 	Online      bool   `json:"online"`
 }
 

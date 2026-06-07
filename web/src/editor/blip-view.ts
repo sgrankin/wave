@@ -301,6 +301,16 @@ export class BlipView extends LitElement {
     this.hasFocus = false;
     this.requestUpdate();
     document.removeEventListener("selectionchange", this.onSelectionChange);
+    // Focus left the editor entirely: clear our caret (anchor/focus = -1) so peers
+    // stop rendering it. (A blip-to-blip switch instead overwrites it via the new
+    // blip's focusin, so the caret moves rather than lingering.)
+    this.dispatchEvent(
+      new CustomEvent<{ anchor: number; focus: number }>("caret", {
+        detail: { anchor: -1, focus: -1 },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   };
 
   private onSelectionChange = (): void => {
@@ -482,6 +492,7 @@ export class BlipView extends LitElement {
   // onViewportChange repositions remote carets on scroll/resize, rAF-throttled, and
   // only when some are shown (idle blips do no work).
   private recaretRaf = 0;
+  private hadRemoteCarets = false; // whether the last render drew any (to clear once)
   private onViewportChange = (): void => {
     if (this.remoteCarets.length === 0 || this.recaretRaf !== 0) return;
     this.recaretRaf = requestAnimationFrame(() => {
@@ -568,6 +579,14 @@ export class BlipView extends LitElement {
   // current proj.
   protected override willUpdate(): void {
     if (this.pendingCaret !== null || this.pendingSelection !== null) return;
+    // Only preserve the caret across a re-render while we hold focus. Restoring it
+    // into an UNFOCUSED editor (updated() calls selection.addRange, which focuses the
+    // contenteditable) would re-grab focus the user just gave away — defeating blur
+    // (and the focusout caret-clear, which a re-grab would immediately re-publish).
+    if (!this.hasFocus) {
+      this.savedCaret = null;
+      return;
+    }
     const range = currentRange(this);
     this.savedCaret = range === null ? null : this.domToOffset(range.startContainer, range.startOffset);
   }
@@ -673,8 +692,13 @@ export class BlipView extends LitElement {
   }
 
   protected override updated(): void {
-    // Reposition remote carets after every render (the DOM/text just changed).
-    this.renderRemoteCarets();
+    // Reposition remote carets after every render (the DOM/text just changed), but
+    // skip the work for blips nobody is caretted in — which is most of them on each
+    // keystroke. Still render once when the last peer leaves, to clear the overlay.
+    if (this.remoteCarets.length > 0 || this.hadRemoteCarets) {
+      this.renderRemoteCarets();
+      this.hadRemoteCarets = this.remoteCarets.length > 0;
+    }
     // pendingSelection takes priority: restore a non-collapsed selection (after B/I).
     if (this.pendingSelection !== null) {
       const sel = this.pendingSelection;
