@@ -431,6 +431,23 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   header-only token). Deferred (see doc §A.9): stdio gateway transport, hashed
   per-account tokens, container-cache eviction, agent add-participant allowlist,
   mid-session membership revocation, wire `seq`.
+- **Operability & deployment — DONE 2026-06-07** (`#19`). Deployment-readiness
+  hardening on top of the existing structured `slog` logging + expvar metrics +
+  signal-driven graceful shutdown. **Packaging:** `web/embed.go` embeds the built
+  client behind a `-tags embed` build tag (`web/embed_stub.go` is the default
+  no-embed half); waved serves the embedded client (`http.FileServerFS`) when present,
+  else `-webroot`. `make release` builds `web/dist` then a single CGO-free
+  `waved` binary — verified it serves the client with no `-webroot`. **Health:**
+  `/readyz` pings the DB (`sqlite.Store.Ping`) → 503 when unreachable, distinct from
+  `/healthz` liveness; added `/version` + a `wave_build_version` expvar. **Config:**
+  env-var fallback for any unset flag (`WAVED_<FLAG>`), explicit flags win — 12-factor
+  friendly. **Notifications:** a guarded browser desktop notification for newly-unread
+  inbox waves (permission on a user gesture, dedup, silent first-load seed); email/push
+  is an outward-facing concern, deferred. Validated: Go tests (readyHandler 200/503,
+  env-default vs explicit-flag-wins), default + `-tags embed` builds, the embed binary
+  serving the client, web typecheck/unit/component + the Playwright e2e, and a
+  fresh-eyes code review (one notification-dedup footgun pre-empted with a guard +
+  doc — notifications are inbox-only by construction).
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
