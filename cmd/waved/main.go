@@ -505,6 +505,8 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 	case "proxy":
 		mux.Handle("/login", authSvc.LoginHandler())
 	}
+	// Logout clears the session cookie (no identity required to clear it).
+	mux.Handle("/logout", authSvc.LogoutHandler())
 	// The read-side wave query API (inbox/search) backs the app shell's wave list;
 	// it is available only when the index is maintained (-index).
 	if idx != nil {

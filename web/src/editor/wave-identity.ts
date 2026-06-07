@@ -60,6 +60,15 @@ export class WaveIdentity extends LitElement {
     this.editing = true;
   };
 
+  // logout clears the session cookie, then reloads to re-boot (which shows the
+  // in-app login form). fetch + reload — no cross-document navigation, so an
+  // installed PWA stays in standalone.
+  private logout = (): void => {
+    void fetch("/logout", { method: "POST", credentials: "same-origin" })
+      .catch(() => {})
+      .finally(() => location.reload());
+  };
+
   private cancel = (): void => {
     this.saveError = false;
     this.editing = false;
@@ -116,6 +125,9 @@ export class WaveIdentity extends LitElement {
         <button type="button" class="identity-edit" @click=${this.startEdit} title="Set your display name">
           edit
         </button>
+        <button type="button" class="identity-logout" @click=${this.logout} title="Sign out">
+          sign out
+        </button>
       </div>
     `;
   }
@@ -166,6 +178,23 @@ const STYLES = html`
       outline-offset: 1px;
       border-radius: 4px;
       text-decoration: underline;
+    }
+    wave-identity .identity-logout {
+      font: 11px system-ui, sans-serif;
+      color: #777;
+      background: none;
+      border: none;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+    wave-identity .identity-logout:hover {
+      color: #c62828;
+      text-decoration: underline;
+    }
+    wave-identity .identity-logout:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
+      border-radius: 4px;
     }
     wave-identity .wave-identity.editing {
       display: flex;

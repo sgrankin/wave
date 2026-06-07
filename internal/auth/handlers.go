@@ -26,6 +26,16 @@ func (s *Service) WhoAmIHandler() http.Handler {
 	})
 }
 
+// LogoutHandler clears the session cookie. Mount it WITHOUT Middleware (clearing a
+// cookie needs no valid identity); responds 204. The client re-boots afterward —
+// which, with no cookie, shows the login modal (dev) or re-auths via the proxy.
+func (s *Service) LogoutHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s.ClearCookie(w)
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
 // LoginHandler authenticates via the provider chain (e.g. a trusted proxy header)
 // and, on success, sets the session cookie and redirects to the (local) redirect
 // parameter, default "/". Use it for proxy / non-interactive deployments where

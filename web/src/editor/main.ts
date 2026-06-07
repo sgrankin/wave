@@ -30,8 +30,11 @@ async function boot(): Promise<void> {
     return;
   }
   if (resp.status === 401) {
-    // Not signed in: go to the login endpoint, returning here afterward. Forward
-    // a ?user= hint if present (dev login trusts it) for one-click demo/test links.
+    // Not signed in: navigate to the login endpoint, returning here afterward. This
+    // is a full-page navigation by design — it mirrors how OIDC will redirect to an
+    // IdP and back (browser chrome on the auth page is expected/fine). On iOS, just
+    // "Add to Home Screen" from the root page, not the login page, so the installed
+    // PWA launches at "/" and only navigates to /login when actually signed out.
     const here = location.pathname + location.search;
     const hint = params.get("user");
     const q = new URLSearchParams({ redirect: here });

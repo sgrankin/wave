@@ -157,6 +157,21 @@ func (s *Service) SetCookie(w http.ResponseWriter, participant id.ParticipantID)
 	})
 }
 
+// ClearCookie expires the session cookie (logout). It mirrors SetCookie's
+// attributes (Path/Secure/etc.) so the browser matches and overwrites the cookie,
+// then MaxAge=-1 deletes it.
+func (s *Service) ClearCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
 // Login authenticates a request via the chain and, on success, sets a session
 // cookie so subsequent requests skip the providers.
 func (s *Service) Login(w http.ResponseWriter, r *http.Request) (id.ParticipantID, bool, error) {

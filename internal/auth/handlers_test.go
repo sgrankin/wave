@@ -176,3 +176,21 @@ func TestProxyLoginHandler(t *testing.T) {
 	}
 	sessionCookie(t, rec2.Result())
 }
+
+func TestLogoutClearsCookie(t *testing.T) {
+	svc := devService(newFakeAccounts())
+	rec := httptest.NewRecorder()
+	svc.LogoutHandler().ServeHTTP(rec, httptest.NewRequest("POST", "/logout", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "wave_session" && (c.MaxAge < 0 || c.Value == "") {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("logout did not clear the session cookie")
+	}
+}
