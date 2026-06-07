@@ -34,6 +34,7 @@ import (
 	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/playbackapi"
+	"github.com/sgrankin/wave/internal/presence"
 	"github.com/sgrankin/wave/internal/profileapi"
 	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
@@ -216,7 +217,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, store, logger)
 
-	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, store, attachStore, logger)
+	wsSrv, err := startWebSocket(ctx, cfg, srv, authSvc, idx, store, attachStore, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -433,7 +434,7 @@ func parseAgents(s string) (agentgw.StaticAuth, error) {
 // authenticated participant is bound to the request (identify reads it from the
 // context). The static web root is intentionally NOT authenticated — the app
 // shell must load so its JS can call /whoami and redirect to /login when needed.
-func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, attachStore *attachments.Store, logger *slog.Logger) (*http.Server, error) {
+func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, attachStore *attachments.Store, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
@@ -447,6 +448,11 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 	mux := http.NewServeMux()
 	mux.Handle("/socket", authSvc.Middleware(srv.WebSocketHandler(identify)))
 	mux.Handle("/whoami", authSvc.Middleware(authSvc.WhoAmIHandler()))
+	// Transient presence (who is here / typing / focused blip) — a separate channel
+	// from the OT socket, behind the same auth and the same access policy as the
+	// socket (srv.Access: nil dev-permissive, MembershipChecker in proxy mode).
+	mux.Handle("/presence", authSvc.Middleware(
+		presence.New(ctx, presence.NewHub(), srv.Access, identify, logger)))
 	switch cfg.authMode {
 	case "dev":
 		mux.Handle("/login", authSvc.DevLoginHandler(cfg.authDomain))
