@@ -18,6 +18,7 @@ import type { Component, DocOp } from "../wave/types.ts";
 
 const BODY = "body";
 const LINE = "line";
+const REPLY = "reply"; // inline-reply anchor element (conv.tagReply)
 const STYLE_PREFIX = "style/";
 
 /** A contiguous run of text sharing the same active style annotations. */
@@ -40,6 +41,10 @@ export interface Paragraph {
   /** Text length of the paragraph in runes (sum of span lengths). */
   readonly textLength: number;
   readonly spans: readonly Span[];
+  /** Inline-reply thread ids anchored within this paragraph (the <reply id> markers
+   *  that fall in its range), in document order. Rendered as a marker after the
+   *  text; the inline reply thread itself attaches to this paragraph. */
+  readonly anchors: readonly string[];
 }
 
 /** The projected, renderable view of a blip body. */
@@ -56,6 +61,7 @@ interface MutParagraph {
   textStart: number;
   textLength: number;
   spans: Span[];
+  anchors: string[];
 }
 
 /**
@@ -75,7 +81,7 @@ export function project(content: DocOp): BlipProjection {
   const ensureParagraph = (): MutParagraph => {
     if (cur === null) {
       // Text before any <line> (flat blip, or leading text): implicit plain paragraph.
-      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [] };
+      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [], anchors: [] };
       paras.push(cur);
     }
     return cur;
@@ -92,8 +98,14 @@ export function project(content: DocOp): BlipProjection {
             textStart: pos + 1, // text begins after the (empty) <line> marker's start+end
             textLength: 0,
             spans: [],
+            anchors: [],
           };
           paras.push(cur);
+        } else if (c.type === REPLY) {
+          // An inline-reply anchor: record it on the current paragraph. It is placed
+          // at a line boundary (after the paragraph's text), so it does NOT shift any
+          // intra-paragraph caret offset — the caret mapping needs no adjustment.
+          ensureParagraph().anchors.push(c.attributes.get("id") ?? "");
         }
         stack.push(c.type);
         pos += 1;

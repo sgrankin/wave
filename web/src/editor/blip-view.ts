@@ -306,6 +306,20 @@ export class BlipView extends LitElement {
     return this.proj.paragraphs[this.proj.paragraphs.length - 1] ?? null;
   }
 
+  // caretLineEndOffset returns the doc offset at the end of the paragraph that
+  // contains the caret — the line boundary where an inline-reply anchor attaches —
+  // or null if there is no caret in this view. Anchoring at a line boundary (not
+  // mid-text) keeps the caret/offset mapping unaffected by the inserted anchor.
+  caretLineEndOffset(): number | null {
+    const range = currentRange(this);
+    if (range === null) return null;
+    const off = this.domToOffset(range.startContainer, range.startOffset);
+    if (off === null) return null;
+    const para = this.paragraphAtOffset(off);
+    if (para === null) return null;
+    return para.textStart + para.textLength;
+  }
+
   // --- DOM <-> doc offset mapping ---
 
   // domToOffset maps a DOM (node, offset) selection point to a doc offset, using
@@ -429,6 +443,8 @@ export class BlipView extends LitElement {
         .blip-doc .para { min-height: 1.6em; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
+        .blip-doc .reply-anchor { user-select: none; cursor: default; }
+        .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
         .blip-toolbar {
           display: flex;
           gap: 2px;
@@ -542,12 +558,18 @@ const EMPTY_PARAGRAPH: Paragraph = {
   textStart: 0,
   textLength: 0,
   spans: [],
+  anchors: [],
 };
 
 function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
   const style = paragraphStyle(p);
   const body = p.spans.length === 0 ? html`<br />` : p.spans.map((s) => renderSpan(s, selfAddress));
-  return html`<div class="para" style=${style}>${body}</div>`;
+  // Inline-reply anchors render as a non-editable marker (glyph via CSS ::after, no
+  // text node) after the paragraph's text, so they do not affect the caret mapping.
+  const markers = p.anchors.map(
+    (id) => html`<span class="reply-anchor" data-thread-id=${id} contenteditable="false"></span>`,
+  );
+  return html`<div class="para" style=${style}>${body}${markers}</div>`;
 }
 
 function renderSpan(s: Span, selfAddress: string): TemplateResult {

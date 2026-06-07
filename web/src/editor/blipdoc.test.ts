@@ -358,3 +358,44 @@ test("rangeStyle: empty range returns value at point", () => {
   // outside the bold range (before it)
   assert.equal(rangeStyle(content, base, base, "fontWeight"), null);
 });
+
+// --- inline-reply anchors (the caret-safety invariant) ---
+
+test("project surfaces a reply anchor without disturbing the caret math", () => {
+  // <body><line/>hi<reply id="b+r"/></body>
+  const content = new DocOp([es("body"), es("line"), ee, ch("hi"), es("reply", { id: "b+r" }), ee, ee]);
+  const proj = project(content);
+
+  assert.equal(proj.paragraphs.length, 1);
+  const p = proj.paragraphs[0]!;
+  assert.deepEqual(p.anchors, ["b+r"], "anchor recorded on the paragraph");
+  assert.equal(p.textLength, 2, "anchor is not counted in the text length");
+  assert.equal(paragraphText(p), "hi", "text excludes the anchor");
+  // The caret at the end of the text maps before the 2-item <reply>, and the
+  // anchor occupies the trailing doc items (proj.length counts them).
+  assert.equal(caretToOffset(proj, 0, 2), p.textStart + 2, "caret at line end is before the anchor");
+  assert.equal(proj.length, 8, "8 doc items (body, line/, h, i, reply/, body)");
+});
+
+test("a reply anchor does not shift a following paragraph's offsets", () => {
+  // <body><line/>hi<reply id="b+r"/><line/>bye</body>
+  const content = new DocOp([
+    es("body"),
+    es("line"),
+    ee,
+    ch("hi"),
+    es("reply", { id: "b+r" }),
+    ee,
+    es("line"),
+    ee,
+    ch("bye"),
+    ee,
+  ]);
+  const proj = project(content);
+  assert.equal(proj.paragraphs.length, 2);
+  assert.deepEqual(proj.paragraphs[0]!.anchors, ["b+r"]);
+  assert.deepEqual(proj.paragraphs[1]!.anchors, [], "second paragraph has no anchors");
+  // Second paragraph's text "bye" begins after the 2-item anchor + the second <line>.
+  assert.equal(paragraphText(proj.paragraphs[1]!), "bye");
+  assert.equal(caretToOffset(proj, 1, 0), proj.paragraphs[1]!.textStart, "second paragraph offset intact");
+});

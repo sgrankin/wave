@@ -37,6 +37,7 @@ interface ContinueCall {
 interface ReplyCall {
   parentBlipId: string;
   inline: boolean;
+  anchorOffset: number | undefined;
 }
 
 function fakeController(contents?: Map<string, DocOp>): ConvController & {
@@ -60,8 +61,8 @@ function fakeController(contents?: Map<string, DocOp>): ConvController & {
     continueThread(threadId: string): void {
       continueCalls.push({ threadId });
     },
-    replyToBlip(parentBlipId: string, inline: boolean): void {
-      replyCalls.push({ parentBlipId, inline });
+    replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): void {
+      replyCalls.push({ parentBlipId, inline, anchorOffset });
     },
     participants(): string[] {
       return [];
@@ -281,6 +282,25 @@ export async function testReplyButtonOnSecondBlip(t: T): Promise<void> {
 
   eq(ctrl.replyCalls.length, 1, "replyToBlip called once");
   eq(ctrl.replyCalls[0]!.parentBlipId, "b2", "replyToBlip called with second blip id");
+}
+
+export async function testReplyInlineButtonAnchors(t: T): Promise<void> {
+  const ctrl = fakeController();
+  const th = thread("", [blip("b1")]);
+
+  const el = await render(html`<wave-thread .thread=${th} .controller=${ctrl}></wave-thread>`);
+  await waitForNestedUpdates(el);
+
+  const inlineBtn = el.querySelector<HTMLButtonElement>(".reply-inline-btn");
+  eq(inlineBtn !== null, true, "inline reply button present");
+  inlineBtn!.click();
+
+  eq(ctrl.replyCalls.length, 1, "replyToBlip called once");
+  eq(ctrl.replyCalls[0]!.parentBlipId, "b1", "inline reply parent blip id");
+  eq(ctrl.replyCalls[0]!.inline, true, "inline reply marks inline=true");
+  // No caret is placed in the test, so it anchors at the end of the (empty) blip —
+  // a defined, non-negative offset.
+  eq(typeof ctrl.replyCalls[0]!.anchorOffset === "number", true, "an anchor offset is passed");
 }
 
 export async function testEditEventCallsEditBlip(t: T): Promise<void> {

@@ -172,3 +172,48 @@ test("a wave is unread for a participant until they open it", async () => {
     { timeout: 15_000 },
   );
 });
+
+test("an inline reply anchors a marker in the parent text and keeps it editable", async () => {
+  const page = await openApp("dave@example.com");
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+
+  const blip = page.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("Topic one", { delay: 5 });
+
+  // Reply inline: an anchor marker appears in the parent text, and a distinctly
+  // styled inline reply thread is added.
+  await page.locator(".reply-inline-btn").first().click();
+  await page.waitForFunction(
+    () => {
+      const parent = document.querySelector(".blip-doc");
+      return (
+        parent !== null &&
+        parent.querySelectorAll(".reply-anchor").length === 1 &&
+        document.querySelectorAll(".wave-thread.inline").length === 1 &&
+        document.querySelectorAll(".blip-doc").length === 2
+      );
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // The parent blip stays editable and caret-correct despite the embedded anchor:
+  // typing more text appends without corruption.
+  await blip.click();
+  await blip.pressSequentially(" more", { delay: 5 });
+  await page.waitForFunction(
+    () => {
+      const para = document.querySelector(".blip-doc .para");
+      return para !== null && (para.textContent ?? "").includes("Topic one more");
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  // The anchor marker survived the edit (still exactly one).
+  const markers = await page.evaluate(
+    () => document.querySelector(".blip-doc")?.querySelectorAll(".reply-anchor").length ?? -1,
+  );
+  assert.equal(markers, 1, "anchor marker intact after editing the parent");
+});

@@ -43,6 +43,20 @@ export class WaveBlip extends LitElement {
     this.controller.replyToBlip(this.blip.id, false);
   };
 
+  // onReplyInline anchors a reply within the parent blip's text, at the line the
+  // caret is in (or the end of the blip if the caret is elsewhere).
+  private onReplyInline = (): void => {
+    const view = this.querySelector("blip-view") as
+      | (HTMLElement & { caretLineEndOffset(): number | null })
+      | null;
+    let offset = view?.caretLineEndOffset() ?? null;
+    if (offset === null) {
+      const len = this.controller.blipContent(this.blip.id).documentLength();
+      offset = Math.max(0, len - 1); // before </body>
+    }
+    this.controller.replyToBlip(this.blip.id, true, offset);
+  };
+
   protected override render(): TemplateResult {
     const content = this.controller.blipContent(this.blip.id);
     return html`
@@ -54,6 +68,7 @@ export class WaveBlip extends LitElement {
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
+          <button class="reply-inline-btn" @click=${this.onReplyInline}>Reply inline</button>
         </div>
         ${this.blip.threads.map(
           (t) => html`<wave-thread .thread=${t} .controller=${this.controller}></wave-thread>`,

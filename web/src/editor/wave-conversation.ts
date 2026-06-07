@@ -23,6 +23,7 @@ import { debugEnabled } from "../wave/debug.ts";
 import {
   appendBlipToThread,
   initialBlipContent,
+  insertReplyAnchor,
   newBlipID,
   readManifest,
   replyToBlip as buildReplyOp,
@@ -135,15 +136,28 @@ export class WaveConversation extends LitElement {
           ];
         });
       },
-      replyToBlip: (parentId, inline) => {
+      replyToBlip: (parentId, inline, anchorOffset) => {
         void client.submitWith((blip) => {
           const manifest = blip(MANIFEST_ID);
           if (manifest === undefined) return [];
           const id = newBlipID();
-          return [
+          const ops = [
             blipContentOp(author, MANIFEST_ID, buildReplyOp(manifest, parentId, id, inline)),
             blipContentOp(author, id, initialBlipContent()),
           ];
+          // For an inline reply, also anchor it in the parent blip body at the
+          // requested line boundary (clamped to the current content length, since
+          // submitWith re-reads the live blip at submit time).
+          if (inline && anchorOffset !== undefined) {
+            const parentBody = blip(parentId);
+            if (parentBody !== undefined) {
+              // Clamp to before the final </body> so the anchor stays inside the
+              // body (documentLength() itself is past it).
+              const at = Math.max(0, Math.min(anchorOffset, parentBody.documentLength() - 1));
+              ops.push(blipContentOp(author, parentId, insertReplyAnchor(parentBody, id, at)));
+            }
+          }
+          return ops;
         });
       },
       participants: () => client.participants(),
@@ -235,6 +249,11 @@ const STYLES = html`
       border-left: 2px solid #e0e0e0;
       padding-left: 12px;
     }
+    wave-conversation .wave-thread.inline {
+      border-left-color: #4060c0;
+      background: #f7f9ff;
+      border-radius: 0 6px 6px 0;
+    }
     wave-conversation .wave-blip {
       margin: 6px 0;
     }
@@ -249,6 +268,7 @@ const STYLES = html`
       margin: 2px 0 0;
     }
     wave-conversation .reply-btn,
+    wave-conversation .reply-inline-btn,
     wave-conversation .continue-btn {
       font: 11px system-ui, sans-serif;
       color: #4060c0;
@@ -258,6 +278,7 @@ const STYLES = html`
       cursor: pointer;
     }
     wave-conversation .reply-btn:hover,
+    wave-conversation .reply-inline-btn:hover,
     wave-conversation .continue-btn:hover {
       text-decoration: underline;
     }

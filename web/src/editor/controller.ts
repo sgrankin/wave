@@ -31,7 +31,10 @@ export interface ConvController {
   // create that blip's content, in one delta.
   continueThread(threadId: string): void;
   // Create a new reply thread under a blip (and its first blip), in one delta.
-  replyToBlip(parentBlipId: string, inline: boolean): void;
+  // When inline and anchorOffset is given, also place a <reply> anchor in the
+  // parent blip body at that offset (a line boundary) so the reply is anchored
+  // within the text.
+  replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): void;
   // The current optimistic participant roster (may change on each re-render).
   participants(): Participant[];
   // Submit an addParticipant op for addr. Throws if addr is not a valid participant address.
