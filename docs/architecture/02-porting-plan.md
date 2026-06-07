@@ -371,6 +371,16 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   converges char-by-char, so presence is an awareness overlay that needs a separate
   transient (non-OT) broadcast channel — a distinct subsystem, designed but not yet
   built.
+- **Rich content — CORE DONE 2026-06-07** (`#16`). Auto-linking of URLs in blip
+  text (a render-time decoration, like mentions); `internal/attachapi` MOUNTED on
+  the browser server (`-attach-root`; behind `auth.Service.Middleware` +
+  `transport.MembershipChecker`, integration-tested); and inline image attachments
+  — an `<image attachment=id>` element (`conv.InsertImage`/`ReadImages` + TS mirror)
+  rendered caret-safely as an `<img>` from `/attachments/<id>` (reusing the
+  reply-anchor line-boundary marker pattern), with an Attach button that uploads the
+  file and inserts the element. A Playwright e2e uploads a real PNG and asserts it
+  loads from the server through auth + membership. Deferred (minor): link
+  previews/embeds and a manual-link toolbar (auto-linking covers the common case).
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
