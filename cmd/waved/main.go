@@ -31,6 +31,7 @@ import (
 	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/id"
+	"github.com/sgrankin/wave/internal/playbackapi"
 	"github.com/sgrankin/wave/internal/profileapi"
 	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
@@ -383,6 +384,16 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 		routes := authSvc.Middleware(ph.Routes())
 		mux.Handle("/api/profiles", routes)
 		mux.Handle("/api/profile", routes)
+	}
+	// History playback (read-only timeline + rendered conversation at a past
+	// version), gated by wavelet membership. Mounted at the /api/playback/ subtree
+	// so it wins over the queryapi "/api/" subtree above.
+	{
+		pbh := playbackapi.New(
+			playbackapi.NewWaveMapReader(srv.WaveMap),
+			transport.MembershipChecker{WaveMap: srv.WaveMap},
+			identify, logger)
+		mux.Handle("/api/playback/", authSvc.Middleware(pbh.Routes()))
 	}
 	// Attachment blobs (upload/download/thumbnail), gated by wavelet membership.
 	// Both patterns are needed: "/attachments" matches the bare upload path and

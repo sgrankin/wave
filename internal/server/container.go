@@ -56,6 +56,16 @@ type SubmitResult struct {
 	Timestamp        int64
 }
 
+// DeltaHeader is a lightweight summary of one applied delta for history/playback
+// timelines: who, when, the resulting wavelet version, and how many ops — without
+// the op payload.
+type DeltaHeader struct {
+	Author    id.ParticipantID
+	Version   uint64 // resulting version (the wavelet version after this delta)
+	Timestamp int64
+	OpCount   int
+}
+
 // Load reconstructs a container by replaying the wavelet's persisted delta log
 // from version zero (no snapshot cache). Each delta's canonical bytes are
 // recomputed and applied, and the resulting hashed version is verified against
@@ -218,6 +228,67 @@ func (c *WaveletContainer) Wavelet() *wavelet.Data {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.wavelet
+}
+
+// DeltaHeaders returns a summary of every applied delta in version order, for a
+// playback/history timeline. It reads only the persisted log (not live state), so
+// it is safe concurrent with submits.
+func (c *WaveletContainer) DeltaHeaders() ([]DeltaHeader, error) {
+	records, err := c.deltas.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("server: read history %s: %w", c.name, err)
+	}
+	headers := make([]DeltaHeader, len(records))
+	for i, rec := range records {
+		headers[i] = DeltaHeader{
+			Author:    rec.Author,
+			Version:   rec.ResultingVersion.Version(),
+			Timestamp: rec.Timestamp,
+			OpCount:   len(rec.Ops),
+		}
+	}
+	return headers, nil
+}
+
+// StateAt reconstructs the wavelet's state at a past version by replaying the
+// persisted delta log from zero onto a fresh wavelet — independent of the live
+// container (it reads only storage, so it is safe concurrent with submits, and the
+// returned *wavelet.Data is a private throwaway the caller may read without the
+// container lock). targetVersion must be a delta-boundary version (some delta's
+// resulting version); 0 returns (nil, nil) for the empty / never-created state.
+// Returns an error if targetVersion is not such a boundary (e.g. mid-delta, or
+// past the log's end). Each step's recomputed hash is verified against the log, so
+// corruption surfaces as an error rather than a wrong reconstruction.
+func (c *WaveletContainer) StateAt(targetVersion uint64) (*wavelet.Data, error) {
+	if targetVersion == 0 {
+		return nil, nil
+	}
+	records, err := c.deltas.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("server: read history %s: %w", c.name, err)
+	}
+	var w *wavelet.Data
+	for _, rec := range records {
+		if rec.ResultingVersion.Version() > targetVersion {
+			break // a later boundary; targetVersion (if valid) was already reached
+		}
+		if w == nil {
+			w = wavelet.New(c.name.Wave(), c.name.Wavelet(), rec.Author, rec.Timestamp, c.zero)
+		}
+		hashBytes := codec.HashBytes(rec.Author, rec.AppliedAtVersion, rec.Timestamp, rec.Ops)
+		d := waveop.NewWaveletDelta(rec.Author, w.HashedVersion(), rec.Ops)
+		if err := w.ApplyDelta(d, hashBytes); err != nil {
+			return nil, fmt.Errorf("server: replay %s to version %d: %w", c.name, targetVersion, err)
+		}
+		if w.HashedVersion().Compare(rec.ResultingVersion) != 0 {
+			return nil, fmt.Errorf("server: replay hash mismatch at version %d for %s",
+				rec.ResultingVersion.Version(), c.name)
+		}
+	}
+	if w == nil || w.HashedVersion().Version() != targetVersion {
+		return nil, fmt.Errorf("server: no such version %d for %s", targetVersion, c.name)
+	}
+	return w, nil
 }
 
 // Submit validates, transforms-to-head, applies, hashes, and persists a client
