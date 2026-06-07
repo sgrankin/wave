@@ -8,7 +8,8 @@
 // Go reference: internal/conv/manifest.go.
 // Spec: docs/specs/01-data-model.md §3 (conversation model), §8.3 (creating a blip).
 
-import { Attributes, DocOp } from "./types.ts";
+import { Attributes, DocOp, runeCount } from "./types.ts";
+import type { Component } from "./types.ts";
 import { attr, childElements, root } from "./doc.ts";
 import type { Element } from "./doc.ts";
 
@@ -147,4 +148,89 @@ export function appendBlipToRootThread(manifest: DocOp, blipID: string): DocOp {
     { kind: "elementEnd" },
     { kind: "retain", count: 1 },
   ]);
+}
+
+// appendBlipToThread returns the operation appending an empty <blip id="blipID"/>
+// to the end of the thread identified by threadID — the empty string selects the
+// root thread (the children of <conversation> itself). It throws if no such
+// thread exists. Generalises appendBlipToRootThread. (Port of
+// conv.AppendBlipToThread.)
+export function appendBlipToThread(manifest: DocOp, threadID: string, blipID: string): DocOp {
+  const close = elementCloseOffset(manifest, (tag, id) =>
+    threadID === "" ? tag === tagConversation : tag === tagThread && id === threadID,
+  );
+  if (close === null) throw new Error(`conv: no thread ${JSON.stringify(threadID)} in manifest`);
+  const n = manifest.documentLength();
+  return new DocOp([
+    { kind: "retain", count: close },
+    { kind: "elementStart", type: tagBlip, attributes: Attributes.of({ [attrID]: blipID }) },
+    { kind: "elementEnd" },
+    { kind: "retain", count: n - close },
+  ]);
+}
+
+// replyToBlip returns the operation creating a new reply thread under the blip
+// parentBlipID, containing a single new blip newBlipID. The thread's id equals
+// the new blip's id (the Wave convention: a reply thread is identified by its
+// first blip); inline marks it inline="true". It throws if no such blip exists.
+// The caller pairs this manifest mutation with a blip operation initialising
+// newBlipID's content (initialBlipContent) in the same wavelet delta. (Port of
+// conv.ReplyToBlip.)
+export function replyToBlip(manifest: DocOp, parentBlipID: string, newBlipID: string, inline: boolean): DocOp {
+  const close = elementCloseOffset(manifest, (tag, id) => tag === tagBlip && id === parentBlipID);
+  if (close === null) throw new Error(`conv: no blip ${JSON.stringify(parentBlipID)} in manifest`);
+  const threadAttrs: Record<string, string> = { [attrID]: newBlipID };
+  if (inline) threadAttrs[attrInline] = boolTrue;
+  const n = manifest.documentLength();
+  return new DocOp([
+    { kind: "retain", count: close },
+    { kind: "elementStart", type: tagThread, attributes: Attributes.of(threadAttrs) },
+    { kind: "elementStart", type: tagBlip, attributes: Attributes.of({ [attrID]: newBlipID }) },
+    { kind: "elementEnd" }, // blip
+    { kind: "elementEnd" }, // thread
+    { kind: "retain", count: n - close },
+  ]);
+}
+
+// elementCloseOffset returns the document offset of the ElementEnd item that
+// closes the first element (by close order) whose (tag, id) satisfies pred, where
+// id is the element's "id" attribute ("" if absent) — i.e. the insertion point
+// for appending a child to the very end of that element. Returns null if no
+// element matches. Assumes a well-formed initialization (balanced elements, no
+// retains/deletions), which every manifest is. (Port of conv.elementCloseOffset.)
+function elementCloseOffset(manifest: DocOp, pred: (tag: string, id: string) => boolean): number | null {
+  const stack: Array<{ tag: string; id: string }> = [];
+  let pos = 0;
+  for (const c of manifest.components as readonly Component[]) {
+    switch (c.kind) {
+      case "elementStart":
+        stack.push({ tag: c.type, id: c.attributes.get(attrID) ?? "" });
+        pos += 1;
+        break;
+      case "elementEnd": {
+        const top = stack.pop();
+        if (top === undefined) return null; // unbalanced; not a valid manifest
+        if (pred(top.tag, top.id)) return pos;
+        pos += 1;
+        break;
+      }
+      case "characters":
+        pos += runeCount(c.text);
+        break;
+      default:
+        // annotationBoundary is zero-width; nothing else appears in an initialization.
+        break;
+    }
+  }
+  return null;
+}
+
+// newBlipID generates a fresh, unique blip id in the Wave "b+<token>" form. The
+// token is random (not a hash); ids only need to be unique within a wavelet.
+export function newBlipID(): string {
+  const b = new Uint8Array(9);
+  crypto.getRandomValues(b);
+  let s = "";
+  for (const x of b) s += x.toString(16).padStart(2, "0");
+  return "b+" + s;
 }

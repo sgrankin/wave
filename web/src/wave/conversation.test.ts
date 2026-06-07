@@ -10,9 +10,12 @@ import { compose } from "./compose.ts";
 import { childElements, root } from "./doc.ts";
 import {
   appendBlipToRootThread,
+  appendBlipToThread,
   emptyManifest,
   initialBlipContent,
+  newBlipID,
   readManifest,
+  replyToBlip,
 } from "./conversation.ts";
 
 function attrs(m: Record<string, string> | null): Attributes {
@@ -146,6 +149,80 @@ test("readManifest reads deleted blips", () => {
   assert.equal(m.rootThread.blips.length, 2);
   assert.equal(m.rootThread.blips[0]!.deleted, true);
   assert.equal(m.rootThread.blips[1]!.deleted, false);
+});
+
+// --- general thread authoring (mirrors the Go TestReply* / TestAppend* tests) ---
+
+function append(manifest: DocOp, threadID: string, blipID: string): DocOp {
+  return compose(manifest, appendBlipToThread(manifest, threadID, blipID));
+}
+function reply(manifest: DocOp, parentBlipID: string, newBlipID: string, inline: boolean): DocOp {
+  return compose(manifest, replyToBlip(manifest, parentBlipID, newBlipID, inline));
+}
+
+test("appendBlipToThread with empty threadID matches appendBlipToRootThread", () => {
+  const manifest = emptyManifest();
+  const viaGeneral = compose(manifest, appendBlipToThread(manifest, "", "b+1"));
+  const viaRoot = compose(manifest, appendBlipToRootThread(manifest, "b+1"));
+  assert.deepEqual(
+    readManifest(viaGeneral).rootThread.blips.map((b) => b.id),
+    readManifest(viaRoot).rootThread.blips.map((b) => b.id),
+  );
+});
+
+test("reply creates a thread (id == new blip id) and continue appends to it", () => {
+  let manifest = emptyManifest();
+  manifest = append(manifest, "", "b+1"); // root blip
+  manifest = reply(manifest, "b+1", "b+2", false); // reply thread b+2 under b+1
+  manifest = append(manifest, "b+2", "b+3"); // continue thread b+2
+
+  const m = readManifest(manifest);
+  assert.deepEqual(m.rootThread.blips.map((b) => b.id), ["b+1"]);
+  const b1 = m.rootThread.blips[0]!;
+  assert.equal(b1.threads.length, 1);
+  const th = b1.threads[0]!;
+  assert.equal(th.id, "b+2");
+  assert.equal(th.inline, false);
+  assert.deepEqual(th.blips.map((b) => b.id), ["b+2", "b+3"]);
+});
+
+test("inline reply marks the thread inline", () => {
+  let manifest = append(emptyManifest(), "", "b+1");
+  manifest = reply(manifest, "b+1", "b+2", true);
+  const th = readManifest(manifest).rootThread.blips[0]!.threads[0]!;
+  assert.equal(th.inline, true);
+});
+
+test("reply targets the right nested blip and leaves siblings intact", () => {
+  let manifest = emptyManifest();
+  manifest = append(manifest, "", "b+1");
+  manifest = append(manifest, "", "b+2"); // two root blips
+  manifest = reply(manifest, "b+2", "b+3", false); // reply under the second
+  manifest = reply(manifest, "b+3", "b+4", false); // reply under the reply
+
+  const m = readManifest(manifest);
+  assert.equal(m.rootThread.blips.length, 2);
+  assert.equal(m.rootThread.blips[0]!.threads.length, 0, "b+1 untouched");
+  const b2 = m.rootThread.blips[1]!;
+  assert.equal(b2.threads.length, 1);
+  assert.equal(b2.threads[0]!.id, "b+3");
+  const b3 = b2.threads[0]!.blips[0]!;
+  assert.equal(b3.id, "b+3");
+  assert.equal(b3.threads.length, 1);
+  assert.equal(b3.threads[0]!.id, "b+4");
+});
+
+test("authoring throws on a missing target", () => {
+  const manifest = emptyManifest();
+  assert.throws(() => appendBlipToThread(manifest, "no-such-thread", "b+x"));
+  assert.throws(() => replyToBlip(manifest, "no-such-blip", "b+x", false));
+});
+
+test("newBlipID is unique and well-formed", () => {
+  const a = newBlipID();
+  const b = newBlipID();
+  assert.match(a, /^b\+[0-9a-f]+$/);
+  assert.notEqual(a, b);
 });
 
 test("readManifest ignores stray non-blip children of the root thread", () => {
