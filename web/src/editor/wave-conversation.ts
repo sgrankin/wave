@@ -32,8 +32,12 @@ import {
 import { MANIFEST_ID, addParticipantOp, blipContentOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
 import { contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
-import { participantChip } from "./participant.ts";
+import { avatar, participantChip } from "./participant.ts";
+import { PresenceClient } from "../wave/presence.ts";
 import "./wave-thread.ts";
+
+// TYPING_IDLE_MS: how long after the last edit we keep showing "typing".
+const TYPING_IDLE_MS = 2000;
 
 export class WaveConversation extends LitElement {
   static override properties = {
@@ -56,6 +60,9 @@ export class WaveConversation extends LitElement {
   private author: Participant = "";
   private controller: ConvController | null = null;
   private profilesUnsub: (() => void) | null = null;
+  private presence: PresenceClient | null = null;
+  private presenceUnsub: (() => void) | null = null;
+  private typingTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     super();
@@ -84,8 +91,23 @@ export class WaveConversation extends LitElement {
     super.disconnectedCallback();
     this.profilesUnsub?.();
     this.profilesUnsub = null;
+    this.presenceUnsub?.();
+    this.presenceUnsub = null;
+    this.presence?.close();
+    this.presence = null;
+    if (this.typingTimer !== null) clearTimeout(this.typingTimer);
     this.client?.close();
     this.client = null;
+  }
+
+  // markTyping publishes "I am typing in blipId" to the presence channel and arms a
+  // timer to clear the typing flag after a short idle (keeping the focused blip).
+  private markTyping(blipId: string): void {
+    this.presence?.setLocal(true, blipId);
+    if (this.typingTimer !== null) clearTimeout(this.typingTimer);
+    this.typingTimer = setTimeout(() => {
+      this.presence?.setLocal(false, blipId);
+    }, TYPING_IDLE_MS);
   }
 
   private async start(): Promise<void> {
@@ -117,6 +139,19 @@ export class WaveConversation extends LitElement {
       this.rev++;
       this.onChange?.();
     });
+    // Presence rides a separate transient socket (/presence) — derived from the OT
+    // socket URL — so it never perturbs the delta channel. It re-renders the tree on
+    // remote changes (typing/joining/leaving).
+    try {
+      const pu = new URL(this.url);
+      pu.pathname = "/presence";
+      pu.search = `?wave=${encodeURIComponent(this.wave)}`;
+      this.presence = new PresenceClient(pu.toString());
+      this.presenceUnsub = this.presence.onChange(() => this.rev++);
+      this.presence.connect();
+    } catch {
+      this.presence = null; // bad URL: presence is best-effort, the editor still works
+    }
     try {
       await client.open();
       // Who you are is shown by the shell's identity widget; the bar carries only
@@ -134,6 +169,7 @@ export class WaveConversation extends LitElement {
       user: author,
       blipContent: (id) => client.blipContent(id) ?? DocOp.empty(),
       editBlip: (id, ops) => {
+        this.markTyping(id); // publish "typing in this blip" to the presence channel
         void client.submit([blipContentOp(author, id, new DocOp(ops))]);
       },
       continueThread: (threadId) => {
@@ -238,7 +274,35 @@ export class WaveConversation extends LitElement {
       ${STYLES}
       <div class="conv-bar">${this.status}</div>
       ${roster}
+      ${this._renderPresence()}
       ${body}
+    `;
+  }
+
+  // _renderPresence shows the transient awareness line: an avatar per online peer
+  // (dimmed unless typing) and a "… is typing" note. Best-effort — empty when no
+  // peers are present. Names/avatars reuse the profile cache.
+  private _renderPresence(): TemplateResult {
+    const peers = this.presence?.remotes() ?? [];
+    if (peers.length === 0) return html``;
+    profiles.ensure(peers.map((p) => p.participant));
+    const typing = peers
+      .filter((p) => p.typing)
+      .map((p) => displayNameFor(p.participant, profiles.get(p.participant)));
+    return html`
+      <div class="conv-presence" title="Who else is here">
+        ${peers.map(
+          (p) =>
+            html`<span class="presence-peer ${p.typing ? "typing" : ""}" title=${p.participant}
+              >${avatar(p.participant, profiles.get(p.participant), 16)}</span
+            >`,
+        )}
+        ${typing.length > 0
+          ? html`<span class="presence-typing"
+              >${typing.join(", ")} ${typing.length === 1 ? "is" : "are"} typing…</span
+            >`
+          : html``}
+      </div>
     `;
   }
 
@@ -309,6 +373,27 @@ const STYLES = html`
     wave-conversation .conv-error {
       font: 13px system-ui, sans-serif;
       color: #888;
+    }
+    wave-conversation .conv-presence {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 20px;
+      margin-bottom: 8px;
+      font: 12px system-ui, sans-serif;
+      color: #4060c0;
+    }
+    wave-conversation .presence-peer {
+      opacity: 0.45;
+      transition: opacity 0.15s;
+    }
+    wave-conversation .presence-peer.typing {
+      opacity: 1;
+    }
+    wave-conversation .presence-typing {
+      margin-left: 4px;
+      color: #4060c0;
+      font-style: italic;
     }
     wave-conversation .wave-thread.reply {
       margin-left: 20px;

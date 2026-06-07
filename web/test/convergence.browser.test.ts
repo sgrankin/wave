@@ -86,3 +86,37 @@ test("a threaded reply converges to a fresh client", async () => {
     await alice.close();
   }
 });
+
+// Presence: a second client on the same wave sees the first as present, and sees a
+// "typing" indicator while they type — over the transient /presence channel,
+// independent of the OT delta socket.
+test("presence shows a peer present and typing", async () => {
+  const wave = "w+btest-presence";
+  const alice = await client("alice@example.com", wave);
+  try {
+    const bob = await client("bob@example.com", wave);
+    try {
+      // bob's presence bar shows alice as a present peer (avatar) once both joined.
+      await bob.waitForFunction(() => document.querySelector(".conv-presence .presence-peer") !== null, undefined, {
+        timeout: 10_000,
+      });
+
+      // alice types → bob sees a "typing" indicator naming her.
+      const ablip = alice.locator(".blip-doc").first();
+      await ablip.click();
+      await ablip.pressSequentially("hi bob", { delay: 10 });
+      await bob.waitForFunction(
+        () => {
+          const t = document.querySelector(".conv-presence .presence-typing")?.textContent ?? "";
+          return t.includes("typing") && t.includes("alice@example.com");
+        },
+        undefined,
+        { timeout: 10_000 },
+      );
+    } finally {
+      await bob.close();
+    }
+  } finally {
+    await alice.close();
+  }
+});
