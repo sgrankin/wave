@@ -53,7 +53,7 @@ func TestMountWithRealMembership(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ah := attachapi.New(store, transport.MembershipChecker{WaveMap: wm}, identify)
+	ah := attachapi.New(store, transport.MembershipChecker{WaveMap: wm}, identify, 0)
 	mux := http.NewServeMux()
 	mux.Handle("/attachments", ah.Routes())
 	mux.Handle("/attachments/", ah.Routes())

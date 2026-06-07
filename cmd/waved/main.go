@@ -61,7 +61,8 @@ type config struct {
 	authDomain    string // default domain appended to a bare username
 	sessionTTL    time.Duration
 	seed          bool   // server-side-seed a new wavelet's conversation at first open
-	attachRoot    string // filesystem root for attachment blobs; "" disables attachments
+	attachRoot     string // filesystem root for attachment blobs; "" disables attachments
+	attachMaxBytes int64  // per-upload size cap in bytes; <=0 disables the cap
 	agents        string // agent gateway tokens: "addr=token,addr2=token2"; "" disables
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
@@ -155,6 +156,7 @@ func parseFlags(args []string) (config, error) {
 	fs.DurationVar(&c.sessionTTL, "session-ttl", 24*time.Hour, "session cookie lifetime")
 	fs.BoolVar(&c.seed, "seed-conversations", true, "server-side-seed a brand-new wavelet's conversation (manifest + root blip) at first open")
 	fs.StringVar(&c.attachRoot, "attach-root", "", "filesystem root for attachment blobs on the -ws server (\"\" to disable attachments)")
+	fs.Int64Var(&c.attachMaxBytes, "attach-max-bytes", 25<<20, "max bytes per attachment upload (0 disables the cap)")
 	fs.StringVar(&c.agents, "agents", "", "agent-gateway bearer tokens as \"addr=token\" pairs, comma-separated (\"\" disables the /agent/socket endpoint); tokens are secrets — prefer TLS")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
@@ -546,7 +548,7 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 	// Both patterns are needed: "/attachments" matches the bare upload path and
 	// "/attachments/" matches the {id} sub-paths; both delegate to the same handler.
 	if attachStore != nil {
-		ah := attachapi.New(attachStore, transport.MembershipChecker{WaveMap: srv.WaveMap}, identify)
+		ah := attachapi.New(attachStore, transport.MembershipChecker{WaveMap: srv.WaveMap}, identify, cfg.attachMaxBytes)
 		routes := authSvc.Middleware(ah.Routes())
 		mux.Handle("/attachments", routes)
 		mux.Handle("/attachments/", routes)

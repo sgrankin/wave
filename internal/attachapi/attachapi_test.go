@@ -57,7 +57,28 @@ func setup(t *testing.T) (http.Handler, fakeAccess) {
 		t.Fatal(err)
 	}
 	access := fakeAccess{allowed: map[string]bool{}}
-	return attachapi.New(store, access, identify).Routes(), access
+	return attachapi.New(store, access, identify, 0).Routes(), access // 0 = no cap
+}
+
+func TestUploadTooLarge(t *testing.T) {
+	store, err := attachments.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	access := fakeAccess{allowed: map[string]bool{}}
+	h := attachapi.New(store, access, identify, 8).Routes() // 8-byte cap
+	name := waveletName(t)
+	alice := pid(t, "alice@example.com")
+	access.allowed[alice.Address()+"|"+name.String()] = true
+
+	req := httptest.NewRequest("POST", uploadURL(name, "big.bin", "application/octet-stream"),
+		strings.NewReader("way more than eight bytes"))
+	req.Header.Set("X-Test-User", alice.Address())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body %q", rec.Code, rec.Body.String())
+	}
 }
 
 func uploadURL(name id.WaveletName, filename, mime string) string {
