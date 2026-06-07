@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/sgrankin/wave/internal/conv"
@@ -114,13 +115,11 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inbox: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Bound the per-request fan-out (each digest loads a container): cap to the
-	// same limit as search. A real paging story can come later; for now an inbox
-	// is naturally bounded by participation.
-	if limit := parseLimit(r); len(names) > limit {
-		names = names[:limit]
-	}
-	h.writeDigests(w, p, names)
+	// Sort the inbox most-recently-active first (like email), then cap. The sort key
+	// is the digest's wall-clock LastModifiedTime — done in writeDigests after the
+	// digests are built (the index only stores last-modified *version*, which is not
+	// comparable across wavelets). The cap is applied post-sort so the newest survive.
+	h.writeDigests(w, p, names, parseLimit(r), true)
 }
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +137,8 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	for i, res := range results {
 		names[i] = res.Wavelet
 	}
-	h.writeDigests(w, p, names)
+	// Search keeps the index's relevance/order; it is already limited by Search().
+	h.writeDigests(w, p, names, parseLimit(r), false)
 }
 
 // markRead records that the participant has read a wavelet through a version
@@ -166,7 +166,10 @@ func (h *Handler) markRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, names []id.WaveletName) {
+// writeDigests builds and writes the wave digests for names. sortRecent orders them
+// most-recently-active first (for the inbox); search passes false to keep the index's
+// relevance order. limit caps the result AFTER sorting (so the newest survive).
+func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, names []id.WaveletName, limit int, sortRecent bool) {
 	readVersions, err := h.reads.ReadVersions(p)
 	if err != nil {
 		// Degrade gracefully: show everything as read rather than failing the list.
@@ -179,6 +182,15 @@ func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, names 
 			d.Unread = d.Version > readVersions[d.Wave]
 			digests = append(digests, d)
 		}
+	}
+	if sortRecent {
+		// Most-recently-active first; SliceStable keeps the index's order for ties.
+		sort.SliceStable(digests, func(i, j int) bool {
+			return digests[i].LastModifiedTime > digests[j].LastModifiedTime
+		})
+	}
+	if limit > 0 && len(digests) > limit {
+		digests = digests[:limit]
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"waves": digests})
