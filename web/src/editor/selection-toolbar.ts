@@ -76,6 +76,11 @@ export class SelectionToolbar extends LitElement {
     // floating bar tracks the selection as the user scrolls.
     window.addEventListener("scroll", this.onViewportChange, true);
     window.addEventListener("resize", this.onViewportChange);
+    // The on-screen keyboard shrinks the VISUAL viewport (not the layout viewport):
+    // its resize/scroll events fire when the keyboard shows/hides, so the touch bar
+    // can re-anchor just above the keyboard instead of hiding behind it.
+    window.visualViewport?.addEventListener("resize", this.onViewportChange);
+    window.visualViewport?.addEventListener("scroll", this.onViewportChange);
   }
 
   override disconnectedCallback(): void {
@@ -84,6 +89,8 @@ export class SelectionToolbar extends LitElement {
     document.removeEventListener("selectionchange", this.onSelectionChange);
     window.removeEventListener("scroll", this.onViewportChange, true);
     window.removeEventListener("resize", this.onViewportChange);
+    window.visualViewport?.removeEventListener("resize", this.onViewportChange);
+    window.visualViewport?.removeEventListener("scroll", this.onViewportChange);
     if (this.raf !== 0) cancelAnimationFrame(this.raf);
   }
 
@@ -102,6 +109,10 @@ export class SelectionToolbar extends LitElement {
     this.raf = requestAnimationFrame(() => {
       this.raf = 0;
       this.refresh();
+      // Reposition directly too: a pure viewport change (scroll, or the keyboard
+      // opening) may not alter any reactive state, so updated() would not fire — but
+      // the bar still needs to track the new geometry.
+      this.reposition();
     });
   }
 
@@ -178,9 +189,35 @@ export class SelectionToolbar extends LitElement {
   };
 
   protected override updated(): void {
-    if (!this.visible || this.coarse || this.selRect === null) {
-      // Coarse layout is fully CSS-positioned (bottom bar); clear any inline offsets
-      // left over from a previous floating placement.
+    this.reposition();
+  }
+
+  // reposition places the (host) bar. Coarse/touch: span the visual viewport's width
+  // and sit just above the on-screen keyboard (the visual viewport's bottom edge), so
+  // it is never hidden behind the keyboard — the bug a plain `bottom: 0` dock had.
+  // Fine/mouse: float centered above the selection, flipping below if there's no room.
+  private reposition(): void {
+    if (!this.visible) {
+      this.style.left = "";
+      this.style.top = "";
+      this.style.width = "";
+      return;
+    }
+    if (this.coarse) {
+      const vv = window.visualViewport;
+      const left = vv ? vv.offsetLeft : 0;
+      const width = vv ? vv.width : window.innerWidth;
+      this.style.left = `${Math.round(left)}px`;
+      this.style.width = `${Math.round(width)}px`;
+      // Measure height AFTER the width is applied (it drives wrapping), then anchor the
+      // bar's bottom to the visual viewport's bottom (top of the keyboard, if shown).
+      const h = this.getBoundingClientRect().height;
+      const vBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      this.style.top = `${Math.round(Math.max(0, vBottom - h))}px`;
+      return;
+    }
+    this.style.width = ""; // auto-width for the floating bubble
+    if (this.selRect === null) {
       this.style.left = "";
       this.style.top = "";
       return;
@@ -300,20 +337,19 @@ const STYLES = html`
       margin: 2px 3px;
       background: rgba(255, 255, 255, 0.22);
     }
-    /* Touch: dock full-width at the bottom of the viewport, above the iOS home bar. */
+    /* Touch: a full-width bar the host JS-positions just above the on-screen keyboard
+       (the visual viewport's bottom). The bar fills the host's width (set in JS); it
+       does NOT self-dock at bottom:0 — that hides behind the keyboard while editing. */
     selection-toolbar .sel-toolbar.coarse.visible {
       display: flex;
       justify-content: center;
       flex-wrap: wrap;
     }
     selection-toolbar .sel-toolbar.coarse {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      width: 100%;
+      box-sizing: border-box;
       border-radius: 0;
-      padding: 8px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom))
-        calc(8px + env(safe-area-inset-left));
+      padding: 8px calc(8px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left));
       gap: 4px;
     }
     selection-toolbar .sel-toolbar.coarse button {
