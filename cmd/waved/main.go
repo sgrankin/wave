@@ -31,6 +31,7 @@ import (
 	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/id"
+	"github.com/sgrankin/wave/internal/profileapi"
 	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
@@ -372,6 +373,16 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 	if idx != nil {
 		qh := queryapi.New(idx, queryapi.NewWaveMapReader(srv.WaveMap), store, identify, logger)
 		mux.Handle("/api/", authSvc.Middleware(qh.Routes()))
+	}
+	// Participant profiles (display names) back the client's humanized rosters,
+	// inbox, and identity widget. Always available (the account store always
+	// exists); mounted at the specific /api/profile(s) paths so they win over the
+	// queryapi "/api/" subtree above. Both delegate to the same handler.
+	{
+		ph := profileapi.New(store, identify, logger)
+		routes := authSvc.Middleware(ph.Routes())
+		mux.Handle("/api/profiles", routes)
+		mux.Handle("/api/profile", routes)
 	}
 	// Attachment blobs (upload/download/thumbnail), gated by wavelet membership.
 	// Both patterns are needed: "/attachments" matches the bare upload path and

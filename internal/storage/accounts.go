@@ -27,6 +27,10 @@ type HumanAccount struct {
 	Password *PasswordDigest
 	// Locale is a BCP-47 tag (e.g. "en"); empty if unset.
 	Locale string
+	// DisplayName is the human-readable name shown in place of the raw address
+	// (e.g. "Alice Smith"); empty if unset, in which case the client falls back
+	// to the address. The address remains the identity; this is presentation only.
+	DisplayName string
 }
 
 // RobotAccount is the data for a robot-agent account (spec §8 RobotAccountData).

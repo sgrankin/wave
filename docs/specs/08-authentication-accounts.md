@@ -58,12 +58,39 @@ Exactly one of `isHuman` or `isRobot` is true.
 HumanAccountData : AccountData {
     passwordDigest  PasswordDigest | null   // null ⇒ password auth disabled
     locale          string | null           // BCP-47, e.g. "en"
+    displayName     string                  // Go-rewrite addition; "" ⇒ unset
 }
 ```
 
 `passwordDigest` is null when the account was created without a password (e.g.,
 auto-created via cert login), meaning the user can only authenticate through
 non-password mechanisms.
+
+`displayName` is a **Go-rewrite addition** (not present in the Java reference):
+the human-readable name shown by the client in place of the raw address. It is
+presentation metadata only — the ParticipantId address is always the identity,
+and an empty `displayName` means the client falls back to the address. It is
+served and edited through the **Profile API** (below). Because the Go rewrite
+encodes the whole HumanAccountData as JSON in a single column (see
+[05-storage-persistence](05-storage-persistence.md)), adding this field is
+zero-migration: existing records decode with `displayName == ""`.
+
+### Profile API (Go rewrite)
+
+The browser client humanizes addresses (rosters, inbox, the identity widget,
+@-mention tooltips) by resolving display names through two authenticated JSON
+endpoints, mounted behind the session middleware on the same origin as the
+client:
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/profiles?addr=<a>&addr=<b>…` | Batch-resolve display names. Returns `{"profiles":[{"address","displayName"},…]}` with one entry per *valid* requested address (display name possibly empty, so the client caches unknowns and does not refetch); malformed addresses are skipped. The address is canonicalized in the response. |
+| `POST /api/profile` (body `{"displayName":"…"}`) | Set **the caller's own** display name (resolved from the session, never from the body). Trimmed and length-capped (128 runes); empty clears it. Auto-provisions a minimal human account if none exists; refuses (`400`) to write onto a robot account. Returns `204`. |
+
+A profile read carries no authorization beyond a valid session: display names are
+not secret, and the whole client is already behind login. Writes are restricted
+to the authenticated participant's own account — there is no API to edit another
+participant's profile.
 
 ### PasswordDigest
 
