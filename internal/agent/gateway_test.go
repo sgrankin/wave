@@ -191,3 +191,74 @@ func TestGatewayIntentKindsAndResilience(t *testing.T) {
 	_ = intentsW.Close()
 	<-done
 }
+
+// TestGatewayReplyIntent drives the reply.blip intent over the wire (including the
+// inline flag): the harness replies to a specific blip, and the gateway turns it
+// into an OT submit that creates an inline reply thread under that blip — proving
+// the inline JSON field flows end-to-end through the gateway schema.
+func TestGatewayReplyIntent(t *testing.T) {
+	c, _ := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(3000)), func() string { return "b+reply" })
+	lc.Open()
+	defer lc.Close()
+
+	eventsR, eventsW := io.Pipe()
+	intentsR, intentsW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.NewGateway(lc, bot, nil).Run(ctx, eventsW, intentsR) }()
+
+	var snap struct{ Kind string }
+	if err := json.NewDecoder(eventsR).Decode(&snap); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, eventsR) }()
+
+	// Reply inline to the seeded root blip.
+	line := `{"type":"intent","kind":"reply.blip","blipId":"b+root","text":"inline reply via gateway","inline":true}` + "\n"
+	if _, err := intentsW.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The reply lands as a new blip b+reply with the text, and the parent body
+	// gains an inline <reply id="b+reply"/> anchor.
+	deadline := time.Now().Add(3 * time.Second)
+	var replyText string
+	var anchored bool
+	for time.Now().Before(deadline) && !(replyText != "" && anchored) {
+		c.Read(func(w *wavelet.Data) {
+			if b, ok := w.Blip("b+reply"); ok {
+				replyText, _ = doc.PlainText(b.Content())
+			}
+			if b, ok := w.Blip("b+root"); ok {
+				for _, a := range conv.ReadReplyAnchors(b.Content()) {
+					if a.ThreadID == "b+reply" {
+						anchored = true
+					}
+				}
+			}
+		})
+		if !(replyText != "" && anchored) {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+	if replyText != "inline reply via gateway" {
+		t.Errorf("reply blip text = %q, want %q", replyText, "inline reply via gateway")
+	}
+	if !anchored {
+		t.Error("parent blip b+root did not gain an inline reply anchor for b+reply")
+	}
+
+	cancel()
+	_ = eventsR.Close()
+	_ = intentsW.Close()
+	<-done
+}

@@ -17,6 +17,12 @@ type IntentKind string
 const (
 	// IntentPostBlip appends a new blip (with text) to a thread.
 	IntentPostBlip IntentKind = "post.blip"
+	// IntentReplyBlip replies to a specific blip: it creates a new reply thread
+	// under that blip and posts a new blip (with text) into it. With Inline set it
+	// also anchors the thread in the parent blip body; otherwise it is a sibling
+	// (non-inline) reply thread. This is how an agent answers the blip that
+	// mentioned it, rather than appending to the root.
+	IntentReplyBlip IntentKind = "reply.blip"
 	// IntentEditBlip appends text to the end of an existing blip's body.
 	IntentEditBlip IntentKind = "edit.blip"
 	// IntentAddParticipant adds a participant to the wavelet.
@@ -27,9 +33,10 @@ const (
 type Intent struct {
 	Kind        IntentKind
 	ThreadID    string // post.blip: target thread; "" selects the root thread
-	BlipID      string // edit.blip: the blip to append to
-	Text        string // post.blip / edit.blip
+	BlipID      string // edit.blip / reply.blip: the target blip
+	Text        string // post.blip / edit.blip / reply.blip
 	Participant string // add.participant: the address to add
+	Inline      bool   // reply.blip: anchor the reply thread inline in the parent body
 }
 
 // blipContentOp boxes a content DocOp as an authored wavelet operation against
@@ -77,6 +84,44 @@ func Translate(
 			blipContentOp(author, ts, conv.ManifestDocumentID, manifestOp),
 			blipContentOp(author, ts, blipID, conv.BlipContentWithText(intent.Text)),
 		}, nil
+
+	case IntentReplyBlip:
+		manifest, ok := blip(conv.ManifestDocumentID)
+		if !ok {
+			return nil, fmt.Errorf("agent: reply.blip: no conversation manifest")
+		}
+		// The reply thread id IS the new blip's id (the Wave convention: a reply
+		// thread is identified by its first blip). Mint it once and use it for the
+		// thread, the blip content, and the inline anchor so they all agree.
+		blipID := newBlipID()
+		manifestOp, err := conv.ReplyToBlip(manifest, intent.BlipID, blipID, intent.Inline)
+		if err != nil {
+			return nil, fmt.Errorf("agent: reply.blip: %w", err)
+		}
+		ops := []waveop.Operation{
+			blipContentOp(author, ts, conv.ManifestDocumentID, manifestOp),
+			blipContentOp(author, ts, blipID, conv.BlipContentWithText(intent.Text)),
+		}
+		// An inline reply also drops a <reply> anchor in the parent body so the
+		// thread renders at a position rather than as a sibling. The agent has no
+		// caret, so anchor at the end of the body — just before the final </body>,
+		// clamping like the web controller's replyToBlip does.
+		if intent.Inline {
+			parentBody, ok := blip(intent.BlipID)
+			if !ok {
+				return nil, fmt.Errorf("agent: reply.blip: no such blip %q", intent.BlipID)
+			}
+			at := parentBody.DocumentLength() - 1
+			if at < 0 {
+				at = 0
+			}
+			anchorOp, err := conv.InsertReplyAnchor(parentBody, blipID, at)
+			if err != nil {
+				return nil, fmt.Errorf("agent: reply.blip: %w", err)
+			}
+			ops = append(ops, blipContentOp(author, ts, intent.BlipID, anchorOp))
+		}
+		return ops, nil
 
 	case IntentEditBlip:
 		if intent.Text == "" {

@@ -177,6 +177,96 @@ func TestAgentGatewayWebSocket(t *testing.T) {
 	}
 }
 
+// TestAgentGatewayReplyIntent drives the reply.blip intent (inline) over the real
+// WebSocket: the harness replies to a specific blip and the gateway creates an
+// inline reply thread under it — proving the inline JSON field survives the actual
+// transport, not just the in-memory gateway.
+func TestAgentGatewayReplyIntent(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)))
+	wid, _ := id.NewWaveID("example.com", "w+reply")
+	wlid, _ := id.NewWaveletID("example.com", "conv+root")
+	name := id.NewWaveletName(wid, wlid)
+	c, err := wm.Container(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+	addCtx := waveop.Context{Creator: alice, Timestamp: 1000, VersionIncrement: 1}
+	if _, err := c.Submit(waveop.NewWaveletDelta(alice, c.Version(), []waveop.Operation{
+		waveop.AddParticipant{Ctx: addCtx, Participant: bot},
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	h := agentgw.New(wm, agentgw.StaticAuth{"s3cret": bot},
+		transport.MembershipChecker{WaveMap: wm}, clock.NewFixed(time.UnixMilli(3000)), nil)
+	hs := httptest.NewServer(h)
+	defer hs.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(hs.URL, "http") + "/agent/socket?wave=" + url.QueryEscape(name.Serialize())
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": {"Bearer s3cret"}},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	nc := websocket.NetConn(ctx, conn, websocket.MessageText)
+
+	// Drain the snapshot so the gateway proceeds.
+	var snap gwEvent
+	if err := json.NewDecoder(nc).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	// Reply inline to the seeded root blip.
+	if _, err := nc.Write([]byte(`{"type":"intent","kind":"reply.blip","blipId":"b+root","text":"inline reply over ws","inline":true}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new reply blip carries the text, and b+root gains a matching inline anchor.
+	deadline := time.Now().Add(3 * time.Second)
+	var replyText, anchorThread string
+	for time.Now().Before(deadline) && !(replyText != "" && anchorThread != "") {
+		c.Read(func(w *wavelet.Data) {
+			rb, ok := w.Blip("b+root")
+			if !ok {
+				return
+			}
+			anchors := conv.ReadReplyAnchors(rb.Content())
+			if len(anchors) == 0 {
+				return
+			}
+			anchorThread = anchors[0].ThreadID
+			if b, ok := w.Blip(anchorThread); ok {
+				replyText, _ = doc.PlainText(b.Content())
+			}
+		})
+		if !(replyText != "" && anchorThread != "") {
+			time.Sleep(15 * time.Millisecond)
+		}
+	}
+	if anchorThread == "" {
+		t.Fatal("parent blip b+root never gained an inline reply anchor")
+	}
+	if replyText != "inline reply over ws" {
+		t.Errorf("reply blip text = %q, want %q", replyText, "inline reply over ws")
+	}
+}
+
 // TestAgentGatewayForbidsNonMember confirms a valid token cannot drive a wave the
 // agent is not a participant of (StrictMembershipChecker, no open-or-create).
 func TestAgentGatewayForbidsNonMember(t *testing.T) {

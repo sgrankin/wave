@@ -52,6 +52,7 @@ type wireIntent struct {
 	BlipID      string `json:"blipId,omitempty"`
 	Text        string `json:"text,omitempty"`
 	Participant string `json:"participant,omitempty"`
+	Inline      bool   `json:"inline,omitempty"` // reply.blip: anchor the reply inline
 }
 
 // KindWaveOpened is the wire-only event kind for the connect-time snapshot (it has
@@ -180,5 +181,5 @@ func wireEventFrom(ev Event) wireEvent {
 // intentOf maps a wire intent to a Go Intent (kind passed through; validation
 // happens in Translate at submit time).
 func intentOf(wi wireIntent) Intent {
-	return Intent{Kind: IntentKind(wi.Kind), ThreadID: wi.ThreadID, BlipID: wi.BlipID, Text: wi.Text, Participant: wi.Participant}
+	return Intent{Kind: IntentKind(wi.Kind), ThreadID: wi.ThreadID, BlipID: wi.BlipID, Text: wi.Text, Participant: wi.Participant, Inline: wi.Inline}
 }

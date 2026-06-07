@@ -137,8 +137,14 @@ version):
 | Intent | Fields | Translation |
 |---|---|---|
 | `post.blip` | threadId (default root), text | `appendBlipToThread` + `initialBlipContent` + set text — one delta |
+| `reply.blip` | blipId, text, inline? | `replyToBlip` (new thread under blipId, thread id == new blip id) + `blipContentWithText`; if `inline`, also `insertReplyAnchor` in the parent body just before `</body>` — one delta |
 | `edit.blip` | blipId, text | replace the blip body content op |
 | `add.participant` | address | `addParticipant` op |
+
+`reply.blip` is the inline-reply path: an agent that was @mentioned in a specific
+blip can answer *that* blip (a reply thread on it) instead of appending to the root.
+The new blip's id is also the reply thread's id and the inline `<reply>` anchor's id,
+so the manifest mutation, the new blip content, and the anchor all agree.
 
 The **gateway protocol** is one canonical JSON schema (the events of §A.4 out, the
 intents above in), carried over a transport. The schema is the thing to pin; the
@@ -226,6 +232,10 @@ confirmed, 0 refuted, no critical) and hardened. The §A.8 decisions resolved as
 4. **Event taxonomy:** the six events shipped (no debounce yet — `blip.edited` fires
    per applied delta; coalescing is a later refinement). `wave.opened` carries the
    connect-time snapshot.
+
+**Intents shipped:** `post.blip`, `reply.blip` (sibling or inline reply to a specific
+blip — closes the top extensibility gap so an agent can answer the blip that mentioned
+it, not just append to the root), `edit.blip`, and `add.participant`.
 
 **Loop-safety, as built:** self-suppression (an agent never sees its own writes) plus
 a defense-in-depth **submit rate limiter** on `LocalClient`. The runtime does **not**

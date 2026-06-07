@@ -126,6 +126,131 @@ func TestTranslatePostBlipToThread(t *testing.T) {
 	}
 }
 
+func TestTranslateReplyBlip(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	manifest := rootManifest(t)
+	body := conv.BlipContentWithText("question?")
+	docs := map[string]op.DocOp{conv.ManifestDocumentID: manifest, "b+root": body}
+
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentReplyBlip, BlipID: "b+root", Text: "an answer"},
+		alice, 1000, readerFrom(docs), fixedID("b+reply"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-inline reply: just the manifest mutation + the new blip content (no
+	// parent-body anchor op).
+	if len(ops) != 2 {
+		t.Fatalf("got %d ops, want 2 (manifest + content)", len(ops))
+	}
+
+	// b+root gains a reply thread whose id == the new blip id, containing the new blip.
+	newManifest, err := op.Apply(manifest, contentOf(t, ops, conv.ManifestDocumentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := conv.ReadManifest(newManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var thread *conv.Thread
+	for _, b := range m.RootThread.Blips {
+		if b.ID == "b+root" {
+			for i := range b.Threads {
+				if b.Threads[i].ID == "b+reply" {
+					thread = &b.Threads[i]
+				}
+			}
+		}
+	}
+	if thread == nil {
+		t.Fatalf("no reply thread b+reply under b+root; manifest = %+v", m)
+	}
+	if thread.Inline {
+		t.Error("non-inline reply thread should not be marked inline")
+	}
+	if len(thread.Blips) != 1 || thread.Blips[0].ID != "b+reply" {
+		t.Fatalf("reply thread blips = %+v, want [b+reply]", thread.Blips)
+	}
+	if text, _ := doc.PlainText(contentOf(t, ops, "b+reply")); text != "an answer" {
+		t.Errorf("reply blip text = %q, want %q", text, "an answer")
+	}
+}
+
+func TestTranslateReplyBlipInline(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	manifest := rootManifest(t)
+	body := conv.BlipContentWithText("question?")
+	docs := map[string]op.DocOp{conv.ManifestDocumentID: manifest, "b+root": body}
+
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentReplyBlip, BlipID: "b+root", Text: "inline answer", Inline: true},
+		alice, 1000, readerFrom(docs), fixedID("b+reply"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inline reply: manifest + new blip content + the parent-body anchor op.
+	if len(ops) != 3 {
+		t.Fatalf("got %d ops, want 3 (manifest + content + anchor)", len(ops))
+	}
+
+	// The manifest thread is marked inline.
+	newManifest, err := op.Apply(manifest, contentOf(t, ops, conv.ManifestDocumentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := conv.ReadManifest(newManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inline bool
+	for _, b := range m.RootThread.Blips {
+		if b.ID == "b+root" {
+			for _, th := range b.Threads {
+				if th.ID == "b+reply" {
+					inline = th.Inline
+				}
+			}
+		}
+	}
+	if !inline {
+		t.Error("inline reply thread should be marked inline=true")
+	}
+
+	// The parent body gains a <reply id="b+reply"/> anchor, near the end (before
+	// the final </body>).
+	newBody, err := op.Apply(body, contentOf(t, ops, "b+root"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchors := conv.ReadReplyAnchors(newBody)
+	if len(anchors) != 1 || anchors[0].ThreadID != "b+reply" {
+		t.Fatalf("parent anchors = %+v, want one for b+reply", anchors)
+	}
+	if anchors[0].Offset != body.DocumentLength()-1 {
+		t.Errorf("anchor offset = %d, want %d (just before </body>)", anchors[0].Offset, body.DocumentLength()-1)
+	}
+}
+
+func TestTranslateReplyBlipErrors(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	manifest := rootManifest(t)
+	docs := map[string]op.DocOp{conv.ManifestDocumentID: manifest, "b+root": conv.InitialBlipContent()}
+
+	// No such parent blip.
+	if _, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentReplyBlip, BlipID: "ghost", Text: "x"},
+		alice, 1000, readerFrom(docs), fixedID("b+x")); err == nil {
+		t.Error("want error replying to a missing blip")
+	}
+	// No manifest.
+	if _, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentReplyBlip, BlipID: "b+root", Text: "x"},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("b+x")); err == nil {
+		t.Error("want error when the manifest is absent")
+	}
+}
+
 func TestTranslatePostBlipMissingThread(t *testing.T) {
 	alice := pid(t, "alice@example.com")
 	docs := map[string]op.DocOp{conv.ManifestDocumentID: rootManifest(t)}
