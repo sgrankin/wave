@@ -296,3 +296,18 @@ export async function testMentionsHighlighted(t: T): Promise<void> {
     "mention spans wrap text without altering it",
   );
 }
+
+export async function testUrlsAutoLinked(t: T): Promise<void> {
+  const content = makeContent(null, "see https://example.com/x?a=1 now");
+  const el = await render(html`<blip-view .content=${content}></blip-view>`);
+  await waitForUpdate(el);
+  const doc = findDoc(el);
+
+  const links = doc.querySelectorAll<HTMLAnchorElement>("a.wave-link");
+  eq(links.length, 1, "one auto-linked URL");
+  eq(links[0]!.getAttribute("href"), "https://example.com/x?a=1", "href is the URL");
+  eq(links[0]!.textContent, "https://example.com/x?a=1", "link text is the URL");
+  // Decoration must not change the document text.
+  const para = doc.querySelector<HTMLElement>(".para");
+  eq(para?.textContent, "see https://example.com/x?a=1 now", "link wraps text without altering it");
+}

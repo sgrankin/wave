@@ -441,6 +441,7 @@ export class BlipView extends LitElement {
       <style>
         .blip-doc { outline: none; font: 15px/1.6 system-ui, sans-serif; white-space: pre-wrap; }
         .blip-doc .para { min-height: 1.6em; }
+        .blip-doc .wave-link { color: #1565c0; text-decoration: underline; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
         .blip-doc .reply-anchor { user-select: none; cursor: default; }
@@ -574,30 +575,36 @@ function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
 
 function renderSpan(s: Span, selfAddress: string): TemplateResult {
   const css = spanStyle(s.styles);
-  const inner = renderMentions(s.text, selfAddress);
+  const inner = renderInline(s.text, selfAddress);
   return css === "" ? inner : html`<span style=${css}>${inner}</span>`;
 }
 
-// MENTION_RE matches an @-mention: '@' then a participant-ish token, optionally
-// with a domain ("@alice" or "@alice@example.com"). Highlighting is a render-time
-// decoration only — it wraps existing text in zero-width-changing spans, so the
-// document model and caret/offset mapping are untouched (the DOM caret helpers
-// walk all descendant text nodes by rune count).
-const MENTION_RE = /@[A-Za-z0-9._%+\-]+(?:@[A-Za-z0-9.\-]+)?/g;
+// INLINE_RE matches either an http(s) URL or an @-mention. Both are render-time
+// decorations only — they wrap existing text in spans/anchors that add no editable
+// text, so the document model and caret/offset mapping are untouched (the DOM caret
+// helpers walk all descendant text nodes by rune count). The URL alternative is
+// listed first so a URL containing '@' is linked, not split as a mention.
+const INLINE_RE =
+  /(?<url>https?:\/\/[^\s<>"')]+)|(?<mention>@[A-Za-z0-9._%+\-]+(?:@[A-Za-z0-9.\-]+)?)/g;
 
-function renderMentions(text: string, selfAddress: string): TemplateResult {
-  if (!text.includes("@")) return html`${text}`;
+function renderInline(text: string, selfAddress: string): TemplateResult {
+  if (!text.includes("@") && !text.includes("http")) return html`${text}`;
   const self = selfAddress.toLowerCase();
   const selfName = self.split("@")[0] ?? "";
   const out: TemplateResult[] = [];
   let last = 0;
-  for (const m of text.matchAll(MENTION_RE)) {
+  for (const m of text.matchAll(INLINE_RE)) {
     const i = m.index ?? 0;
     if (i > last) out.push(html`${text.slice(last, i)}`);
-    const ref = m[0].slice(1).toLowerCase();
-    const isSelf = self !== "" && (ref === self || ref === selfName);
-    const cls = isSelf ? "wave-mention wave-mention-self" : "wave-mention";
-    out.push(html`<span class=${cls}>${m[0]}</span>`);
+    const url = m.groups?.url;
+    if (url !== undefined) {
+      out.push(html`<a class="wave-link" href=${url} target="_blank" rel="noopener noreferrer">${url}</a>`);
+    } else {
+      const ref = m[0].slice(1).toLowerCase();
+      const isSelf = self !== "" && (ref === self || ref === selfName);
+      const cls = isSelf ? "wave-mention wave-mention-self" : "wave-mention";
+      out.push(html`<span class=${cls}>${m[0]}</span>`);
+    }
     last = i + m[0].length;
   }
   if (last < text.length) out.push(html`${text.slice(last)}`);
