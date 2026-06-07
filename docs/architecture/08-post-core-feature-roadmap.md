@@ -12,6 +12,16 @@ bits — those are **not** on this roadmap (re-adding them is out of scope).
 
 Prioritization = user value × (1/effort) for a small-team collaborative editor.
 
+**Update (2026-06-07, after the carets demo):** two user requests reshape the order.
+(1) **Mobile-friendly layout + a PWA** — PROMOTED to Tier 1, now the front of the
+queue: the user wants to chat from their phone over tailscale, so installable +
+genuinely usable-on-a-phone is the immediate unblock (task #33). Scope is installable
+shell + responsive polish, NOT full offline editing (that stays Tier 2 — it needs
+OptimisticClient persistence). (2) **A wave as shareable, persistent agent memory** —
+a new extensibility use case (task #34): an agent reads/writes a designated wave as
+durable memory that humans + other agents can watch and correct live. Builds on the
+agent gateway + the reply/read/discovery intents (#28 and the agent-discovery gap).
+
 ## Tier 1 — build now
 
 ### 1a. Flagship: live remote carets / selections  (effort L — the headline)
