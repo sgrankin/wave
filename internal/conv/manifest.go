@@ -132,13 +132,25 @@ func EmptyManifest() op.DocOp {
 // InitialBlipContent returns the content (a DocInitialization) of a freshly
 // created blip: <body><line/></body> (spec §8.3; note no <head> is emitted).
 func InitialBlipContent() op.DocOp {
+	return BlipContentWithText("")
+}
+
+// BlipContentWithText returns the content (a DocInitialization) of a freshly
+// created blip whose single line holds text: <body><line/>text</body>. An empty
+// text yields the same structure as InitialBlipContent (no character data, since a
+// Characters component must be non-empty).
+func BlipContentWithText(text string) op.DocOp {
 	none := mustAttrs(nil)
-	return op.NewDocOp([]op.Component{
+	comps := []op.Component{
 		op.ElementStart{Type: "body", Attributes: none},
 		op.ElementStart{Type: "line", Attributes: none},
 		op.ElementEnd{}, // line
-		op.ElementEnd{}, // body
-	})
+	}
+	if text != "" {
+		comps = append(comps, op.Characters{Text: text})
+	}
+	comps = append(comps, op.ElementEnd{}) // body
+	return op.NewDocOp(comps)
 }
 
 // AppendBlipToRootThread returns the operation that appends <blip id="blipID">
