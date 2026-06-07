@@ -416,12 +416,19 @@ What's on the fork's `main`, and how execution deviated from the plan above:
     mapping miss, letting the browser edit natively so the edit showed locally but
     was never submitted (surfaced as: typing into a just-created blip never reached
     other clients; the caret had landed in a stray text node at the editable root).
-  - **Remaining for #5**: a line-type formatting **toolbar** (headings/lists; the
-    annotation builders exist), **inline replies** (anchored within blip text),
-    **participants UI**, and selection-preserving formatting. Then polish.
-    A cold-start race (two clients bootstrapping one empty wavelet at once) is noted
-    in `wave-conversation`; the real fix is server-side conversation seeding (ties
-    into auth/access, `#10`).
+  - **Formatting toolbar — DONE**: a focus-shown toolbar in `<blip-view>` (B/I/H1/
+    H2/H3/bullet/plain), controlled (ops via the emit path, no execCommand), with the
+    mousedown-preventDefault fix and selection-preserving formatting (a `pendingSelection`
+    range restored in `updated()`). Validated live (H1 applies + converges).
+  - **Participants UI — DONE**: a roster + add-participant in `<wave-conversation>`
+    on `OptimisticClient.participants()` / `ConvController.addParticipant`; bootstrap
+    adds the creator as the first participant (a 3-op delta). The membership basis for
+    `#10`. Validated live (add converges to a fresh client).
+  - **Remaining for #5/editor**: **inline replies** (`#12`, anchored within blip
+    text — the meatier one: needs an anchor element in the doc model + `project()`
+    surfacing it + a Go mirror). A cold-start race (two clients bootstrapping one
+    empty wavelet at once) is noted in `wave-conversation`; the real fix is
+    server-side conversation seeding (folded into `#10`).
 
 ### Deferred
 - **Indexed mutable document model** (Java `model/document/`: live editable doc
