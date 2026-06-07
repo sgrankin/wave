@@ -1,17 +1,31 @@
 # QA & Styling Backlog
 
-Status: **open** (2026-06-07). Captured from a user demo session. The plan is a
-dedicated **QA & styling workflow** (run after a context compaction) — this doc is
-its starting point so it begins informed. The functional stack is complete and
-tested (see [02-porting-plan](architecture/02-porting-plan.md)); these are
-correctness/polish defects found by eye, not regressions in the OT/convergence core.
+Status: **in progress** (2026-06-07). Captured from a user demo session, now being
+worked as the QA & styling pass. The functional stack is complete and tested (see
+[02-porting-plan](architecture/02-porting-plan.md)); these are correctness/polish
+defects found by eye, not regressions in the OT/convergence core.
+
+Progress:
+- **B3 (caret) — DONE.** Root-caused and fixed; see the "blip-view caret mapping"
+  notes inline below. Regression guards: `web/src/editor/blip-caret.test.ts`
+  (component) + `web/test/caret.browser.test.ts` (real keyboard/mouse e2e).
+- **B1 (leading gap) — DONE.** Same root cause as the B3 click-trigger (a leading
+  whitespace text node from template indentation rendered as visible space under
+  `white-space:pre-wrap` on the container); fixed alongside B3.
+- **B2 (width) — open.** Next.
 
 Verify with two browser clients against a real `waved` (`make release && ./waved
 -ws 127.0.0.1:8140 -auth dev`), or extend `web/test/*.browser.test.ts`.
 
 ## Reported issues (from the demo)
 
-### B1 — blip editor: first line of text starts partway down the box (alignment)
+### B1 — blip editor: first line of text starts partway down the box (alignment) — RESOLVED 2026-06-07
+**Resolution:** confirmed cause was a leading whitespace text node (`"\n        "`,
+from the template indentation around the paragraph map) rendered as a visible ~one-line
+gap because `white-space:pre-wrap` was on the `.blip-doc` container. Fixed by moving
+`pre-wrap` onto `.blip-doc .para` and removing the template indentation. Commit
+`qzymrxvm`. (NOT a spurious projection paragraph — `project()` of `<body><line/>…` is
+clean; original hypothesis below.)
 - **Symptom:** in a blip editor the first line of text renders well below the top
   of the box, as if there is leading vertical space / an empty leading line.
 - **Suspect:** the projection of `<body><line/>text</body>` may emit a leading
@@ -36,7 +50,14 @@ Verify with two browser clients against a real `waved` (`make release && ./waved
 - **Triage first:** inspect computed `display` on `wave-thread`/`wave-blip` in the
   browser; confirm they're `inline`.
 
-### B3 — multi-line caret mapping: typing on line 2 inserts at the start of line 1 (CORRECTNESS)
+### B3 — multi-line caret mapping: typing on line 2 inserts at the start of line 1 (CORRECTNESS) — RESOLVED 2026-06-07
+**Resolution:** the actual trigger was the B1 leading-whitespace gap above line 1:
+clicking it parked the caret in a stray text node that `domToOffset` mapped (via the
+old `nearestParagraphIndex`) to line 1's start. A second latent bug: the `node===root`
+branch treated a child-node index as a paragraph index (the `Math.min` clamp masked it
+for ≤2 lines, mis-mapped with 3+). Fixed by resolving any out-of-paragraph caret to the
+nearest paragraph boundary in document order, and by removing the leading gap (B1).
+Commit `qzymrxvm`. (Original hypothesis below kept for the record.)
 - **Repro:** type a line → Enter → click into the (now empty) second line → type →
   the text appears at the **beginning of the first line** instead of on line 2.
 - **Suspect:** `domToOffset` in `web/src/editor/blip-view.ts` (~L327-355). Clicking
