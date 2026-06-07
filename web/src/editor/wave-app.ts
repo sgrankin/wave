@@ -33,6 +33,7 @@ export class WaveApp extends LitElement {
     waves: { state: true },
     query: { state: true },
     playback: { state: true },
+    navCollapsed: { state: true },
   };
 
   wsUrl = "";
@@ -42,6 +43,7 @@ export class WaveApp extends LitElement {
   declare waves: WaveDigest[];
   declare query: string;
   declare playback: boolean; // right pane shows the history scrubber instead of the editor
+  declare navCollapsed: boolean; // left inbox pane hidden for a full-width conversation
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66,6 +68,7 @@ export class WaveApp extends LitElement {
     this.waves = [];
     this.query = "";
     this.playback = false;
+    this.navCollapsed = false;
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -230,10 +233,14 @@ export class WaveApp extends LitElement {
     this.refreshList();
   };
 
+  private toggleNav = (): void => {
+    this.navCollapsed = !this.navCollapsed;
+  };
+
   protected override render(): TemplateResult {
     return html`
       ${STYLES}
-      <div class="app">
+      <div class=${"app" + (this.navCollapsed ? " nav-collapsed" : "")}>
         <div class="app-left">
           <wave-identity .address=${this.user}></wave-identity>
           <wave-list
@@ -246,6 +253,15 @@ export class WaveApp extends LitElement {
           ></wave-list>
         </div>
         <div class="app-right">
+          <button
+            class="nav-toggle"
+            @click=${this.toggleNav}
+            title=${this.navCollapsed ? "Show inbox" : "Hide inbox"}
+            aria-label=${this.navCollapsed ? "Show inbox" : "Hide inbox"}
+            aria-pressed=${this.navCollapsed ? "true" : "false"}
+          >
+            ${this.navCollapsed ? "☰" : "‹"}
+          </button>
           ${this.activeWave === ""
             ? html`<div class="app-placeholder">Select a wave, or create a new one.</div>`
             : this.renderActiveWave()}
@@ -327,6 +343,29 @@ const STYLES = html`
       min-width: 0; /* let the flex child shrink to fit instead of overflowing */
       overflow-y: auto;
       padding: 16px 20px;
+    }
+    /* Collapse the inbox for a full-width conversation (focus mode / cramped tablet
+       portrait). The toggle stays in the content pane so it is always reachable. */
+    wave-app .app.nav-collapsed .app-left {
+      display: none;
+    }
+    wave-app .nav-toggle {
+      font: 15px system-ui, sans-serif;
+      line-height: 1;
+      padding: 5px 10px;
+      margin-bottom: 10px;
+      border: 1px solid #d4d4d4;
+      border-radius: 6px;
+      background: #fff;
+      color: #555;
+      cursor: pointer;
+    }
+    wave-app .nav-toggle:hover {
+      background: #f0f0f0;
+    }
+    wave-app .nav-toggle:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 2px;
     }
     wave-app .app-modebar {
       display: flex;
