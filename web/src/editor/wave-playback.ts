@@ -163,6 +163,7 @@ const STYLES = html`
   <style>
     wave-playback {
       display: block;
+      max-width: 820px;
       font: 14px system-ui, sans-serif;
     }
     wave-playback .pb-bar {

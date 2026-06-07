@@ -374,6 +374,13 @@ const STYLES = html`
     wave-conversation wave-blip {
       display: block;
     }
+    /* The shell is full-window, but the conversation is a reading surface — cap it at
+       a comfortable measure (long lines hurt readability; still ~2x the old fixed
+       width). Left-aligned in the pane, after the nav, with the slack on the right —
+       centering it would leave an awkward gap between the nav and the column. */
+    wave-conversation {
+      max-width: 820px;
+    }
     wave-conversation .conv-bar {
       font: 12px system-ui, sans-serif;
       color: #555;

@@ -25,8 +25,10 @@ function hasHorizontalScroll(page: Page): Promise<boolean> {
 }
 
 // B2: the blip editor grows with the window width (it no longer shrink-wraps to a
-// fixed narrow box), and a wide window is actually used (well past the old ~419px).
-test("the blip editor grows with the window width", async () => {
+// fixed ~419px box), but is capped at a readable measure on a wide window — the
+// conversation column maxes at 820px, so .blip-doc lands ~800px (card minus padding)
+// rather than spanning the whole 1400px pane.
+test("the blip editor grows with the window width, up to the readable cap", async () => {
   const page = await client("alice@example.com", "w+layout-grow");
   try {
     await page.setViewportSize({ width: 1400, height: 900 });
@@ -35,7 +37,7 @@ test("the blip editor grows with the window width", async () => {
     const narrow = await blipWidth(page);
 
     assert.ok(wide > narrow + 200, `editor should grow with width: wide=${wide} narrow=${narrow}`);
-    assert.ok(wide > 800, `at a 1400px window the editor should be wide, got ${wide}px`);
+    assert.ok(wide > 700 && wide <= 840, `wide editor should sit at the readable cap (~800px), got ${wide}px`);
     assert.equal(await hasHorizontalScroll(page), false, "no horizontal scroll at 1400px");
   } finally {
     await page.close();

@@ -329,7 +329,8 @@ const STYLES = html`
     wave-app .app-modebar {
       display: flex;
       gap: 4px;
-      margin-bottom: 12px;
+      max-width: 820px;
+      margin: 0 0 12px;
     }
     wave-app .mode-btn {
       font: 12px system-ui, sans-serif;
