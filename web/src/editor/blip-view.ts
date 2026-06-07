@@ -65,6 +65,13 @@ export class BlipView extends LitElement {
   // --- input handling ---
 
   private onBeforeInput = (e: InputEvent): void => {
+    // Controlled editor: the DOM must change ONLY via re-render from the model.
+    // preventDefault unconditionally and FIRST, so that even a selection we cannot
+    // map (a mapping miss) can never let the browser mutate the DOM out of band —
+    // which would silently diverge the model from the view and drop the edit on
+    // the floor (it would never be submitted). A miss becomes a dropped keystroke,
+    // not a divergence; domToOffset is made robust below so misses are rare.
+    e.preventDefault();
     const range = currentRange(this);
     if (range === null) return;
     const a = this.domToOffset(range.startContainer, range.startOffset);
@@ -73,9 +80,6 @@ export class BlipView extends LitElement {
     const lo = Math.min(a, b);
     const hi = Math.max(a, b);
 
-    // Controlled editor: the DOM only changes via re-render from the model, so we
-    // preventDefault on everything and act only on the inputs we model.
-    e.preventDefault();
     switch (e.inputType) {
       case "insertText":
       case "insertReplacementText":
@@ -180,7 +184,17 @@ export class BlipView extends LitElement {
 
     let el: Node | null = node;
     while (el !== null && !(el instanceof HTMLElement && el.classList.contains("para"))) el = el.parentNode;
-    if (el === null) return null;
+    if (el === null) {
+      // The selection is inside .blip-doc but not within any rendered .para — the
+      // browser sometimes parks the caret in a stray text node at the editable
+      // root, notably right after a freshly-rendered empty paragraph gains focus.
+      // Map it to the START of the paragraph nearest the node in document order so
+      // the edit still lands in the model (the next re-render drops the stray
+      // node). For the common single-empty-paragraph blip this is paragraph 0.
+      if (!root.contains(node)) return null;
+      const near = this.proj.paragraphs[nearestParagraphIndex(paras, node)];
+      return near === undefined ? (this.proj.paragraphs[0]?.textStart ?? 0) : near.textStart;
+    }
     const idx = paras.indexOf(el as HTMLElement);
     const para = this.proj.paragraphs[idx];
     if (para === undefined) return null;
@@ -324,6 +338,24 @@ function camelToKebab(s: string): string {
 }
 
 // --- DOM caret helpers ---
+
+// nearestParagraphIndex returns the index of the last .para at or before `node`
+// in document order (0 if node precedes all paragraphs). Used to localise a caret
+// that the browser placed outside any .para (a stray text node at the editable
+// root) to a paragraph.
+function nearestParagraphIndex(paras: HTMLElement[], node: Node): number {
+  let idx = 0;
+  for (let i = 0; i < paras.length; i++) {
+    const pos = paras[i]!.compareDocumentPosition(node);
+    // node follows paras[i], or paras[i] contains node → paras[i] is a candidate.
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING || pos & Node.DOCUMENT_POSITION_CONTAINED_BY || pos === 0) {
+      idx = i;
+    } else {
+      break; // node precedes paras[i]; earlier candidate (idx) is the nearest
+    }
+  }
+  return idx;
+}
 
 function currentRange(host: HTMLElement): Range | null {
   const sel = window.getSelection();
