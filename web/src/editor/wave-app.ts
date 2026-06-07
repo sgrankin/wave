@@ -352,5 +352,21 @@ const STYLES = html`
       margin-top: 40px;
       text-align: center;
     }
+    /* Narrow widths: the fixed 300px list pane would squeeze the conversation to a
+       few dozen pixels (the right pane absorbs all width change), so stack the panes
+       — list on top (scrollable, capped height), conversation filling the rest. */
+    @media (max-width: 640px) {
+      wave-app .app {
+        flex-direction: column;
+      }
+      wave-app .app-left {
+        width: auto;
+        min-width: 0;
+        max-height: 40vh;
+        overflow-y: auto;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+    }
   </style>
 `;

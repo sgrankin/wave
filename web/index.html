@@ -5,12 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Wave</title>
     <style>
-      body { margin: 0; padding: 24px; max-width: 760px; }
-      h1 { font: 600 18px system-ui, sans-serif; margin: 0 0 12px; }
+      /* The app shell (<wave-app>) is a full-window two-pane layout (height:100vh),
+         so the page itself is full-bleed: no body max-width (which used to cap the
+         whole app at 760px so it never grew with the window) and no page chrome. */
+      html, body { margin: 0; height: 100%; }
+      body { font-family: system-ui, sans-serif; }
     </style>
   </head>
   <body>
-    <h1>Wave — collaborative editor</h1>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

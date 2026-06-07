@@ -12,7 +12,10 @@ Progress:
 - **B1 (leading gap) — DONE.** Same root cause as the B3 click-trigger (a leading
   whitespace text node from template indentation rendered as visible space under
   `white-space:pre-wrap` on the container); fixed alongside B3.
-- **B2 (width) — open.** Next.
+- **B2 (width) — DONE.** The whole app was capped at `body { max-width:760px }`
+  (index.html) and the editor's custom elements were `display:inline` (shrink-wrap);
+  fixed both, added long-word/URL wrapping, and a narrow-width pane-stacking
+  breakpoint. Guard: `web/test/layout.browser.test.ts`.
 
 Verify with two browser clients against a real `waved` (`make release && ./waved
 -ws 127.0.0.1:8140 -auth dev`), or extend `web/test/*.browser.test.ts`.
@@ -38,7 +41,17 @@ clean; original hypothesis below.)
   exactly one paragraph with `textStart` just after the `<line>` marker, no leading
   empty para.
 
-### B2 — blip box does not grow with width (stays narrow)
+### B2 — blip box does not grow with width (stays narrow) — RESOLVED 2026-06-07
+**Resolution:** two causes. (1) `index.html` had `body { max-width: 760px }`, capping
+the entire app regardless of window width (plus a dev `<h1>` + padding fighting the
+`height:100vh` shell) — made the shell full-window. (2) `wave-conversation`/
+`wave-thread`/`wave-blip` are custom elements that defaulted to `display:inline` and
+shrink-wrapped to ~419px inside their pane — set them `display:block` so each fills the
+width. Also added `overflow-wrap:break-word` to `.para` (long words/URLs wrap) and a
+`@media (max-width:640px)` rule that stacks the two panes so narrow/mobile widths stay
+usable. The conversation now fills its pane and grows with the window (no readability
+cap yet — easy to add if very wide lines become undesirable). (Hypothesis below was
+correct on cause #2; #1 was the dominant cause.)
 - **Symptom:** the blip editor card stays a fixed narrow width and does not fill the
   conversation pane as the window widens.
 - **Suspect (most likely):** the custom elements `<wave-thread>` / `<wave-blip>`

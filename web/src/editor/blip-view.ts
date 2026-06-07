@@ -465,7 +465,10 @@ export class BlipView extends LitElement {
         /* pre-wrap lives on the paragraph (where the text is), not the container:
            on the container it made stray whitespace text nodes between block-level
            paragraphs render as a visible leading gap (B1). */
-        .blip-doc .para { min-height: 1.6em; white-space: pre-wrap; }
+        /* pre-wrap preserves spaces and wraps at spaces; overflow-wrap also breaks a
+           single long unbreakable run (a long URL or word) so it never overflows the
+           blip width horizontally. */
+        .blip-doc .para { min-height: 1.6em; white-space: pre-wrap; overflow-wrap: break-word; }
         .blip-doc .wave-link { color: #1565c0; text-decoration: underline; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }

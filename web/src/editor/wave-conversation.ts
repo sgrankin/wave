@@ -364,6 +364,15 @@ customElements.define("wave-conversation", WaveConversation);
 // is no shadow root. Threads indent their replies; blips are bordered cards.
 const STYLES = html`
   <style>
+    /* The editor tree is custom elements, which default to display:inline and so
+       shrink-wrap their content instead of filling the conversation pane (B2: the
+       blip box "stayed tiny" and did not grow with the window). Make the structural
+       elements block so each fills the available width down to the blip card. */
+    wave-conversation,
+    wave-conversation wave-thread,
+    wave-conversation wave-blip {
+      display: block;
+    }
     wave-conversation .conv-bar {
       font: 12px system-ui, sans-serif;
       color: #555;
