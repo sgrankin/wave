@@ -173,6 +173,56 @@ test("a wave is unread for a participant until they open it", async () => {
   );
 });
 
+test("setting a display name humanizes the identity widget and roster, and persists", async () => {
+  const page = await openApp("frank@example.com");
+
+  // The identity widget starts at the raw address (no profile yet).
+  await page.locator(".identity-name").first().waitFor({ state: "attached", timeout: 10_000 });
+  assert.equal(
+    (await page.locator(".identity-name").first().textContent())?.trim(),
+    "frank@example.com",
+    "identity falls back to the address before a name is set",
+  );
+
+  // Set a display name via the inline editor.
+  await page.locator(".identity-edit").click();
+  await page.locator(".identity-input").fill("Frank Castle");
+  await page.locator(".identity-save").click();
+
+  // The widget now shows the name and a derived initials avatar.
+  await page.waitForFunction(
+    () => (document.querySelector(".identity-name")?.textContent ?? "").trim() === "Frank Castle",
+    undefined,
+    { timeout: 10_000 },
+  );
+  assert.equal(
+    (await page.locator(".wave-identity .wave-avatar").first().textContent())?.trim(),
+    "FC",
+    "avatar shows the name initials",
+  );
+
+  // Create a wave: the roster chip for self shows the display name too.
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll(".roster-chip .wave-participant-name")).some(
+        (e) => (e.textContent ?? "").trim() === "Frank Castle",
+      ),
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Reopen the app in a fresh page: the name persisted server-side and is fetched
+  // back on load (proves POST /api/profile → store → GET /api/profiles).
+  const reopened = await openApp("frank@example.com");
+  await reopened.waitForFunction(
+    () => (document.querySelector(".identity-name")?.textContent ?? "").trim() === "Frank Castle",
+    undefined,
+    { timeout: 10_000 },
+  );
+});
+
 test("an inline reply anchors a marker in the parent text and keeps it editable", async () => {
   const page = await openApp("dave@example.com");
   await page.locator(".wl-new").click();
