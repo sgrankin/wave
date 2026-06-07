@@ -336,12 +336,19 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   client dial seam; `Server.Shutdown` drains hijacked WS conns; a per-conn
   keepalive ping reaps vanished peers. Tested over a real `httptest` WebSocket
   (round-trip, two-client converge, unauthorized-rejected, author-mismatch-nacked,
-  shutdown + concurrent-dial race). Wired into `waved` behind `-ws` (DEV:
-  unauthenticated, pinned `-ws-user`). **Deferred to the auth-integration step:**
-  real session-cookie login (`auth.Service`) in front of `-ws`, and **wavelet
-  access control** — today any authenticated user can Open/read any wavelet by
-  name (authorship is enforced, membership is not). Next: JS `OptimisticClient`
-  port (`#9`, now unblocked).
+  shutdown + concurrent-dial race). Wired into `waved` behind `-ws`. Next: JS
+  `OptimisticClient` port (`#9`, now unblocked).
+- **Auth + access control + seeding — DONE 2026-06-07** (`#10`; see
+  [04-auth-model.md](04-auth-model.md) §9). `/socket` and `/whoami` mount behind
+  `auth.Service.Middleware` (session cookie verified before the WS upgrade); the
+  dev `-ws-user`/`?user=` stub is gone (the browser learns its address from
+  `/whoami` and rides the cookie). `/login` is a dev trust-any endpoint (loopback-
+  guarded) or a proxy trusted-header login; the session signing key persists via a
+  new `storage.SettingsStore`. Wavelet **membership** is gated at Open and Resync by
+  a `transport.AccessChecker` (`MembershipChecker`, strict; nil = dev-permissive),
+  with **open-or-create + server-side conversation seeding** (`conv.SeedConversation`
+  + atomic `WaveletContainer.SeedIfEmpty`) replacing the client `maybeBootstrap` and
+  killing the cold-start race. `-auth dev|proxy`, `-seed-conversations`.
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/

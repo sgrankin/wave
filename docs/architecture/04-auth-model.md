@@ -187,10 +187,11 @@ touch*. Today only delta **authorship** is enforced (a submitted delta's author 
 equal the authenticated participant; `transport/server.go` `handleSubmit`). There is
 **no membership check** — any authenticated user can Open/read any wavelet by name.
 
-Target: a participation predicate, reusing the existing `AccessChecker` interface
-(`CanAccess(participant, wavelet) (bool, error)`; `internal/attachapi`), wired into
-`transport.Server` and checked at **Open** (in `handleOpen`, before subscribing).
-Implement it from the wavelet's participant set (`WaveletContainer.Wavelet()`).
+A participation predicate (an `AccessChecker`, `CanAccess(participant, wavelet)
+(bool, error)`) is wired into `transport.Server` and checked at **Open** and
+**Resync** (`handleOpen`/`handleResync`, before subscribing). It reads the
+wavelet's participant set via `WaveletContainer.HasParticipant` (which holds the
+container lock — reading the live wavelet directly would race a concurrent submit).
 
 - **Strict by default for production**, with a **dev-permissive override** (an
   allow-all checker for the dev/test path) so the local demo and the browser
@@ -203,19 +204,39 @@ Implement it from the wavelet's participant set (`WaveletContainer.Wavelet()`).
   exists and goes through the membership check instead of writing a second
   manifest). The participants UI (`#13`) is the invite path that lets a second user
   in under strict mode.
+- **Enforced once, at Open/Resync — not per delivered delta.** After a session is
+  subscribed, membership is not re-evaluated, so a participant *removed* mid-session
+  keeps receiving the live stream until they disconnect. Revoking an in-flight
+  subscription on `RemoveParticipant` is a deliberate future refinement (it would
+  close the removed participant's subscriptions on that commit), out of scope for
+  the first slice. Both Open and Resync are gated, so a non-member cannot bypass
+  the gate by reconnecting via Resync.
 
 ## 9. Incremental plan
 
-`#10` builds the **address-asserting + dev** slice and the access/seeding layer:
+`#10` builds the **address-asserting + dev** slice and the access/seeding layer.
+**Status: shipped.** What landed:
 
-1. Mount `srv.WebSocketHandler` behind `auth.Service.Middleware` (identify =
-   `auth.ParticipantFrom`); cookie verified before the WS upgrade; drop `?user=`.
-2. A minimal login endpoint: dev = trust-any-address (no password) + register-on-
-   first-use → `SetCookie`; `TrustedHeader` for proxy deployments (provider exists).
-3. Persist the session signing key in storage.
-4. `AccessChecker` on `transport.Server`, checked at Open; strict prod / dev-
-   permissive.
-5. Server-side open-or-create + conversation seeding; remove client `maybeBootstrap`.
+1. `/socket` (and `/whoami`) mounted behind `auth.Service.Middleware` (identify =
+   `auth.ParticipantFrom`): the cookie is verified before the WS upgrade. The dev
+   `?user=` WS override and `-ws-user` flag are gone; the browser learns its own
+   address from `GET /whoami` and rides the cookie on the handshake.
+2. Login endpoints (`internal/auth/handlers.go`): dev `DevLoginHandler` trusts the
+   submitted address (no password) + register-on-first-use → `SetCookie` (and
+   serves an address-entry form when none is given); `LoginHandler` runs the
+   provider chain (`TrustedHeader`) for proxy deployments. `sanitizeRedirect`
+   restricts the post-login redirect to a local path (open-redirect defence).
+3. Session signing key persisted via a new `storage.SettingsStore`
+   (`auth.SigningKey` load-or-generate; ephemeral under an in-memory DB).
+4. `AccessChecker` on `transport.Server` (`internal/transport/access.go`), checked
+   at **both** `handleOpen` and `handleResync` (so a non-member cannot bypass the
+   gate by reconnecting): `MembershipChecker` (strict) reads the wavelet's
+   participant set; nil = dev-permissive (allow-all). The `-auth` mode selects it:
+   `dev` (permissive) / `proxy` (strict).
+5. Server-side open-or-create + conversation seeding (`conv.SeedConversation` +
+   `WaveletContainer.SeedIfEmpty`, atomic under the container lock): the client
+   `maybeBootstrap` is removed and the cold-start double-manifest race is gone.
+   Gated by `-seed-conversations` (default on); the raw OT/CC interop test opts out.
 
 **Deferred, kept additive by the seams above:** the credential store (§3), GitHub/
 OIDC/passkey/magic-link flows (§2, all end at `SetCookie`), chosen-address
@@ -224,11 +245,29 @@ rotation, outbound email.
 
 ## 10. Open decisions
 
+Resolved by `#10`:
+
+- **Membership predicate location + denial response** — RESOLVED. The predicate is
+  an `AccessChecker` on `transport.Server` (the transport layer owns it, since it
+  holds the authenticated participant and the container), checked at `handleOpen`
+  and `handleResync`. Denial is an **explicit "access denied" error frame** the
+  client surfaces, not a silent not-found: wavelet names are shared deliberately in
+  a single-machine collaborative app, so existence is not a meaningful secret and
+  an explicit reason is friendlier. (Reversible: the checker could later return a
+  not-found-shaped error without touching callers.)
+- **`-auth` bundles auth-method + access-policy** — for the `#10` slice, one `-auth`
+  flag picks a coherent bundle (`dev` = trust-any login + permissive access + plain
+  cookie; `proxy` = trusted-header + strict membership + Secure cookie). Doc §8
+  keeps them conceptually separate; the bundling is a deliberate simplification for
+  the two deployments that exist today, not a constraint — per-listener / split
+  flags can be added when a third shape appears.
+
+Still open (future increments):
+
 - Domain conventions for fake-namespaced identities (`@github`? `@passkey`? `sub@`
   vs verified-email for OIDC).
 - Whether the credential store lands as a dedicated table or a typed JSON column
   with a secondary `(method, subject)` index (doc 01 leaned JSON; §3 argues the
   index is the load-bearing part either way).
-- Default `RegisterOnFirstUse` per listener (open registration vs invite-only).
-- Where the membership predicate lives (transport session vs `server.WaveMap`/
-  `Container`) and the denial response (403 vs silent not-found).
+- Default `RegisterOnFirstUse` per listener (open registration vs invite-only;
+  `#10` uses register-on-first-use everywhere).
