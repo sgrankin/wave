@@ -20,9 +20,12 @@ import type { TemplateResult } from "lit";
 import { Attributes, DocOp, runeCount } from "../wave/types.ts";
 import type { Component } from "../wave/types.ts";
 import {
+  clearStyleRange,
   deleteLineMarker,
   project,
+  rangeStyle,
   replaceText,
+  setStyleRange,
   splitLineAt,
 } from "./blipdoc.ts";
 import type { BlipProjection, Paragraph, Span } from "./blipdoc.ts";
@@ -98,10 +101,33 @@ export class BlipView extends LitElement {
       case "deleteWordForward":
         this.deleteForward(lo, hi);
         break;
+      // Cmd/Ctrl+B and Cmd/Ctrl+I arrive as formatBold/formatItalic beforeinput
+      // events in a contenteditable; we model bold/italic as style annotations
+      // (not <b>/<i> tags), so we preventDefault (above) and toggle the range.
+      case "formatBold":
+        this.toggleStyle(lo, hi, "fontWeight", "bold");
+        break;
+      case "formatItalic":
+        this.toggleStyle(lo, hi, "fontStyle", "italic");
+        break;
       default:
         break; // unmodeled input: swallow, keep DOM == model
     }
   };
+
+  // toggleStyle flips a character style over the selection [lo, hi): if the whole
+  // range already carries prop=value it is cleared, otherwise it is set. Needs a
+  // non-collapsed selection (formatting a caret is a no-op for now). The selection
+  // collapses to hi after applying — selection-preserving formatting is a TODO.
+  private toggleStyle(lo: number, hi: number, prop: string, value: string): void {
+    if (hi <= lo) return;
+    const cur = rangeStyle(this.content, lo, hi, prop);
+    const build =
+      cur === value
+        ? (): Component[] => clearStyleRange(this.content, lo, hi, prop)
+        : (): Component[] => setStyleRange(this.content, lo, hi, prop, value);
+    this.tryEdit(build, hi);
+  }
 
   private onPaste = (e: ClipboardEvent): void => {
     e.preventDefault();
