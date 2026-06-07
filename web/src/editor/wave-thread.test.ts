@@ -61,8 +61,9 @@ function fakeController(contents?: Map<string, DocOp>): ConvController & {
     continueThread(threadId: string): void {
       continueCalls.push({ threadId });
     },
-    replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): void {
+    replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): string {
       replyCalls.push({ parentBlipId, inline, anchorOffset });
+      return "b+fake-reply";
     },
     participants(): string[] {
       return [];

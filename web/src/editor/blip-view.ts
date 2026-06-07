@@ -773,10 +773,16 @@ function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
       title="Go to inline reply"
       @mousedown=${(e: MouseEvent) => {
         // preventDefault so clicking the glyph doesn't move the editor caret; dispatch
-        // a bubbling event the blip wrapper turns into a scroll/focus of the thread.
+        // a bubbling event <wave-conversation> turns into opening the comment sheet for
+        // this thread. focus:false — tapping to READ should not steal focus / raise the
+        // keyboard (comment CREATION sets focus:true).
         e.preventDefault();
         (e.currentTarget as HTMLElement).dispatchEvent(
-          new CustomEvent<string>("anchor-activate", { detail: id, bubbles: true, composed: true }),
+          new CustomEvent<{ id: string; focus: boolean }>("anchor-activate", {
+            detail: { id, focus: false },
+            bubbles: true,
+            composed: true,
+          }),
         );
       }}
     ></span>`,

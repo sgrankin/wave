@@ -48,18 +48,6 @@ export class WaveBlip extends LitElement {
     this.controller.setCaret?.(this.blip.id, anchor, focus);
   };
 
-  // onAnchorActivate scrolls to (and focuses) the inline-reply thread an in-text
-  // 💬 anchor points to. The thread renders as a sibling <wave-thread data-thread-id>;
-  // the anchor id equals the reply thread's id.
-  private onAnchorActivate = (e: Event): void => {
-    e.stopPropagation();
-    const id = (e as CustomEvent<string>).detail;
-    const thread = this.querySelector<HTMLElement>(`wave-thread[data-thread-id="${CSS.escape(id)}"]`);
-    if (thread === null) return;
-    thread.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    thread.querySelector<HTMLElement>(".blip-doc")?.focus();
-  };
-
   private onReply = (): void => {
     this.controller.replyToBlip(this.blip.id, false);
   };
@@ -70,11 +58,21 @@ export class WaveBlip extends LitElement {
     this.commentInline();
   };
 
-  // commentInline creates an inline reply anchored at the current selection's line.
-  // Public so the floating <selection-toolbar>'s "Comment" button can drive it from
-  // outside the component tree (it resolves this <wave-blip> by climbing the DOM).
+  // commentInline creates an inline reply anchored at the current selection's line and
+  // opens it in the comment sheet, focused for immediate typing. Public so the floating
+  // <selection-toolbar>'s "Comment" button can drive it from outside the component tree
+  // (it resolves this <wave-blip> by climbing the DOM).
   commentInline(): void {
-    this.controller.replyToBlip(this.blip.id, true, this.anchorOffset());
+    const id = this.controller.replyToBlip(this.blip.id, true, this.anchorOffset());
+    // Bubble to <wave-conversation>, which opens the sheet for this thread once the
+    // optimistic create settles (focus:true so the reply input is ready to type).
+    this.dispatchEvent(
+      new CustomEvent<{ id: string; focus: boolean }>("anchor-activate", {
+        detail: { id, focus: true },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
   // anchorOffset returns the doc offset (line boundary) where an inline element
@@ -112,7 +110,6 @@ export class WaveBlip extends LitElement {
           .remoteCarets=${this.controller.remoteCaretsFor?.(this.blip.id) ?? []}
           @edit=${this.onEdit}
           @caret=${this.onCaret}
-          @anchor-activate=${this.onAnchorActivate}
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
@@ -141,14 +138,16 @@ export class WaveBlip extends LitElement {
             @change=${this.onAttachFile}
           />
         </div>
-        ${this.blip.threads.map(
-          (t) =>
-            html`<wave-thread
-              data-thread-id=${t.id}
-              .thread=${t}
-              .controller=${this.controller}
-            ></wave-thread>`,
-        )}
+        ${this.blip.threads
+          .filter((t) => !t.inline)
+          .map(
+            (t) =>
+              html`<wave-thread
+                data-thread-id=${t.id}
+                .thread=${t}
+                .controller=${this.controller}
+              ></wave-thread>`,
+          )}
       </div>
     `;
   }

@@ -40,7 +40,9 @@ function fakeController(participants: string[] = []): ConvController & {
     },
     editBlip(_blipId: string, _ops: Component[]): void {},
     continueThread(_threadId: string): void {},
-    replyToBlip(_parentBlipId: string, _inline: boolean): void {},
+    replyToBlip(_parentBlipId: string, _inline: boolean): string {
+      return "";
+    },
     participants(): string[] {
       return participants;
     },

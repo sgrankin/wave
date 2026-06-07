@@ -107,7 +107,7 @@ test("the toolbar floats on-screen, next to the selection", async () => {
   }
 });
 
-test("the toolbar's Comment button anchors an inline reply at the selection", async () => {
+test("the toolbar's Comment button anchors an inline reply and opens the sheet", async () => {
   const page = await client("alice@example.com", "w+seltoolbar-comment");
   try {
     await typeInto(page, 0, "comment on this");
@@ -116,12 +116,25 @@ test("the toolbar's Comment button anchors an inline reply at the selection", as
     await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
     await page.locator('.sel-toolbar button[data-cmd="comment"]').click();
 
-    // An inline reply thread is created: a 💬 anchor appears in the parent text and a
-    // new (inline-styled) thread with its own editable blip is added.
+    // A 💬 anchor appears in the parent text, and the new comment opens in the bottom
+    // sheet (inline threads live in the sheet, not in flow) with its own editable blip.
     await page.locator(".blip-doc .reply-anchor").first().waitFor({ state: "attached", timeout: 5000 });
-    await page.locator(".wave-thread.inline").first().waitFor({ state: "attached", timeout: 5000 });
+    await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 5000 });
+    await page.locator("comment-sheet .wave-thread.inline").first().waitFor({ state: "attached", timeout: 5000 });
     const blipCount = await page.locator(".blip-doc").count();
-    assert.ok(blipCount >= 2, `inline reply added an editable blip (got ${blipCount})`);
+    assert.ok(blipCount >= 2, `inline reply added an editable blip in the sheet (got ${blipCount})`);
+
+    // The 💬 anchor is NOT rendered as an in-flow thread (only the parent text shows it).
+    const inflowInline = await page.locator(".wave-blip > .wave-thread.inline").count();
+    assert.equal(inflowInline, 0, "inline threads are not rendered in the document flow");
+
+    // Dismiss with Escape; the sheet closes.
+    await page.keyboard.press("Escape");
+    await page.locator("comment-sheet .cs-panel").waitFor({ state: "detached", timeout: 5000 });
+
+    // Read path: tapping the 💬 anchor reopens that thread's sheet.
+    await page.locator(".blip-doc .reply-anchor").first().click();
+    await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 5000 });
   } finally {
     await page.close();
   }

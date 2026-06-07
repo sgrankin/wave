@@ -35,7 +35,9 @@ import { colorFor, contactSuggestions, displayNameFor, profiles } from "../wave/
 import { avatar, participantChip } from "./participant.ts";
 import { PresenceClient } from "../wave/presence.ts";
 import type { RemoteCaret } from "./controller.ts";
+import type { Thread } from "../wave/conversation.ts";
 import "./wave-thread.ts";
+import "./comment-sheet.ts";
 
 // TYPING_IDLE_MS: how long after the last edit we keep showing "typing".
 const TYPING_IDLE_MS = 2000;
@@ -44,6 +46,8 @@ export class WaveConversation extends LitElement {
   static override properties = {
     status: { state: true },
     rev: { state: true },
+    commentThreadId: { state: true },
+    commentAutoFocus: { state: true },
   };
 
   url = "";
@@ -56,6 +60,11 @@ export class WaveConversation extends LitElement {
 
   declare status: string;
   declare rev: number; // bumped on every client change to force a re-render
+  // The open inline-comment thread id ("" ⇒ none), shown in the <comment-sheet>.
+  declare commentThreadId: string;
+  // Whether to focus the sheet's reply input on open (true when opened by creating a
+  // comment; false when opened by tapping an anchor to read).
+  declare commentAutoFocus: boolean;
 
   private client: OptimisticClient | null = null;
   private author: Participant = "";
@@ -75,6 +84,8 @@ export class WaveConversation extends LitElement {
     super();
     this.status = "connecting…";
     this.rev = 0;
+    this.commentThreadId = "";
+    this.commentAutoFocus = false;
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -91,11 +102,15 @@ export class WaveConversation extends LitElement {
     // Re-render the whole tree when display names resolve, so the roster chips and
     // any @-mention tooltips humanize without waiting for the next edit.
     this.profilesUnsub = profiles.onChange(() => this.rev++);
+    // Inline-comment anchors (the 💬 in blip text) bubble an "anchor-activate" event;
+    // open the matching thread in the comment sheet. (Bubbles from any depth.)
+    this.addEventListener("anchor-activate", this.onAnchorActivate as EventListener);
     void this.start();
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.removeEventListener("anchor-activate", this.onAnchorActivate as EventListener);
     this.profilesUnsub?.();
     this.profilesUnsub = null;
     this.presenceUnsub?.();
@@ -151,6 +166,19 @@ export class WaveConversation extends LitElement {
         name: displayNameFor(p.participant, profiles.get(p.participant)),
       }));
   }
+
+  // onAnchorActivate opens an inline-comment thread (the anchor id equals the thread
+  // id) in the bottom sheet. detail.focus requests the reply input be focused (set
+  // when a comment was just created, so the user can type immediately).
+  private onAnchorActivate = (e: CustomEvent<{ id: string; focus?: boolean }>): void => {
+    this.commentThreadId = e.detail.id;
+    this.commentAutoFocus = e.detail.focus === true;
+  };
+
+  private closeComment = (): void => {
+    this.commentThreadId = "";
+    this.commentAutoFocus = false;
+  };
 
   private async start(): Promise<void> {
     let name: WaveletName;
@@ -253,10 +281,13 @@ export class WaveConversation extends LitElement {
         });
       },
       replyToBlip: (parentId, inline, anchorOffset) => {
+        // Mint the new thread/blip id up front so it can be returned (the sheet opens
+        // on it). It is just a fresh unique id, independent of live state, so minting
+        // it outside submitWith — which re-reads the live blip — is equivalent.
+        const id = newBlipID();
         void client.submitWith((blip) => {
           const manifest = blip(MANIFEST_ID);
           if (manifest === undefined) return [];
-          const id = newBlipID();
           const ops = [
             blipContentOp(author, MANIFEST_ID, buildReplyOp(manifest, parentId, id, inline)),
             blipContentOp(author, id, initialBlipContent()),
@@ -275,6 +306,7 @@ export class WaveConversation extends LitElement {
           }
           return ops;
         });
+        return id;
       },
       participants: () => client.participants(),
       addParticipant: (addr: string) => {
@@ -330,12 +362,27 @@ export class WaveConversation extends LitElement {
     const controller = this.controller;
 
     let body: TemplateResult;
+    let sheet: TemplateResult = html``;
     if (manifest === undefined || controller === null) {
       body = html`<p class="conv-empty">No conversation yet…</p>`;
     } else {
       try {
         const m = readManifest(manifest);
         body = html`<wave-thread .thread=${m.rootThread} .controller=${controller}></wave-thread>`;
+        // Inline comments are not rendered in flow; when one is open, show it in the
+        // sheet. Resolve the thread by id from the live manifest each render, so a new
+        // reply (or the just-created thread settling in) appears without reopening.
+        if (this.commentThreadId !== "") {
+          const t = findThread(m.rootThread, this.commentThreadId);
+          if (t !== null) {
+            sheet = html`<comment-sheet
+              .thread=${t}
+              .controller=${controller}
+              .autoFocus=${this.commentAutoFocus}
+              .onClose=${this.closeComment}
+            ></comment-sheet>`;
+          }
+        }
       } catch (e) {
         body = html`<p class="conv-error">malformed manifest: ${String(e)}</p>`;
       }
@@ -349,6 +396,7 @@ export class WaveConversation extends LitElement {
       ${roster}
       ${this._renderPresence()}
       ${body}
+      ${sheet}
     `;
   }
 
@@ -454,6 +502,20 @@ export class WaveConversation extends LitElement {
 }
 
 customElements.define("wave-conversation", WaveConversation);
+
+// findThread locates a thread by id anywhere in the conversation tree (the root
+// thread or any nested reply/inline thread). A thread's id equals its first blip's id,
+// which is what an inline-comment anchor carries. Returns null if not found.
+function findThread(thread: Thread, id: string): Thread | null {
+  if (thread.id === id) return thread;
+  for (const b of thread.blips) {
+    for (const t of b.threads) {
+      const found = findThread(t, id);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
 
 // connBarClass picks the status-bar style: red for failure/offline states, amber for
 // transient connecting/reconnecting, none (muted grey) for the steady "connected".

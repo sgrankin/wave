@@ -276,22 +276,28 @@ test("an inline reply anchors a marker in the parent text and keeps it editable"
   await blip.click();
   await blip.pressSequentially("Topic one", { delay: 5 });
 
-  // Reply inline: an anchor marker appears in the parent text, and a distinctly
-  // styled inline reply thread is added.
+  // Reply inline: an anchor marker appears in the parent text, and the inline comment
+  // opens in the bottom sheet (inline threads are NOT rendered in flow; they live in
+  // the sheet). The sheet hosts the new comment's editable blip.
   await page.locator(".reply-inline-btn").first().click();
+  await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 10_000 });
   await page.waitForFunction(
     () => {
       const parent = document.querySelector(".blip-doc");
       return (
         parent !== null &&
         parent.querySelectorAll(".reply-anchor").length === 1 &&
-        document.querySelectorAll(".wave-thread.inline").length === 1 &&
-        document.querySelectorAll(".blip-doc").length === 2
+        document.querySelectorAll("comment-sheet .wave-thread.inline").length === 1 &&
+        document.querySelectorAll(".blip-doc").length === 2 // parent + the sheet's comment blip
       );
     },
     undefined,
     { timeout: 10_000 },
   );
+
+  // Close the sheet (its backdrop overlays the doc) before returning to the parent.
+  await page.locator("comment-sheet .cs-close").click();
+  await page.locator("comment-sheet .cs-panel").waitFor({ state: "detached", timeout: 10_000 });
 
   // The parent blip stays editable and caret-correct despite the embedded anchor:
   // typing more text appends without corruption.

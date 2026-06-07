@@ -44,8 +44,9 @@ export interface ConvController {
   // Create a new reply thread under a blip (and its first blip), in one delta.
   // When inline and anchorOffset is given, also place a <reply> anchor in the
   // parent blip body at that offset (a line boundary) so the reply is anchored
-  // within the text.
-  replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): void;
+  // within the text. Returns the new thread's id (== its first blip's id) so the
+  // caller can open it (e.g. the inline-comment sheet auto-opens on creation).
+  replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): string;
   // The current optimistic participant roster (may change on each re-render).
   participants(): Participant[];
   // Submit an addParticipant op for addr. Throws if addr is not a valid participant address.
