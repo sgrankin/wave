@@ -448,6 +448,24 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   serving the client, web typecheck/unit/component + the Playwright e2e, and a
   fresh-eyes code review (one notification-dedup footgun pre-empted with a guard +
   doc — notifications are inbox-only by construction).
+- **Presence — DONE 2026-06-07** (`#20`; design doc
+  [07-presence](07-presence.md)). A **transient** awareness channel (who is here /
+  typing / focused blip), deliberately **separate** from the OT delta socket so a lossy
+  signal can never perturb convergence. Server `internal/presence`: a `Hub` (room per
+  wavelet, non-blocking drop-on-full fan-out, nothing persisted) + a `/presence`
+  WebSocket that binds the authenticated participant (server-stamped, client identity
+  ignored), gates by the same access policy as the OT socket (nil dev-permissive /
+  `MembershipChecker` in proxy), sends a join snapshot, and keepalive-pings to reap
+  half-open sockets; a server-lifetime base context drains all sockets on shutdown.
+  Client `wave/presence.ts` (throttled sends, reconnect) + a `<wave-conversation>`
+  presence bar (avatar per online peer, dimmed unless typing, "… is typing"). Validated:
+  hub white-box + a real two-client WebSocket round-trip (online/typing/snapshot/depart,
+  401/403) under `-race`, a Playwright e2e (a peer seen present + typing), and a
+  fresh-eyes review (the writer/reader lifecycle verified leak-free; the two flagged
+  gaps — half-open reaping + shutdown drain — fixed). **Deferred (flagged, doc §5):**
+  pixel-exact remote caret bars — they touch the editor's caret-mapping invariant and
+  warrant a separate reviewed increment; v1 ships the lower-risk blip-granular awareness
+  + typing indicators.
 - **8a JS client — DONE 2026-06-06** (`#9`). A TypeScript port of the whole client
   stack under `web/` (esbuild + Lit + `node --test` via Node 26 type-stripping):
   the shared model (`types.ts`), CBOR wire subset, op algebra (compose/transform/
