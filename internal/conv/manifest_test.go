@@ -137,6 +137,133 @@ func TestReadReplyThread(t *testing.T) {
 	}
 }
 
+// applyAppend is a tiny helper: append a blip to a thread and apply the op.
+func applyAppend(t *testing.T, manifest op.DocOp, threadID, blipID string) op.DocOp {
+	t.Helper()
+	mut, err := conv.AppendBlipToThread(manifest, threadID, blipID)
+	if err != nil {
+		t.Fatalf("AppendBlipToThread(%q, %q): %v", threadID, blipID, err)
+	}
+	next, err := op.Apply(manifest, mut)
+	if err != nil {
+		t.Fatalf("apply append: %v", err)
+	}
+	return next
+}
+
+func applyReply(t *testing.T, manifest op.DocOp, parentBlipID, newBlipID string, inline bool) op.DocOp {
+	t.Helper()
+	mut, err := conv.ReplyToBlip(manifest, parentBlipID, newBlipID, inline)
+	if err != nil {
+		t.Fatalf("ReplyToBlip(%q, %q): %v", parentBlipID, newBlipID, err)
+	}
+	next, err := op.Apply(manifest, mut)
+	if err != nil {
+		t.Fatalf("apply reply: %v", err)
+	}
+	return next
+}
+
+// AppendBlipToThread with an empty threadID is exactly AppendBlipToRootThread.
+func TestAppendBlipToThreadRootMatchesRootHelper(t *testing.T) {
+	manifest := conv.EmptyManifest()
+	viaGeneral := applyAppend(t, manifest, "", "b+1")
+	viaRoot, err := op.Apply(manifest, conv.AppendBlipToRootThread(manifest, "b+1"))
+	if err != nil {
+		t.Fatalf("apply root helper: %v", err)
+	}
+	if !viaGeneral.Equal(viaRoot) {
+		t.Errorf("AppendBlipToThread(\"\") != AppendBlipToRootThread")
+	}
+}
+
+// A reply creates a thread (id == new blip id) under the parent, containing the
+// new blip; a further append to that thread continues it.
+func TestReplyAndContinueThread(t *testing.T) {
+	manifest := conv.EmptyManifest()
+	manifest = applyAppend(t, manifest, "", "b+1")          // root blip
+	manifest = applyReply(t, manifest, "b+1", "b+2", false) // reply thread b+2 under b+1
+	manifest = applyAppend(t, manifest, "b+2", "b+3")       // continue thread b+2
+
+	m, err := conv.ReadManifest(manifest)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if len(m.RootThread.Blips) != 1 || m.RootThread.Blips[0].ID != "b+1" {
+		t.Fatalf("root thread = %+v, want single b+1", m.RootThread.Blips)
+	}
+	b1 := m.RootThread.Blips[0]
+	if len(b1.Threads) != 1 {
+		t.Fatalf("b+1 threads = %d, want 1", len(b1.Threads))
+	}
+	th := b1.Threads[0]
+	if th.ID != "b+2" {
+		t.Errorf("reply thread id = %q, want b+2", th.ID)
+	}
+	if th.Inline {
+		t.Errorf("reply thread should not be inline")
+	}
+	gotIDs := make([]string, len(th.Blips))
+	for i, b := range th.Blips {
+		gotIDs[i] = b.ID
+	}
+	if len(gotIDs) != 2 || gotIDs[0] != "b+2" || gotIDs[1] != "b+3" {
+		t.Errorf("thread blips = %v, want [b+2 b+3]", gotIDs)
+	}
+}
+
+// An inline reply marks the thread inline="true".
+func TestReplyInline(t *testing.T) {
+	manifest := applyAppend(t, conv.EmptyManifest(), "", "b+1")
+	manifest = applyReply(t, manifest, "b+1", "b+2", true)
+	m, err := conv.ReadManifest(manifest)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	th := m.RootThread.Blips[0].Threads[0]
+	if !th.Inline {
+		t.Errorf("inline reply thread should be inline")
+	}
+}
+
+// Reply targets the right (nested) parent and leaves siblings intact.
+func TestReplyToNestedBlip(t *testing.T) {
+	manifest := conv.EmptyManifest()
+	manifest = applyAppend(t, manifest, "", "b+1")
+	manifest = applyAppend(t, manifest, "", "b+2")          // two root blips
+	manifest = applyReply(t, manifest, "b+2", "b+3", false) // reply under the second
+	manifest = applyReply(t, manifest, "b+3", "b+4", false) // reply under the reply
+
+	m, err := conv.ReadManifest(manifest)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if len(m.RootThread.Blips) != 2 {
+		t.Fatalf("root blips = %d, want 2", len(m.RootThread.Blips))
+	}
+	if len(m.RootThread.Blips[0].Threads) != 0 {
+		t.Errorf("b+1 should be untouched, got threads %+v", m.RootThread.Blips[0].Threads)
+	}
+	b2 := m.RootThread.Blips[1]
+	if len(b2.Threads) != 1 || b2.Threads[0].ID != "b+3" {
+		t.Fatalf("b+2 threads = %+v, want [b+3]", b2.Threads)
+	}
+	b3 := b2.Threads[0].Blips[0]
+	if b3.ID != "b+3" || len(b3.Threads) != 1 || b3.Threads[0].ID != "b+4" {
+		t.Errorf("b+3 nested reply = %+v, want thread b+4", b3.Threads)
+	}
+}
+
+func TestAuthoringErrorsOnMissingTarget(t *testing.T) {
+	manifest := conv.EmptyManifest()
+	if _, err := conv.AppendBlipToThread(manifest, "no-such-thread", "b+x"); err == nil {
+		t.Error("AppendBlipToThread should error on a missing thread")
+	}
+	if _, err := conv.ReplyToBlip(manifest, "no-such-blip", "b+x", false); err == nil {
+		t.Error("ReplyToBlip should error on a missing blip")
+	}
+}
+
 func TestReadManifestAnchor(t *testing.T) {
 	manifest := op.NewDocOp([]op.Component{
 		op.ElementStart{Type: "conversation", Attributes: attrs(t, map[string]string{

@@ -10,6 +10,7 @@ package conv
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/sgrankin/wave/internal/doc"
 	"github.com/sgrankin/wave/internal/op"
@@ -151,6 +152,100 @@ func AppendBlipToRootThread(manifest op.DocOp, blipID string) op.DocOp {
 		op.ElementEnd{},
 		op.Retain{Count: 1},
 	})
+}
+
+// AppendBlipToThread appends an empty <blip id=blipID/> to the end of the thread
+// identified by threadID — the empty string selects the root thread (the children
+// of <conversation> itself). It returns the operation; apply it with
+// op.Apply(manifest, result). It returns an error if no such thread exists.
+//
+// This generalises AppendBlipToRootThread (which is AppendBlipToThread with an
+// empty threadID); the dedicated root helper is retained as the common case.
+func AppendBlipToThread(manifest op.DocOp, threadID, blipID string) (op.DocOp, error) {
+	close, ok := elementCloseOffset(manifest, func(tag, id string) bool {
+		if threadID == "" {
+			return tag == tagConversation
+		}
+		return tag == tagThread && id == threadID
+	})
+	if !ok {
+		return op.DocOp{}, fmt.Errorf("conv: no thread %q in manifest", threadID)
+	}
+	n := manifest.DocumentLength()
+	return op.NewDocOp([]op.Component{
+		op.Retain{Count: close},
+		op.ElementStart{Type: tagBlip, Attributes: mustAttrs(map[string]string{attrID: blipID})},
+		op.ElementEnd{},
+		op.Retain{Count: n - close},
+	}), nil
+}
+
+// ReplyToBlip creates a new reply thread under the blip parentBlipID, containing a
+// single new blip newBlipID. The thread's id equals the new blip's id (the Wave
+// convention: a reply thread is identified by its first blip). When inline is
+// true the thread is marked inline="true". It returns the operation; apply it
+// with op.Apply(manifest, result). It returns an error if no such blip exists.
+//
+// This authors only the manifest mutation; the caller pairs it with a blip
+// operation that initialises newBlipID's content (see InitialBlipContent) in the
+// same wavelet delta.
+func ReplyToBlip(manifest op.DocOp, parentBlipID, newBlipID string, inline bool) (op.DocOp, error) {
+	close, ok := elementCloseOffset(manifest, func(tag, id string) bool {
+		return tag == tagBlip && id == parentBlipID
+	})
+	if !ok {
+		return op.DocOp{}, fmt.Errorf("conv: no blip %q in manifest", parentBlipID)
+	}
+	threadAttrs := map[string]string{attrID: newBlipID}
+	if inline {
+		threadAttrs[attrInline] = boolTrue
+	}
+	n := manifest.DocumentLength()
+	return op.NewDocOp([]op.Component{
+		op.Retain{Count: close},
+		op.ElementStart{Type: tagThread, Attributes: mustAttrs(threadAttrs)},
+		op.ElementStart{Type: tagBlip, Attributes: mustAttrs(map[string]string{attrID: newBlipID})},
+		op.ElementEnd{}, // blip
+		op.ElementEnd{}, // thread
+		op.Retain{Count: n - close},
+	}), nil
+}
+
+// elementCloseOffset returns the document offset of the ElementEnd item that
+// closes the first element (by close order) whose (tag, id) satisfies pred, where
+// id is the element's "id" attribute ("" if absent). The returned offset is the
+// index of that ElementEnd item — i.e. the insertion point for appending a child
+// to the very end of that element. ok is false if no element matches. It assumes
+// a well-formed initialization (balanced elements, no retains/deletions), which
+// every manifest is.
+func elementCloseOffset(manifest op.DocOp, pred func(tag, id string) bool) (int, bool) {
+	type frame struct{ tag, id string }
+	var stack []frame
+	pos := 0
+	for _, c := range manifest.Components() {
+		switch c := c.(type) {
+		case op.ElementStart:
+			id, _ := c.Attributes.Get(attrID)
+			stack = append(stack, frame{c.Type, id})
+			pos++
+		case op.ElementEnd:
+			if len(stack) == 0 {
+				return 0, false // unbalanced; not a valid manifest
+			}
+			top := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if pred(top.tag, top.id) {
+				return pos, true
+			}
+			pos++
+		case op.Characters:
+			pos += utf8.RuneCountInString(c.Text)
+		default:
+			// AnnotationBoundary is zero-width; other components never appear in an
+			// initialization. Ignore.
+		}
+	}
+	return 0, false
 }
 
 // mustAttrs builds attributes from a map; it panics only on invalid UTF-8 in a
