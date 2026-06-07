@@ -359,6 +359,37 @@ What's on the fork's `main`, and how execution deviated from the plan above:
   bug fixed (Go nil `[]byte` → CBOR null, not empty bytes). Built via a
   contract-driven background workflow (fan-out of 8 modules against a fixed
   `types.ts` + fixtures). Next: 8b — the editor / document-model (`#5`), Lit-based.
+- **8b editor — IN PROGRESS** (`#5`, 2026-06-06). Built and validated live in
+  headless Chrome (via Playwright):
+  - **Collaborative editor, browser-to-browser**: two clients on one wavelet, edits
+    converge on open (history replay) and live, through the real Go server. First a
+    flat-text MVP (contenteditable + diff→op), then a **rich line-based editor**.
+  - **Document model** (`web/src/editor/blipdoc.ts`): project a blip content DocOp
+    (Wave `<body>`/`<line>` line-container + `style/*` annotations) into paragraphs
+    of styled spans with caret↔doc-offset mapping; pure command builders
+    (insert/replace/delete text, splitLine=Enter, deleteLineMarker=line-merge),
+    verified through the ported composer. `blip-view.ts` is a **controlled
+    contenteditable** Lit element: render the projection, translate `beforeinput`
+    into content ops (no diffing), preserve the caret across re-renders. `wave-editor`
+    hosts it and submits edits as blip operations. `cmd/waved -webroot` serves the
+    esbuild bundle same-origin with `/socket`.
+  - **Conversation/manifest model ported** (`web/src/wave/doc.ts` reader +
+    `conversation.ts` — port of `internal/doc` + `internal/conv`): the recursive
+    threaded structure (`<conversation>/<blip>/<thread>`, inline replies, anchors),
+    ready for the conversation view.
+  - **Component test harness** (`web/testing/`, vendored from sgrankin/cs):
+    Go-`test`-style Lit rendering in headless Chromium (`npm run test:web`); node
+    vs browser tests separated by their `node:` imports. Three testing layers now:
+    pure logic (`node --test` vs the Go composer/fixtures), components (harness),
+    end-to-end (Playwright).
+  - **Three real bugs found via the browser loop** (none caught by unit tests):
+    empty-doc projection/DOM mismatch (offset null → native edit), a Lit
+    reactive-field-initializer shadow that killed re-render, and a Lit comment marker
+    counted as text when mapping the caret.
+  - **Remaining for #5**: the **conversation view** (manifest → recursive thread/blip
+    components, reply + inline-reply commands, multiple blips), rich-text formatting
+    toolbar (annotations), and a committed Playwright convergence test (validated
+    interactively so far). Then participants UI / polish.
 
 ### Deferred
 - **Indexed mutable document model** (Java `model/document/`: live editable doc
