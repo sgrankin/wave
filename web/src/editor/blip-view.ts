@@ -11,8 +11,8 @@
 // First cut: text + <line> paragraph structure + style annotations (rendered).
 // Handled inputs: insertText/replace, Enter (split line), Backspace/Delete
 // (in-paragraph + line-merge at a boundary), paste-as-text. Not yet: IME
-// composition, cross-paragraph selection edits, a formatting toolbar — these are
-// swallowed (preventDefault, no-op) so the DOM never diverges from the model.
+// composition, cross-paragraph selection edits. A formatting toolbar is provided
+// (bold/italic + line-type buttons) and operates via the same emit() path.
 
 import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
@@ -25,10 +25,17 @@ import {
   project,
   rangeStyle,
   replaceText,
+  setLineType,
   setStyleRange,
   splitLineAt,
 } from "./blipdoc.ts";
 import type { BlipProjection, Paragraph, Span } from "./blipdoc.ts";
+
+// A saved selection range (both endpoints as doc offsets).
+interface SavedSelection {
+  anchor: number;
+  focus: number;
+}
 
 export class BlipView extends LitElement {
   static override properties = {
@@ -44,6 +51,10 @@ export class BlipView extends LitElement {
   private proj: BlipProjection = project(DocOp.empty());
   private pendingCaret: number | null = null; // caret an edit wants after re-render
   private savedCaret: number | null = null; // caret captured before a non-edit re-render
+  // When a formatting command preserves a selection (B/I over a range), this
+  // holds the range to restore after re-render instead of a collapsed caret.
+  private pendingSelection: SavedSelection | null = null;
+  private hasFocus = false; // tracks focusin/focusout to show/hide toolbar
 
   constructor() {
     super();
@@ -62,6 +73,16 @@ export class BlipView extends LitElement {
   private emit(ops: Component[], caretAfter: number): void {
     if (ops.length === 0) return;
     this.pendingCaret = caretAfter;
+    this.dispatchEvent(new CustomEvent<Component[]>("edit", { detail: ops, bubbles: true, composed: true }));
+  }
+
+  // emitWithSelection is like emit but requests that a range (not a collapsed
+  // caret) be restored after the re-render — used by B/I so the selection stays
+  // on the formatted text and a second format key can be applied immediately.
+  private emitWithSelection(ops: Component[], anchor: number, focus: number): void {
+    if (ops.length === 0) return;
+    this.pendingCaret = null;
+    this.pendingSelection = { anchor, focus };
     this.dispatchEvent(new CustomEvent<Component[]>("edit", { detail: ops, bubbles: true, composed: true }));
   }
 
@@ -116,9 +137,9 @@ export class BlipView extends LitElement {
   };
 
   // toggleStyle flips a character style over the selection [lo, hi): if the whole
-  // range already carries prop=value it is cleared, otherwise it is set. Needs a
-  // non-collapsed selection (formatting a caret is a no-op for now). The selection
-  // collapses to hi after applying — selection-preserving formatting is a TODO.
+  // range already carries prop=value it is cleared, otherwise it is set. For a
+  // non-collapsed selection the selection is preserved after re-render (pendingSelection).
+  // A collapsed range (caret-only) is a no-op.
   private toggleStyle(lo: number, hi: number, prop: string, value: string): void {
     if (hi <= lo) return;
     const cur = rangeStyle(this.content, lo, hi, prop);
@@ -126,7 +147,9 @@ export class BlipView extends LitElement {
       cur === value
         ? (): Component[] => clearStyleRange(this.content, lo, hi, prop)
         : (): Component[] => setStyleRange(this.content, lo, hi, prop, value);
-    this.tryEdit(build, hi);
+    const ops = (() => { try { return build(); } catch { return []; } })();
+    if (ops.length === 0) return;
+    this.emitWithSelection(ops, lo, hi);
   }
 
   private onPaste = (e: ClipboardEvent): void => {
@@ -186,11 +209,97 @@ export class BlipView extends LitElement {
 
   private tryEditAllowFail = this.tryEdit;
 
+  // --- toolbar commands ---
+
+  // toolbarToggleStyle is the toolbar entry-point for B/I. It reads the current
+  // selection (at mousedown time the selection is still intact because we
+  // preventDefault'd mousedown), calls toggleStyle, and keeps focus in the editor.
+  private toolbarToggleStyle(prop: string, value: string): void {
+    const range = currentRange(this);
+    if (range === null) return;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = range.collapsed ? a : this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return;
+    this.toggleStyle(Math.min(a, b), Math.max(a, b), prop, value);
+  }
+
+  // toolbarSetLineType changes the paragraph that contains the caret to `newType`.
+  private toolbarSetLineType(newType: string | null): void {
+    const range = currentRange(this);
+    if (range === null) return;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    if (a === null) return;
+    const para = this.paragraphAtOffset(a);
+    if (para === null || para.lineOffset === null) return;
+    const caretOffset = a; // preserve caret position after re-render
+    const oldType = para.lineType;
+    // If the paragraph already has this type, toggle off to plain.
+    const targetType = oldType === newType ? null : newType;
+    this.tryEdit(() => setLineType(this.content, para.lineOffset!, oldType, targetType), caretOffset);
+  }
+
+  // onToolbarMousedown prevents the toolbar button mousedown from blurring the
+  // contenteditable and collapsing the selection — gotcha #1. The command runs
+  // here (not on click) because focus/selection are still intact.
+  private onToolbarMousedown = (e: MouseEvent): void => {
+    // Prevent focus leaving the contenteditable.
+    e.preventDefault();
+    const btn = (e.target as HTMLElement).closest("[data-cmd]") as HTMLElement | null;
+    if (btn === null) return;
+    const cmd = btn.dataset["cmd"] ?? "";
+    switch (cmd) {
+      case "bold":
+        this.toolbarToggleStyle("fontWeight", "bold");
+        break;
+      case "italic":
+        this.toolbarToggleStyle("fontStyle", "italic");
+        break;
+      case "h1":
+        this.toolbarSetLineType("h1");
+        break;
+      case "h2":
+        this.toolbarSetLineType("h2");
+        break;
+      case "h3":
+        this.toolbarSetLineType("h3");
+        break;
+      case "li":
+        this.toolbarSetLineType("li");
+        break;
+      case "plain":
+        this.toolbarSetLineType(null);
+        break;
+    }
+  };
+
+  // --- focus tracking ---
+
+  private onFocusin = (): void => {
+    if (this.hasFocus) return;
+    this.hasFocus = true;
+    this.requestUpdate();
+  };
+
+  private onFocusout = (e: FocusEvent): void => {
+    // relatedTarget is the element gaining focus; if it's still inside us, ignore.
+    if (this.contains(e.relatedTarget as Node | null)) return;
+    this.hasFocus = false;
+    this.requestUpdate();
+  };
+
   // --- projection-aware lookups ---
 
   private paragraphAtTextStart(offset: number): Paragraph | null {
     for (const p of this.proj.paragraphs) if (p.textStart === offset) return p;
     return null;
+  }
+
+  // paragraphAtOffset returns the paragraph whose text range contains `offset`.
+  private paragraphAtOffset(offset: number): Paragraph | null {
+    for (const p of this.proj.paragraphs) {
+      if (offset >= p.textStart && offset <= p.textStart + p.textLength) return p;
+    }
+    return this.proj.paragraphs[this.proj.paragraphs.length - 1] ?? null;
   }
 
   // --- DOM <-> doc offset mapping ---
@@ -249,14 +358,49 @@ export class BlipView extends LitElement {
     return domAtRuneOffset(paraEl, runeOff);
   }
 
+  // --- toolbar state queries ---
+
+  // activeCharStyle returns the value of `prop` over the current selection (or
+  // null/mixed), used to derive button pressed state.
+  private activeCharStyle(prop: string): string | null | "mixed" {
+    const range = currentRange(this);
+    if (range === null) return null;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = range.collapsed ? a : this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return null;
+    return rangeStyle(this.content, Math.min(a, b), Math.max(a, b), prop);
+  }
+
+  // caretLineType returns the lineType of the paragraph holding the caret.
+  private caretLineType(): string | null {
+    const range = currentRange(this);
+    if (range === null) return null;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    if (a === null) return null;
+    return this.paragraphAtOffset(a)?.lineType ?? null;
+  }
+
   // --- lifecycle ---
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener("focusin", this.onFocusin);
+    this.addEventListener("focusout", this.onFocusout);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.removeEventListener("focusin", this.onFocusin);
+    this.removeEventListener("focusout", this.onFocusout);
+  }
 
   // willUpdate captures the caret before a re-render so it survives updates that
   // are not local edits — an ack settling or a remote delta replacing DOM nodes
-  // would otherwise drop the caret. A local edit has already set pendingCaret,
-  // which takes precedence. Runs while the DOM still matches the current proj.
+  // would otherwise drop the caret. A local edit has already set pendingCaret or
+  // pendingSelection, which take precedence. Runs while the DOM still matches the
+  // current proj.
   protected override willUpdate(): void {
-    if (this.pendingCaret !== null) return;
+    if (this.pendingCaret !== null || this.pendingSelection !== null) return;
     const range = currentRange(this);
     this.savedCaret = range === null ? null : this.domToOffset(range.startContainer, range.startOffset);
   }
@@ -269,11 +413,59 @@ export class BlipView extends LitElement {
     // null, and the beforeinput handler bails WITHOUT preventDefault — letting the
     // browser edit the DOM natively while the model never updates).
     this.proj = raw.paragraphs.length > 0 ? raw : { paragraphs: [EMPTY_PARAGRAPH], length: raw.length };
+
+    // Toolbar active states (queried from current selection + model).
+    const boldActive = this.activeCharStyle("fontWeight") === "bold";
+    const italicActive = this.activeCharStyle("fontStyle") === "italic";
+    const lineType = this.caretLineType();
+
     return html`
       <style>
         .blip-doc { outline: none; font: 15px/1.6 system-ui, sans-serif; white-space: pre-wrap; }
         .blip-doc .para { min-height: 1.6em; }
+        .blip-toolbar {
+          display: flex;
+          gap: 2px;
+          padding: 2px 0 4px;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.1s;
+          user-select: none;
+        }
+        .blip-toolbar.visible {
+          opacity: 1;
+          pointer-events: auto;
+        }
+        .blip-toolbar button {
+          font: inherit;
+          font-size: 12px;
+          line-height: 1;
+          padding: 2px 6px;
+          border: 1px solid #bbb;
+          border-radius: 3px;
+          background: #f5f5f5;
+          cursor: pointer;
+          min-width: 26px;
+        }
+        .blip-toolbar button:hover { background: #e8e8e8; }
+        .blip-toolbar button[aria-pressed="true"] {
+          background: #c8d8f0;
+          border-color: #7aa;
+          font-weight: 600;
+        }
       </style>
+      <div
+        class="blip-toolbar ${this.hasFocus ? "visible" : ""}"
+        @mousedown=${this.onToolbarMousedown}
+      >
+        <button data-cmd="bold" aria-pressed="${boldActive}" aria-label="Bold"><b>B</b></button>
+        <button data-cmd="italic" aria-pressed="${italicActive}" aria-label="Italic"><i>I</i></button>
+        <button data-cmd="h1" aria-pressed="${lineType === "h1"}" aria-label="Heading 1">H1</button>
+        <button data-cmd="h2" aria-pressed="${lineType === "h2"}" aria-label="Heading 2">H2</button>
+        <button data-cmd="h3" aria-pressed="${lineType === "h3"}" aria-label="Heading 3">H3</button>
+        <button data-cmd="li" aria-pressed="${lineType === "li"}" aria-label="Bullet list">•</button>
+        <button data-cmd="plain" aria-pressed="${lineType === null}" aria-label="Plain paragraph">¶</button>
+      </div>
       <div
         class="blip-doc"
         contenteditable="true"
@@ -287,6 +479,32 @@ export class BlipView extends LitElement {
   }
 
   protected override updated(): void {
+    // pendingSelection takes priority: restore a non-collapsed selection (after B/I).
+    if (this.pendingSelection !== null) {
+      const sel = this.pendingSelection;
+      this.pendingSelection = null;
+      this.pendingCaret = null;
+      this.savedCaret = null;
+      const anchorPos = this.offsetToDom(sel.anchor);
+      const focusPos = this.offsetToDom(sel.focus);
+      if (anchorPos !== null && focusPos !== null) {
+        const selection = window.getSelection();
+        if (selection !== null) {
+          const r = document.createRange();
+          try {
+            r.setStart(anchorPos.node, anchorPos.offset);
+            r.setEnd(focusPos.node, focusPos.offset);
+          } catch {
+            // Fall back to collapsed caret at anchor if range fails.
+            try { r.setStart(anchorPos.node, anchorPos.offset); r.collapse(true); } catch { return; }
+          }
+          selection.removeAllRanges();
+          selection.addRange(r);
+        }
+      }
+      return;
+    }
+
     const offset = this.pendingCaret ?? this.savedCaret;
     this.pendingCaret = null;
     this.savedCaret = null;
@@ -392,7 +610,7 @@ function currentRange(host: HTMLElement): Range | null {
   return r;
 }
 
-// runeOffsetWithin computes the rune offset of (node, domOffset) within a paragraph
+// runeOffsetWithin computes the rune offset of (node, offset) within a paragraph
 // element, summing the text content that precedes the point in document order.
 function runeOffsetWithin(para: HTMLElement, node: Node, domOffset: number): number {
   let runes = 0;
