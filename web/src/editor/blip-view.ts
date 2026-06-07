@@ -60,10 +60,15 @@ export class BlipView extends LitElement {
   private proj: BlipProjection = project(DocOp.empty());
   private pendingCaret: number | null = null; // caret an edit wants after re-render
   private savedCaret: number | null = null; // caret captured before a non-edit re-render
+  // A live non-collapsed selection captured before a non-edit re-render (an ack
+  // settling or a peer's delta), restored afterward so the selection — and the
+  // floating selection-toolbar anchored to it — survives. Without this, such a
+  // re-render would collapse the selection to a caret.
+  private savedSelection: SavedSelection | null = null;
   // When a formatting command preserves a selection (B/I over a range), this
   // holds the range to restore after re-render instead of a collapsed caret.
   private pendingSelection: SavedSelection | null = null;
-  private hasFocus = false; // tracks focusin/focusout to show/hide toolbar
+  private hasFocus = false; // tracks focusin/focusout; gates caret preservation in willUpdate
 
   constructor() {
     super();
@@ -249,15 +254,11 @@ export class BlipView extends LitElement {
     this.tryEdit(() => setLineType(this.content, para.lineOffset!, oldType, targetType), caretOffset);
   }
 
-  // onToolbarMousedown prevents the toolbar button mousedown from blurring the
-  // contenteditable and collapsing the selection — gotcha #1. The command runs
-  // here (not on click) because focus/selection are still intact.
-  private onToolbarMousedown = (e: MouseEvent): void => {
-    // Prevent focus leaving the contenteditable.
-    e.preventDefault();
-    const btn = (e.target as HTMLElement).closest("[data-cmd]") as HTMLElement | null;
-    if (btn === null) return;
-    const cmd = btn.dataset["cmd"] ?? "";
+  // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain) against
+  // the current selection. It is the public entry point for the floating
+  // <selection-toolbar>: the toolbar preventDefaults its own pointerdown so focus
+  // and the selection are still intact in this editor when this runs.
+  applyCommand(cmd: string): void {
     switch (cmd) {
       case "bold":
         this.toolbarToggleStyle("fontWeight", "bold");
@@ -281,14 +282,24 @@ export class BlipView extends LitElement {
         this.toolbarSetLineType(null);
         break;
     }
-  };
+  }
+
+  // commandStates reports which formatting commands are active for the current
+  // selection, so the floating toolbar can show pressed buttons. Reads live from
+  // the selection + model (the same queries the toolbar button states used).
+  commandStates(): { bold: boolean; italic: boolean; lineType: string | null } {
+    return {
+      bold: this.activeCharStyle("fontWeight") === "bold",
+      italic: this.activeCharStyle("fontStyle") === "italic",
+      lineType: this.caretLineType(),
+    };
+  }
 
   // --- focus tracking ---
 
   private onFocusin = (): void => {
     if (this.hasFocus) return;
     this.hasFocus = true;
-    this.requestUpdate();
     // Track the caret only while focused (selectionchange is a document event, so we
     // subscribe per-focus to avoid every blip reacting to every selection move).
     document.addEventListener("selectionchange", this.onSelectionChange);
@@ -299,7 +310,6 @@ export class BlipView extends LitElement {
     // relatedTarget is the element gaining focus; if it's still inside us, ignore.
     if (this.contains(e.relatedTarget as Node | null)) return;
     this.hasFocus = false;
-    this.requestUpdate();
     document.removeEventListener("selectionchange", this.onSelectionChange);
     // Focus left the editor entirely: clear our caret (anchor/focus = -1) so peers
     // stop rendering it. (A blip-to-blip switch instead overwrites it via the new
@@ -585,10 +595,37 @@ export class BlipView extends LitElement {
     // (and the focusout caret-clear, which a re-grab would immediately re-publish).
     if (!this.hasFocus) {
       this.savedCaret = null;
+      this.savedSelection = null;
       return;
     }
     const range = currentRange(this);
-    this.savedCaret = range === null ? null : this.domToOffset(range.startContainer, range.startOffset);
+    if (range === null) {
+      this.savedCaret = null;
+      this.savedSelection = null;
+      return;
+    }
+    // A non-collapsed selection (both ends inside this editor): save the full range so
+    // it — and the toolbar tracking it — survives the re-render. Otherwise save the
+    // collapsed caret as before.
+    const sel = window.getSelection();
+    if (
+      sel !== null &&
+      !sel.isCollapsed &&
+      sel.anchorNode !== null &&
+      this.contains(sel.anchorNode) &&
+      sel.focusNode !== null &&
+      this.contains(sel.focusNode)
+    ) {
+      const a = this.domToOffset(sel.anchorNode, sel.anchorOffset);
+      const f = this.domToOffset(sel.focusNode, sel.focusOffset);
+      if (a !== null && f !== null) {
+        this.savedSelection = { anchor: a, focus: f };
+        this.savedCaret = null;
+        return;
+      }
+    }
+    this.savedSelection = null;
+    this.savedCaret = this.domToOffset(range.startContainer, range.startOffset);
   }
 
   protected override render(): TemplateResult {
@@ -599,11 +636,6 @@ export class BlipView extends LitElement {
     // null, and the beforeinput handler bails WITHOUT preventDefault — letting the
     // browser edit the DOM natively while the model never updates).
     this.proj = raw.paragraphs.length > 0 ? raw : { paragraphs: [EMPTY_PARAGRAPH], length: raw.length };
-
-    // Toolbar active states (queried from current selection + model).
-    const boldActive = this.activeCharStyle("fontWeight") === "bold";
-    const italicActive = this.activeCharStyle("fontStyle") === "italic";
-    const lineType = this.caretLineType();
 
     return html`
       <style>
@@ -622,39 +654,6 @@ export class BlipView extends LitElement {
         .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
         .blip-doc .wave-image { display: block; margin: 4px 0; user-select: none; }
         .blip-doc .wave-image img { max-width: 100%; max-height: 320px; border-radius: 6px; vertical-align: bottom; }
-        /* Hidden (no reserved space) until the blip is focused, then shown IN FLOW
-           above the text — so it never covers content (it just pushes the text down,
-           the expected "entered edit mode" affordance) and wraps instead of
-           overflowing on a narrow phone. (An earlier absolutely-positioned float
-           reserved no space but covered the first line on small screens.) */
-        .blip-toolbar {
-          display: none;
-          flex-wrap: wrap;
-          gap: 2px;
-          margin: 0 0 6px;
-          user-select: none;
-        }
-        .blip-toolbar.visible {
-          display: flex;
-        }
-        .blip-toolbar button {
-          font: inherit;
-          font-size: 12px;
-          line-height: 1;
-          padding: 2px 6px;
-          border: 1px solid #bbb;
-          border-radius: 3px;
-          background: #f5f5f5;
-          cursor: pointer;
-          min-width: 26px;
-        }
-        .blip-toolbar button:hover { background: #e8e8e8; }
-        .blip-toolbar button:focus-visible { outline: 2px solid #4060c0; outline-offset: 1px; }
-        /* Touch devices get larger, comfortably-tappable toolbar buttons. */
-        @media (pointer: coarse) {
-          .blip-toolbar { gap: 4px; }
-          .blip-toolbar button { min-width: 38px; min-height: 34px; padding: 6px 10px; font-size: 13px; }
-        }
         /* Remote-caret overlay: an absolutely-positioned, non-interactive layer over
            the text. It sits OUTSIDE .blip-doc (a stray element inside the contenteditable
            would corrupt the caret↔offset mapping); positions are computed in updated(). */
@@ -666,24 +665,7 @@ export class BlipView extends LitElement {
           padding: 1px 4px; border-radius: 3px 3px 3px 0; line-height: 1.2;
         }
         .remote-sel { position: absolute; border-radius: 2px; }
-        .blip-toolbar button[aria-pressed="true"] {
-          background: #c8d8f0;
-          border-color: #7aa;
-          font-weight: 600;
-        }
       </style>
-      <div
-        class="blip-toolbar ${this.hasFocus ? "visible" : ""}"
-        @mousedown=${this.onToolbarMousedown}
-      >
-        <button data-cmd="bold" aria-pressed="${boldActive}" aria-label="Bold"><b>B</b></button>
-        <button data-cmd="italic" aria-pressed="${italicActive}" aria-label="Italic"><i>I</i></button>
-        <button data-cmd="h1" aria-pressed="${lineType === "h1"}" aria-label="Heading 1">H1</button>
-        <button data-cmd="h2" aria-pressed="${lineType === "h2"}" aria-label="Heading 2">H2</button>
-        <button data-cmd="h3" aria-pressed="${lineType === "h3"}" aria-label="Heading 3">H3</button>
-        <button data-cmd="li" aria-pressed="${lineType === "li"}" aria-label="Bullet list">•</button>
-        <button data-cmd="plain" aria-pressed="${lineType === null}" aria-label="Plain paragraph">¶</button>
-      </div>
       <div
         class="blip-doc"
         contenteditable="true"
@@ -706,10 +688,13 @@ export class BlipView extends LitElement {
       this.renderRemoteCarets();
       this.hadRemoteCarets = this.remoteCarets.length > 0;
     }
-    // pendingSelection takes priority: restore a non-collapsed selection (after B/I).
-    if (this.pendingSelection !== null) {
-      const sel = this.pendingSelection;
+    // Restore a non-collapsed selection: pendingSelection (after B/I) takes priority,
+    // then savedSelection (a live selection captured across a non-edit re-render).
+    const restoreSel = this.pendingSelection ?? this.savedSelection;
+    if (restoreSel !== null) {
+      const sel = restoreSel;
       this.pendingSelection = null;
+      this.savedSelection = null;
       this.pendingCaret = null;
       this.savedCaret = null;
       const anchorPos = this.offsetToDom(sel.anchor);

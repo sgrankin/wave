@@ -12,6 +12,7 @@
 
 import "./wave-app.ts";
 import type { WaveApp } from "./wave-app.ts";
+import { ensureSelectionToolbar } from "./selection-toolbar.ts";
 import { setDebug } from "../wave/debug.ts";
 import { WaveDebug } from "./debug-panel.ts";
 
@@ -62,6 +63,10 @@ async function boot(): Promise<void> {
   app.wsUrl = url;
   app.user = address;
   document.body.appendChild(app);
+
+  // Mount the floating selection toolbar once, at the document root (so its fixed
+  // positioning is anchored to the viewport, not the app subtree).
+  ensureSelectionToolbar();
 
   if (debug) {
     const panel = new WaveDebug();

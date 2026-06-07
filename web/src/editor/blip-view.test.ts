@@ -54,19 +54,16 @@ function collectEdits(el: HTMLElement): Component[][] {
   return edits;
 }
 
-/** Fire a mousedown on a toolbar button by data-cmd name. */
-function toolbarMousedown(toolbar: HTMLElement, cmd: string): void {
-  const btn = toolbar.querySelector<HTMLElement>(`[data-cmd="${cmd}"]`);
-  if (btn === null) throw new Error(`No toolbar button for cmd="${cmd}"`);
-  const ev = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
-  btn.dispatchEvent(ev);
+/** Run a formatting command on a blip-view via its public applyCommand() — the
+ *  entry point the floating <selection-toolbar> uses. The command reads the live
+ *  window selection (which the test has already placed). */
+function applyCmd(bv: HTMLElement, cmd: string): void {
+  (bv as HTMLElement & { applyCommand(cmd: string): void }).applyCommand(cmd);
 }
 
-/** Find the .blip-toolbar element inside a blip-view (light DOM). */
-function findToolbar(bv: HTMLElement): HTMLElement {
-  const tb = bv.querySelector<HTMLElement>(".blip-toolbar");
-  if (tb === null) throw new Error("blip-view has no .blip-toolbar");
-  return tb;
+/** Read a blip-view's command states (pressed-button states for the toolbar). */
+function commandStates(bv: HTMLElement): { bold: boolean; italic: boolean; lineType: string | null } {
+  return (bv as HTMLElement & { commandStates(): { bold: boolean; italic: boolean; lineType: string | null } }).commandStates();
 }
 
 /** Find the .blip-doc contenteditable inside a blip-view. */
@@ -121,29 +118,37 @@ function selectInPara(para: HTMLElement, start: number, end: number): boolean {
 // Tests
 // ---------------------------------------------------------------------------
 
-export async function testToolbarPresent(t: T): Promise<void> {
+// The in-flow per-blip toolbar was replaced by the global floating <selection-toolbar>;
+// the blip-view must no longer render one (it would reserve space / clutter the blip).
+export async function testNoInflowToolbar(t: T): Promise<void> {
   const content = makeContent(null, "hello");
   const el = await render(html`<blip-view .content=${content}></blip-view>`);
   await waitForUpdate(el);
-
-  const toolbar = findToolbar(el);
-  eq(toolbar !== null, true, "toolbar in DOM");
-  // Initially hidden (no focus yet).
-  eq(toolbar.classList.contains("visible"), false, "toolbar hidden before focus");
+  eq(el.querySelector(".blip-toolbar"), null, "blip-view renders no in-flow toolbar");
 }
 
-export async function testToolbarVisibleOnFocus(t: T): Promise<void> {
-  const content = makeContent(null, "hello");
-  const el = await render(html`<blip-view .content=${content}></blip-view>`);
+// commandStates (which the floating toolbar reads for pressed-button states) reflects
+// the style of the current selection.
+export async function testCommandStatesReflectSelection(t: T): Promise<void> {
+  const boldComps: Component[] = [
+    { kind: "elementStart", type: "body", attributes: Attributes.empty() },
+    { kind: "elementStart", type: "line", attributes: Attributes.empty() },
+    { kind: "elementEnd" },
+    {
+      kind: "annotationBoundary",
+      boundary: AnnotationBoundaryMap.of([], [{ key: "style/fontWeight", oldValue: null, newValue: "bold" }]),
+    },
+    { kind: "characters", text: "bold text" },
+    { kind: "annotationBoundary", boundary: AnnotationBoundaryMap.of(["style/fontWeight"], []) },
+    { kind: "elementEnd" },
+  ];
+  const el = await render(html`<blip-view .content=${new DocOp(boldComps)}></blip-view>`);
   await waitForUpdate(el);
 
-  const toolbar = findToolbar(el);
-  // Dispatch focusin from the contenteditable to simulate the blip receiving focus.
-  const doc = findDoc(el);
-  doc.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-  await waitForUpdate(el);
-
-  eq(toolbar.classList.contains("visible"), true, "toolbar visible after focusin");
+  const para = findDoc(el).querySelector<HTMLElement>(".para");
+  if (para === null) throw new Error("no .para");
+  eq(selectInPara(para, 0, 9), true, "selection placed over bold text");
+  eq(commandStates(el).bold, true, "commandStates reports bold over a bold selection");
 }
 
 export async function testH1ButtonEmitsSetLineType(t: T): Promise<void> {
@@ -162,7 +167,7 @@ export async function testH1ButtonEmitsSetLineType(t: T): Promise<void> {
   if (para === null) throw new Error("no .para");
   placeCaretInPara(para);
 
-  toolbarMousedown(findToolbar(el), "h1");
+  applyCmd(el, "h1");
 
   eq(edits.length, 1, "one edit dispatched");
   const op = edits[0]!;
@@ -186,7 +191,7 @@ export async function testBoldButtonEmitsSetStyleRange(t: T): Promise<void> {
   const ok = selectInPara(para, 0, 5);
   eq(ok, true, "selection placed");
 
-  toolbarMousedown(findToolbar(el), "bold");
+  applyCmd(el, "bold");
 
   eq(edits.length, 1, "one edit dispatched");
   const op = edits[0]!;
@@ -231,7 +236,7 @@ export async function testBoldButtonTogglesOff(t: T): Promise<void> {
   const ok = selectInPara(para, 0, 9); // "bold text" is 9 chars
   eq(ok, true, "selection placed");
 
-  toolbarMousedown(findToolbar(el), "bold");
+  applyCmd(el, "bold");
 
   eq(edits.length, 1, "one edit dispatched (toggle off)");
   const op = edits[0]!;
@@ -260,7 +265,7 @@ export async function testH1TogglesOffToPlain(t: T): Promise<void> {
   placeCaretInPara(para);
 
   // H1 is already the line type → clicking H1 again toggles off to plain (null).
-  toolbarMousedown(findToolbar(el), "h1");
+  applyCmd(el, "h1");
 
   eq(edits.length, 1, "one edit dispatched");
   const op = edits[0]!;

@@ -1,0 +1,322 @@
+// <selection-toolbar> — a single floating formatting + comment bar that appears
+// over the current text selection inside any <blip-view>, anywhere in the editor.
+//
+// Why a global singleton instead of a per-blip toolbar: the old in-flow toolbar sat
+// at the top of each blip, so on a long blip it scrolled out of reach, and it
+// reserved space / cluttered every blip. This one is `position: fixed`, mounted once
+// at the document root, and self-driving: it watches the document selection and pops
+// up at the selection (Medium/Docs style). It carries NO editable content and is not
+// a descendant of any `.blip-doc`, so it cannot perturb the caret↔offset mapping the
+// controlled editor depends on.
+//
+// It reaches the right editor by climbing the DOM from the selection node (the whole
+// tree is light DOM): format commands go to the enclosing <blip-view> via its public
+// applyCommand(); "Comment" goes to the enclosing <wave-blip> via commentInline().
+// Buttons preventDefault their pointerdown so tapping them never blurs the editor or
+// collapses the selection.
+//
+// Touch vs. mouse: on a coarse pointer the bar docks to the bottom of the viewport
+// instead of floating at the selection — a floating bar there collides with the
+// native selection callout (Cut/Copy/Paste) and is awkward to hit; a bottom bar is
+// the familiar mobile pattern and stays clear of the callout.
+
+import { LitElement, html } from "lit";
+import type { TemplateResult } from "lit";
+
+import type { BlipView } from "./blip-view.ts";
+import type { WaveBlip } from "./wave-blip.ts";
+
+// Gap (px) between the selection and the floating bar.
+const GAP = 8;
+// Viewport edge padding (px) so the bar never touches the window edge.
+const EDGE = 8;
+
+export class SelectionToolbar extends LitElement {
+  static override properties = {
+    visible: { state: true },
+    states: { state: true },
+    coarse: { state: true },
+  };
+
+  declare private visible: boolean;
+  declare private states: { bold: boolean; italic: boolean; lineType: string | null };
+  declare private coarse: boolean; // touch layout (bottom-docked) vs. floating
+
+  // The editor the current selection lives in, resolved on each refresh. Commands
+  // dispatch to these directly (the bar is fixed at the document root, so events
+  // from it would not bubble into the editor).
+  private blipView: BlipView | null = null;
+  private waveBlip: WaveBlip | null = null;
+  // The selection's viewport rect, captured at refresh and used to position the bar
+  // in updated() (after the bar has rendered, so its own size is measurable).
+  private selRect: DOMRect | null = null;
+  private raf = 0;
+  private mql: MediaQueryList | null = null;
+
+  constructor() {
+    super();
+    this.visible = false;
+    this.states = { bold: false, italic: false, lineType: null };
+    this.coarse = false;
+  }
+
+  // Light DOM (matches the rest of the editor; styles are scoped by tag name).
+  protected override createRenderRoot(): HTMLElement {
+    return this;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.mql = window.matchMedia("(pointer: coarse)");
+    this.coarse = this.mql.matches;
+    this.mql.addEventListener("change", this.onPointerKindChange);
+    document.addEventListener("selectionchange", this.onSelectionChange);
+    // Capture: catch the conversation pane's scroll (which does not bubble) so the
+    // floating bar tracks the selection as the user scrolls.
+    window.addEventListener("scroll", this.onViewportChange, true);
+    window.addEventListener("resize", this.onViewportChange);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.mql?.removeEventListener("change", this.onPointerKindChange);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
+    window.removeEventListener("scroll", this.onViewportChange, true);
+    window.removeEventListener("resize", this.onViewportChange);
+    if (this.raf !== 0) cancelAnimationFrame(this.raf);
+  }
+
+  private onPointerKindChange = (e: MediaQueryListEvent): void => {
+    this.coarse = e.matches;
+  };
+
+  private onSelectionChange = (): void => this.schedule();
+  private onViewportChange = (): void => {
+    if (this.visible) this.schedule();
+  };
+
+  // schedule coalesces selection/scroll/resize bursts into one refresh per frame.
+  private schedule(): void {
+    if (this.raf !== 0) return;
+    this.raf = requestAnimationFrame(() => {
+      this.raf = 0;
+      this.refresh();
+    });
+  }
+
+  // refresh reads the current selection, decides whether to show the bar, and (when
+  // shown) resolves the host editor and captures the selection rect for positioning.
+  private refresh(): void {
+    const sel = window.getSelection();
+    if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) {
+      this.hide();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const startEl =
+      range.startContainer.nodeType === Node.TEXT_NODE
+        ? range.startContainer.parentElement
+        : (range.startContainer as Element);
+    const blipDoc = startEl?.closest<HTMLElement>(".blip-doc") ?? null;
+    if (blipDoc === null) {
+      this.hide(); // selection is not inside an editor
+      return;
+    }
+    // Only a selection wholly within one blip is actionable (no cross-blip ranges).
+    if (!blipDoc.contains(range.endContainer)) {
+      this.hide();
+      return;
+    }
+    const blipView = startEl?.closest<HTMLElement>("blip-view") as BlipView | null;
+    const waveBlip = startEl?.closest<HTMLElement>("wave-blip") as WaveBlip | null;
+    if (blipView === null) {
+      this.hide();
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      this.hide(); // a zero-size rect (e.g. selection across a hidden node): nothing to anchor to
+      return;
+    }
+    this.blipView = blipView;
+    this.waveBlip = waveBlip;
+    this.selRect = rect;
+    this.states = blipView.commandStates();
+    this.visible = true;
+  }
+
+  private hide(): void {
+    if (!this.visible) return;
+    this.visible = false;
+    this.blipView = null;
+    this.waveBlip = null;
+    this.selRect = null;
+  }
+
+  // run applies a format command (or creates a comment) against the resolved editor.
+  // Called from a button click; the button already preventDefaulted pointerdown, so
+  // the selection is intact. Returns focus is not needed — applyCommand restores the
+  // selection through the blip-view's own re-render path.
+  private run(cmd: string): void {
+    if (cmd === "comment") {
+      this.waveBlip?.commentInline();
+      this.hide();
+      return;
+    }
+    this.blipView?.applyCommand(cmd);
+  }
+
+  // keepSelection stops a button press from blurring the editor / collapsing the
+  // selection. mousedown covers desktop; touchstart covers iOS Safari, where a tap
+  // outside the contenteditable would otherwise clear the selection before click.
+  private keepSelection = (e: Event): void => {
+    e.preventDefault();
+  };
+
+  protected override updated(): void {
+    if (!this.visible || this.coarse || this.selRect === null) {
+      // Coarse layout is fully CSS-positioned (bottom bar); clear any inline offsets
+      // left over from a previous floating placement.
+      this.style.left = "";
+      this.style.top = "";
+      return;
+    }
+    // Float above the selection, centered, clamped to the viewport; flip below if
+    // there is no room above. Measured after render so the bar's own size is known.
+    const tb = this.getBoundingClientRect();
+    const sr = this.selRect;
+    let left = sr.left + sr.width / 2 - tb.width / 2;
+    left = Math.max(EDGE, Math.min(left, window.innerWidth - tb.width - EDGE));
+    let top = sr.top - tb.height - GAP;
+    if (top < EDGE) top = sr.bottom + GAP; // no room above → below
+    this.style.left = `${Math.round(left)}px`;
+    this.style.top = `${Math.round(top)}px`;
+  }
+
+  protected override render(): TemplateResult {
+    const s = this.states;
+    const btn = (cmd: string, label: string, pressed: boolean, content: TemplateResult | string): TemplateResult =>
+      html`<button
+        data-cmd=${cmd}
+        aria-label=${label}
+        aria-pressed=${pressed ? "true" : "false"}
+        class=${pressed ? "pressed" : ""}
+        @click=${() => this.run(cmd)}
+      >
+        ${content}
+      </button>`;
+    return html`
+      ${STYLES}
+      <div
+        class=${"sel-toolbar" + (this.visible ? " visible" : "") + (this.coarse ? " coarse" : "")}
+        role="toolbar"
+        aria-label="Text formatting"
+        @mousedown=${this.keepSelection}
+        @touchstart=${this.keepSelection}
+      >
+        ${btn("bold", "Bold", s.bold, html`<b>B</b>`)}
+        ${btn("italic", "Italic", s.italic, html`<i>I</i>`)}
+        ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
+        ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
+        ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}
+        ${btn("li", "Bullet list", s.lineType === "li", "•")}
+        <span class="sep" aria-hidden="true"></span>
+        ${btn("comment", "Comment on selection", false, html`<span class="cmt">💬 Comment</span>`)}
+      </div>
+    `;
+  }
+}
+
+customElements.define("selection-toolbar", SelectionToolbar);
+
+// ensureSelectionToolbar mounts the singleton bar at the document root if it is not
+// already present (idempotent). Called once at boot. Mounting on <body> (not inside
+// the app subtree) keeps `position: fixed` anchored to the viewport regardless of
+// any transformed ancestor.
+export function ensureSelectionToolbar(): void {
+  if (document.querySelector("selection-toolbar") !== null) return;
+  document.body.appendChild(document.createElement("selection-toolbar"));
+}
+
+// Light-DOM styles, scoped by tag name (matching wave-conversation's approach). The
+// host element itself is the fixed-positioned layer; the inner .sel-toolbar is the
+// visible bar.
+const STYLES = html`
+  <style>
+    selection-toolbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 1000;
+      /* The host is only a positioning anchor; the bar inside carries the visuals.
+         pointer-events flow to the bar; nothing here intercepts the page otherwise. */
+    }
+    selection-toolbar .sel-toolbar {
+      display: none;
+      align-items: center;
+      gap: 2px;
+      padding: 4px;
+      background: #2b2f36;
+      border-radius: 8px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    selection-toolbar .sel-toolbar.visible {
+      display: inline-flex;
+    }
+    selection-toolbar .sel-toolbar button {
+      font: 13px system-ui, sans-serif;
+      line-height: 1;
+      min-width: 28px;
+      padding: 6px 8px;
+      border: none;
+      border-radius: 5px;
+      background: transparent;
+      color: #f0f2f5;
+      cursor: pointer;
+    }
+    selection-toolbar .sel-toolbar button:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+    selection-toolbar .sel-toolbar button.pressed {
+      background: #4060c0;
+      color: #fff;
+    }
+    selection-toolbar .sel-toolbar button:focus-visible {
+      outline: 2px solid #9db4ff;
+      outline-offset: 1px;
+    }
+    selection-toolbar .sel-toolbar .cmt {
+      white-space: nowrap;
+    }
+    selection-toolbar .sel-toolbar .sep {
+      width: 1px;
+      align-self: stretch;
+      margin: 2px 3px;
+      background: rgba(255, 255, 255, 0.22);
+    }
+    /* Touch: dock full-width at the bottom of the viewport, above the iOS home bar. */
+    selection-toolbar .sel-toolbar.coarse.visible {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    selection-toolbar .sel-toolbar.coarse {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border-radius: 0;
+      padding: 8px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom))
+        calc(8px + env(safe-area-inset-left));
+      gap: 4px;
+    }
+    selection-toolbar .sel-toolbar.coarse button {
+      min-width: 44px;
+      min-height: 40px;
+      padding: 8px 12px;
+      font-size: 15px;
+    }
+  </style>
+`;

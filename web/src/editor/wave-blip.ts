@@ -67,8 +67,15 @@ export class WaveBlip extends LitElement {
   // onReplyInline anchors a reply within the parent blip's text, at the line the
   // caret is in (or the end of the blip if the caret is elsewhere).
   private onReplyInline = (): void => {
-    this.controller.replyToBlip(this.blip.id, true, this.anchorOffset());
+    this.commentInline();
   };
+
+  // commentInline creates an inline reply anchored at the current selection's line.
+  // Public so the floating <selection-toolbar>'s "Comment" button can drive it from
+  // outside the component tree (it resolves this <wave-blip> by climbing the DOM).
+  commentInline(): void {
+    this.controller.replyToBlip(this.blip.id, true, this.anchorOffset());
+  }
 
   // anchorOffset returns the doc offset (line boundary) where an inline element
   // should attach — the caret's line, or the end of the blip if the caret is
