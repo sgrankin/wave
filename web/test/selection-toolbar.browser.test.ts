@@ -61,6 +61,52 @@ test("selecting text shows the toolbar; Bold formats the selection", async () =>
   }
 });
 
+// Positioning guard (the thing the ad-hoc screenshot checked by eye): the floating
+// bar must render fully on-screen and adjacent to the selection — not off-viewport,
+// not parked at 0,0, not far from the text it acts on. (Fine-pointer/desktop layout;
+// the coarse layout docks to the bottom edge instead and is exercised by eye on a
+// real device.)
+test("the toolbar floats on-screen, next to the selection", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-pos");
+  try {
+    await typeInto(page, 0, "position the bar near this selected text");
+    await selectFirstPara(page, 13, 21); // select "the bar "
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+
+    const geom = await page.evaluate(() => {
+      const bar = document.querySelector(".sel-toolbar")!.getBoundingClientRect();
+      const sel = window.getSelection()!.getRangeAt(0).getBoundingClientRect();
+      return {
+        bar: { left: bar.left, top: bar.top, right: bar.right, bottom: bar.bottom, w: bar.width, h: bar.height },
+        sel: { left: sel.left, top: sel.top, right: sel.right, bottom: sel.bottom },
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      };
+    });
+
+    // Fully within the viewport.
+    assert.ok(geom.bar.w > 0 && geom.bar.h > 0, "bar has a real size");
+    assert.ok(geom.bar.left >= 0 && geom.bar.top >= 0, `bar not off the top/left: ${JSON.stringify(geom.bar)}`);
+    assert.ok(geom.bar.right <= geom.vw + 1 && geom.bar.bottom <= geom.vh + 1, "bar within the viewport");
+    // Not parked at the origin (the failure mode when positioning never runs).
+    assert.ok(geom.bar.top > 8 || geom.bar.left > 8, "bar is positioned, not at 0,0");
+    // Vertically adjacent to the selection (just above, or flipped just below).
+    const selMidY = (geom.sel.top + geom.sel.bottom) / 2;
+    const barMidY = (geom.bar.top + geom.bar.bottom) / 2;
+    assert.ok(
+      Math.abs(barMidY - selMidY) < 120,
+      `bar should hug the selection vertically: barMidY=${barMidY} selMidY=${selMidY}`,
+    );
+    // Horizontally overlapping the selection's x-span (centered over it, clamped to edges).
+    assert.ok(
+      geom.bar.right >= geom.sel.left && geom.bar.left <= geom.sel.right,
+      `bar should overlap the selection horizontally: ${JSON.stringify(geom)}`,
+    );
+  } finally {
+    await page.close();
+  }
+});
+
 test("the toolbar's Comment button anchors an inline reply at the selection", async () => {
   const page = await client("alice@example.com", "w+seltoolbar-comment");
   try {

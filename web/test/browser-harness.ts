@@ -11,6 +11,15 @@
 // Heavy (builds the bundle, spawns waved, launches Chromium); needs
 // `npx playwright install chromium`, and the host sandbox disabled for
 // spawn/loopback/browser.
+//
+// CONVENTION: every user-facing UI feature ships with a *.browser.test.ts guard in
+// this directory, committed with the feature — not eyeballed once and forgotten.
+// Assert BEHAVIOR (the action works) AND, where a screenshot would otherwise be the
+// only check, the VISUAL GEOMETRY (on-screen, positioned, not covering / not at 0,0).
+// Measure rects with getBoundingClientRect in page.evaluate (see
+// selection-toolbar.browser.test.ts "floats on-screen, next to the selection").
+// Things only checkable on a real device (coarse-pointer / iOS layout) are called out
+// in the test as eyeballed, so the gap is explicit rather than silent.
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
