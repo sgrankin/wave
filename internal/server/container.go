@@ -182,6 +182,20 @@ func (c *WaveletContainer) Version() version.HashedVersion {
 	return c.wavelet.HashedVersion()
 }
 
+// HasParticipant reports whether p is a participant of the wavelet, and whether
+// the wavelet has been created yet (created == false means no delta has been
+// applied — a never-seeded wavelet). The read happens under the container lock,
+// so unlike reading Wavelet() directly it is safe to call concurrently with
+// Submit. The access layer uses it as the wavelet-membership predicate.
+func (c *WaveletContainer) HasParticipant(p id.ParticipantID) (exists, created bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wavelet == nil {
+		return false, false
+	}
+	return c.wavelet.HasParticipant(p), true
+}
+
 // Wavelet returns the live wavelet state for read-only inspection, or nil if no
 // delta has been applied yet.
 //
@@ -217,7 +231,34 @@ func (c *WaveletContainer) SubmitFrom(delta waveop.WaveletDelta, nonce string, e
 func (c *WaveletContainer) submitExcluding(delta waveop.WaveletDelta, nonce string, exclude *Subscription) (SubmitResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.submitLocked(delta, nonce, exclude)
+}
 
+// SeedIfEmpty atomically seeds a never-yet-created wavelet with ops authored by
+// author against version zero, returning whether it seeded. It is a no-op
+// (false, nil) if the wavelet already exists. The existence check and the seed
+// apply happen under one lock acquisition, so two connections racing the first
+// Open of the same wavelet cannot both seed — exactly one wins and the other
+// observes the wavelet already exists. This is the server-side replacement for
+// the client cold-start bootstrap; ops should include AddParticipant(author) so
+// the seeder becomes the first participant (see conv.SeedConversation).
+func (c *WaveletContainer) SeedIfEmpty(author id.ParticipantID, ops []waveop.Operation) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wavelet != nil {
+		return false, nil // already created: nothing to seed
+	}
+	delta := waveop.NewWaveletDelta(author, c.zero, ops)
+	if _, err := c.submitLocked(delta, "", nil); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// submitLocked is the body of the submit pipeline; the caller must hold c.mu. It
+// is shared by submitExcluding (lock + submit) and SeedIfEmpty (lock + check +
+// seed) so the seed's existence check and apply are atomic.
+func (c *WaveletContainer) submitLocked(delta waveop.WaveletDelta, nonce string, exclude *Subscription) (SubmitResult, error) {
 	if c.corrupted {
 		return SubmitResult{}, &cc.Error{Code: cc.InternalError, Msg: "wavelet corrupted; reload required"}
 	}

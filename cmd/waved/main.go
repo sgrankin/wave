@@ -3,9 +3,11 @@
 // with structured logging, an operability HTTP endpoint, and signal-driven
 // graceful shutdown.
 //
-// A dev browser WebSocket transport is available behind -ws (unauthenticated,
-// pinned identity — see startWebSocket); session-cookie authentication is a later
-// phase (docs/architecture/02-porting-plan.md).
+// A browser WebSocket transport is available behind -ws: it serves /socket,
+// /login, and /whoami with session-cookie authentication (see startWebSocket and
+// docs/architecture/04-auth-model.md). The -auth mode selects dev (trust-any
+// login, permissive access) or proxy (a trusted-header provider, strict wavelet
+// membership).
 package main
 
 import (
@@ -24,12 +26,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sgrankin/wave/internal/auth"
 	"github.com/sgrankin/wave/internal/clock"
+	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
+	"github.com/sgrankin/wave/internal/waveop"
 )
 
 // shutdownGrace bounds the operability server's drain during shutdown.
@@ -41,8 +46,12 @@ type config struct {
 	dbPath        string
 	httpAddr      string // operability HTTP address; "" disables
 	wsAddr        string // browser WebSocket transport address; "" disables
-	wsUser        string // dev identity pinned to every WebSocket connection
 	webRoot       string // static web root served at / on the -ws server; "" disables
+	authMode      string // dev | proxy
+	authHeader    string // proxy mode: header carrying the identity
+	authDomain    string // default domain appended to a bare username
+	sessionTTL    time.Duration
+	seed          bool   // server-side-seed a new wavelet's conversation at first open
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
@@ -85,8 +94,12 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.dbPath, "db", "waved.db", "sqlite database path (\":memory:\" for ephemeral)")
 	fs.StringVar(&c.httpAddr, "http", "127.0.0.1:8099", "operability HTTP address (\"\" to disable)")
 	fs.StringVar(&c.wsAddr, "ws", "", "browser WebSocket transport address, host:port (\"\" to disable)")
-	fs.StringVar(&c.wsUser, "ws-user", "user@example.com", "DEV identity pinned to every WebSocket connection (no real auth yet)")
 	fs.StringVar(&c.webRoot, "webroot", "", "static web root served at / on the -ws server (\"\" to disable)")
+	fs.StringVar(&c.authMode, "auth", "dev", "auth mode for the -ws server: dev (trust-any login, permissive access) | proxy (trusted-header, strict membership)")
+	fs.StringVar(&c.authHeader, "auth-header", "X-Authenticated-User", "proxy mode: request header carrying the verified identity")
+	fs.StringVar(&c.authDomain, "auth-domain", "example.com", "default domain appended to a bare username at login")
+	fs.DurationVar(&c.sessionTTL, "session-ttl", 24*time.Hour, "session cookie lifetime")
+	fs.BoolVar(&c.seed, "seed-conversations", true, "server-side-seed a brand-new wavelet's conversation (manifest + root blip) at first open")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
@@ -120,6 +133,24 @@ func run(ctx context.Context, cfg config) error {
 	wm := server.NewWaveMap(store, clock.System{}, opts...)
 	srv := &transport.Server{WaveMap: wm, Logger: logger}
 
+	// Browser-path authorization: seed a new wavelet's conversation on first open
+	// (open-or-create), and — in proxy/strict mode — gate opens by wavelet
+	// membership. These apply to authenticated (WebSocket) connections only; the
+	// trusted socket/stdio path is unaffected. Built even when -ws is disabled so
+	// the wiring stays in one place; they cost nothing without WebSocket clients.
+	authSvc, err := buildAuth(cfg, store)
+	if err != nil {
+		return finishShutdown(store, srv, nil, nil, logger, err)
+	}
+	if cfg.seed {
+		srv.Seed = func(opener id.ParticipantID) ([]waveop.Operation, error) {
+			return conv.SeedConversation(opener, clock.System{}.Now().UnixMilli())
+		}
+	}
+	if cfg.authMode == "proxy" {
+		srv.Access = transport.MembershipChecker{WaveMap: wm}
+	}
+
 	// stdio mode serves exactly one session over stdin/stdout (for pipe pairing,
 	// LSP-style). It ends when the peer closes stdin; there is no listener to
 	// drain, no operability HTTP endpoint, and SIGTERM will NOT interrupt a
@@ -133,7 +164,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, logger)
 
-	wsSrv, err := startWebSocket(cfg, srv, logger)
+	wsSrv, err := startWebSocket(cfg, srv, authSvc, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -185,9 +216,11 @@ func listen(cfg config) (net.Listener, error) {
 		}
 		return ln, nil
 	case "tcp":
-		// CAVEAT: the transport has no authentication yet (auth is a later phase),
-		// so a tcp listener is UNAUTHENTICATED. Bind it to loopback (or a trusted
-		// network) until auth lands; do not expose it publicly.
+		// CAVEAT: the socket transports (-net unix/tcp/stdio) are intentionally
+		// TRUSTED — they serve via ServeConn with no per-connection authentication,
+		// for use behind a trust boundary. Authenticated access is the WebSocket
+		// path (-ws), not this listener. Bind a tcp socket transport to loopback or
+		// a trusted network; do not expose it publicly.
 		ln, err := net.Listen("tcp", cfg.addr)
 		if err != nil {
 			return nil, fmt.Errorf("listen tcp %q: %w", cfg.addr, err)
@@ -231,43 +264,94 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, log
 	return httpSrv
 }
 
-// startWebSocket serves the browser WebSocket transport at /socket on the
-// configured address. Returns (nil, nil) when disabled (empty address), or an
-// error if the identity or bind is invalid.
+// requireSafeAuthBind rejects the trust-any dev login on a non-loopback bind.
+// In dev mode the /login endpoint asserts any claimed identity with no proof
+// (and sets a cookie on a GET), so exposing it beyond loopback is a complete
+// authentication bypass — a safe-by-default guard rather than relying on the
+// operator reading a comment. Proxy mode (a trusted-header provider behind an
+// authenticating proxy) may bind anywhere. An empty/disabled -ws is fine.
+func requireSafeAuthBind(authMode, wsAddr string) error {
+	if authMode != "dev" || wsAddr == "" {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(wsAddr)
+	if err != nil {
+		return fmt.Errorf("invalid -ws address %q: %w", wsAddr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("-auth dev mounts a trust-any login and must bind -ws to a loopback "+
+		"address (got %q); bind to 127.0.0.1/localhost, or use -auth proxy behind an "+
+		"authenticating proxy to bind publicly", wsAddr)
+}
+
+// buildAuth constructs the authentication Service for the browser path: a session
+// signer keyed by a persisted (restart-stable) signing key, register-on-first-use
+// provisioning into the account store, and a provider chain selected by -auth.
+// In dev mode the chain is empty (identity is asserted via the dev /login
+// endpoint and then carried by the session cookie); in proxy mode it reads a
+// trusted-header set by a fronting authenticating proxy.
+func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
+	key, err := auth.SigningKey(store)
+	if err != nil {
+		return nil, err
+	}
+	sessions := auth.NewSessions(key, cfg.sessionTTL, clock.System{})
+	prov := auth.Provisioner{Accounts: store, RegisterOnFirstUse: true}
+	var providers []auth.Provider
+	switch cfg.authMode {
+	case "dev":
+		// Cookie-only general chain; the dev /login endpoint asserts identity.
+	case "proxy":
+		providers = append(providers, auth.TrustedHeader{Header: cfg.authHeader, Domain: cfg.authDomain})
+	default:
+		return nil, fmt.Errorf("unknown -auth %q (want dev or proxy)", cfg.authMode)
+	}
+	svc := auth.NewService(sessions, prov, providers...)
+	// Dev runs over plain HTTP, so the Secure cookie attribute would prevent the
+	// browser from ever sending the cookie. Proxy deployments terminate TLS.
+	svc.SecureCookies = cfg.authMode == "proxy"
+	return svc, nil
+}
+
+// startWebSocket serves the browser transport on the configured address: the
+// WebSocket session at /socket and the auth endpoints /login and /whoami, plus
+// the static web root. Returns (nil, nil) when disabled (empty address), or an
+// error if the bind fails.
 //
-// CAVEAT: this is DEV wiring. Every connection is pinned to -ws-user with NO real
-// authentication — session-cookie login (auth.Service) is a later phase. Bind -ws
-// to loopback, or run it behind a trusted authenticating proxy, until auth lands.
-//
-// DEV override: a ?user=<address> query parameter overrides the pinned identity,
-// allowing integration tests and demos to connect distinct identities (e.g. alice,
-// bob) to one server without real auth. Invalid addresses are rejected (the
-// connection is refused). This override is intentionally dev-only.
-func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*http.Server, error) {
+// /socket and /whoami are mounted behind auth.Service.Middleware, so the session
+// cookie is verified before the WebSocket upgrade (a 401 precedes Accept) and the
+// authenticated participant is bound to the request (identify reads it from the
+// context). The static web root is intentionally NOT authenticated — the app
+// shell must load so its JS can call /whoami and redirect to /login when needed.
+func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
-	devUser, err := id.NewParticipantID(cfg.wsUser)
-	if err != nil {
-		return nil, fmt.Errorf("invalid -ws-user %q: %w", cfg.wsUser, err)
+	if err := requireSafeAuthBind(cfg.authMode, cfg.wsAddr); err != nil {
+		return nil, err
 	}
 	identify := func(r *http.Request) (id.ParticipantID, bool) {
-		if addr := r.URL.Query().Get("user"); addr != "" {
-			p, err := id.NewParticipantID(addr)
-			if err != nil {
-				return id.ParticipantID{}, false
-			}
-			return p, true
-		}
-		return devUser, true
+		return auth.ParticipantFrom(r.Context())
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/socket", srv.WebSocketHandler(identify))
+	mux.Handle("/socket", authSvc.Middleware(srv.WebSocketHandler(identify)))
+	mux.Handle("/whoami", authSvc.Middleware(authSvc.WhoAmIHandler()))
+	switch cfg.authMode {
+	case "dev":
+		mux.Handle("/login", authSvc.DevLoginHandler(cfg.authDomain))
+	case "proxy":
+		mux.Handle("/login", authSvc.LoginHandler())
+	}
 	if cfg.webRoot != "" {
-		// Serve the browser client from the same origin as the socket (so the page
-		// and the WebSocket share host/port, and later the auth cookie). The more
-		// specific "/socket" pattern still wins for the WebSocket upgrade.
+		// Serve the browser client from the same origin as the socket (so the page,
+		// the WebSocket, and the auth cookie share host/port). The more specific
+		// "/socket" etc. patterns still win over "/".
 		mux.Handle("/", http.FileServer(http.Dir(cfg.webRoot)))
 		logger.Info("serving web root", "dir", cfg.webRoot)
 	}
@@ -284,8 +368,10 @@ func startWebSocket(cfg config, srv *transport.Server, logger *slog.Logger) (*ht
 			logger.Error("websocket server error", "err", err)
 		}
 	}()
-	logger.Warn("websocket transport listening (DEV: unauthenticated, pinned identity)",
-		"addr", cfg.wsAddr, "path", "/socket", "dev_user", cfg.wsUser)
+	logger.Info("websocket transport listening",
+		"addr", cfg.wsAddr, "paths", "/socket /login /whoami", "auth", cfg.authMode,
+		"access", map[bool]string{true: "strict", false: "permissive"}[cfg.authMode == "proxy"],
+		"seed", cfg.seed)
 	return httpSrv, nil
 }
 

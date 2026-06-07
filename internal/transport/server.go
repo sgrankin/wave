@@ -26,6 +26,22 @@ type Server struct {
 	WaveMap *server.WaveMap
 	Logger  *slog.Logger // nil → slog.Default()
 
+	// Access, when non-nil, gates Open: an authenticated participant may only
+	// open a wavelet for which CanAccess returns true (membership). Nil allows
+	// every open (dev-permissive). It applies to authenticated connections only
+	// (the trusted socket/stdio path, with no authenticated participant, is not
+	// gated). See handleOpen.
+	Access AccessChecker
+
+	// Seed, when non-nil, server-side-seeds a brand-new wavelet at its first Open
+	// by an authenticated participant: it returns the operations that initialise
+	// the wavelet (conversation manifest + root blip + AddParticipant(opener)),
+	// applied atomically before the Open's starting view is taken. Nil disables
+	// seeding (the wavelet stays empty until a client submits) — the default for
+	// the trusted socket/stdio transports and the raw OT/CC tests. Seeding needs
+	// a known author, so it runs only on authenticated connections.
+	Seed func(opener id.ParticipantID) ([]waveop.Operation, error)
+
 	wg sync.WaitGroup // active sessions started via Accept (for drain)
 	m  Metrics
 
@@ -292,6 +308,35 @@ func (s *session) readLoop() error {
 	}
 }
 
+// checkAccess enforces the Server's AccessChecker for an authenticated
+// connection opening/resyncing name: it returns true if the participant may
+// proceed, and false — after pushing an error frame the client surfaces — if
+// access is denied or the check itself failed. A nil AccessChecker (dev-
+// permissive) or an unauthenticated (trusted socket/stdio) connection always
+// passes. action is the message name used in the error/log line ("open"/"resync").
+//
+// Membership is enforced ONLY at Open/Resync, not per delivered delta: once a
+// session is subscribed (forward), a participant later removed from the wavelet
+// keeps receiving its live stream until they disconnect. Revoking an in-flight
+// subscription on RemoveParticipant is a deliberate future refinement (doc 04 §8),
+// out of scope here.
+func (s *session) checkAccess(name id.WaveletName, nameStr, action string) bool {
+	if s.authParticipant == nil || s.srv.Access == nil {
+		return true
+	}
+	allowed, err := s.srv.Access.CanAccess(*s.authParticipant, name)
+	if err != nil {
+		s.push(encodeError(action + ": access check failed: " + err.Error()))
+		return false
+	}
+	if !allowed {
+		s.push(encodeError("access denied: not a participant of " + nameStr))
+		s.srv.logger().Debug(action+" denied", "wavelet", nameStr, "participant", s.authParticipant.Address())
+		return false
+	}
+	return true
+}
+
 func (s *session) handleOpen(raw []cbor.RawMessage) error {
 	if s.container != nil {
 		s.push(encodeError("already opened (one wavelet per connection)"))
@@ -311,6 +356,30 @@ func (s *session) handleOpen(raw []cbor.RawMessage) error {
 		s.push(encodeError("open: " + err.Error()))
 		return nil
 	}
+
+	// Open-or-create: on an authenticated connection, seed a brand-new wavelet
+	// (conversation manifest + root blip + AddParticipant(opener)) atomically
+	// before taking the starting view, so the opener creates and joins it in one
+	// step. SeedIfEmpty is a no-op if the wavelet already exists, so a second
+	// opener racing the first does not double-seed. Seeding needs a known author,
+	// so it runs only on authenticated connections.
+	if s.authParticipant != nil && s.srv.Seed != nil {
+		ops, err := s.srv.Seed(*s.authParticipant)
+		if err != nil {
+			s.push(encodeError("open: seed: " + err.Error()))
+			return nil
+		}
+		if _, err := c.SeedIfEmpty(*s.authParticipant, ops); err != nil {
+			s.push(encodeError("open: seed: " + err.Error()))
+			return nil
+		}
+	}
+	// Membership: an existing wavelet may be opened only by a participant (a fresh
+	// opener just became one via the seed above).
+	if !s.checkAccess(name, nameStr, "open") {
+		return nil
+	}
+
 	s.suppressEcho = suppressEcho
 	s.waveletName = nameStr
 	snapshotBlob, history, sub := c.Open()
@@ -351,6 +420,13 @@ func (s *session) handleResync(raw []cbor.RawMessage) error {
 	c, err := s.srv.WaveMap.Container(name)
 	if err != nil {
 		s.push(encodeError("resync: " + err.Error()))
+		return nil
+	}
+	// Membership: a reconnecting client must still be a participant. Resync does
+	// not seed (a wavelet you can resync was already created); it only re-reads,
+	// so without this check a non-member could bypass the Open membership gate by
+	// reconnecting via Resync.
+	if !s.checkAccess(name, nameStr, "resync") {
 		return nil
 	}
 	s.suppressEcho = suppressEcho

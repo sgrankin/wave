@@ -47,10 +47,13 @@ const (
 // must be authored by it (a mismatch is nacked), so a logged-in user cannot author
 // as another.
 //
-// AUTHORIZATION SCOPE: this binds delta AUTHORSHIP only. It does NOT check that the
-// participant is a member of the wavelet they Open — any authenticated user can
-// open and read any wavelet by name. Wavelet access control (a participation
-// predicate, cf. attachapi.AccessChecker) is a separate, not-yet-wired layer.
+// AUTHORIZATION: this binds delta AUTHORSHIP (a submitted delta must be authored
+// by the bound participant). Wavelet MEMBERSHIP is enforced separately by the
+// Server's AccessChecker (see Server.Access / access.go): when it is non-nil and
+// the connection is authenticated, Open and Resync are gated by participation
+// (checkAccess in server.go), with open-or-create letting the first opener seed
+// and join a new wavelet. A nil AccessChecker is dev-permissive (any authenticated
+// user may open any wavelet).
 //
 // By default only same-origin upgrades are accepted (the browser sends an Origin
 // header; a cross-origin one is rejected, blocking cross-site WebSocket hijacking;
