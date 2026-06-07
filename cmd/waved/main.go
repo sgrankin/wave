@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sgrankin/wave/internal/attachapi"
 	"github.com/sgrankin/wave/internal/auth"
 	"github.com/sgrankin/wave/internal/clock"
 	"github.com/sgrankin/wave/internal/conv"
@@ -33,6 +34,7 @@ import (
 	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
+	"github.com/sgrankin/wave/internal/storage/attachments"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
 	"github.com/sgrankin/wave/internal/waveop"
@@ -53,6 +55,7 @@ type config struct {
 	authDomain    string // default domain appended to a bare username
 	sessionTTL    time.Duration
 	seed          bool   // server-side-seed a new wavelet's conversation at first open
+	attachRoot    string // filesystem root for attachment blobs; "" disables attachments
 	logFormat     string // text | json
 	logLevel      string // debug | info | warn | error
 	snapshotEvery int    // write a snapshot every N ops (0 disables)
@@ -101,6 +104,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.authDomain, "auth-domain", "example.com", "default domain appended to a bare username at login")
 	fs.DurationVar(&c.sessionTTL, "session-ttl", 24*time.Hour, "session cookie lifetime")
 	fs.BoolVar(&c.seed, "seed-conversations", true, "server-side-seed a brand-new wavelet's conversation (manifest + root blip) at first open")
+	fs.StringVar(&c.attachRoot, "attach-root", "", "filesystem root for attachment blobs on the -ws server (\"\" to disable attachments)")
 	fs.StringVar(&c.logFormat, "log", "text", "log format: text | json")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
@@ -156,6 +160,16 @@ func run(ctx context.Context, cfg config) error {
 		srv.Access = transport.MembershipChecker{WaveMap: wm}
 	}
 
+	// Attachment blob store (filesystem); nil disables the attachment API.
+	var attachStore *attachments.Store
+	if cfg.attachRoot != "" {
+		attachStore, err = attachments.New(cfg.attachRoot)
+		if err != nil {
+			return finishShutdown(store, srv, nil, nil, logger, fmt.Errorf("open attachment store %q: %w", cfg.attachRoot, err))
+		}
+		logger.Info("attachments enabled", "root", cfg.attachRoot)
+	}
+
 	// stdio mode serves exactly one session over stdin/stdout (for pipe pairing,
 	// LSP-style). It ends when the peer closes stdin; there is no listener to
 	// drain, no operability HTTP endpoint, and SIGTERM will NOT interrupt a
@@ -169,7 +183,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, logger)
 
-	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, store, logger)
+	wsSrv, err := startWebSocket(cfg, srv, authSvc, idx, store, attachStore, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -333,7 +347,7 @@ func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
 // authenticated participant is bound to the request (identify reads it from the
 // context). The static web root is intentionally NOT authenticated — the app
 // shell must load so its JS can call /whoami and redirect to /login when needed.
-func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, logger *slog.Logger) (*http.Server, error) {
+func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, attachStore *attachments.Store, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
@@ -358,6 +372,15 @@ func startWebSocket(cfg config, srv *transport.Server, authSvc *auth.Service, id
 	if idx != nil {
 		qh := queryapi.New(idx, queryapi.NewWaveMapReader(srv.WaveMap), store, identify, logger)
 		mux.Handle("/api/", authSvc.Middleware(qh.Routes()))
+	}
+	// Attachment blobs (upload/download/thumbnail), gated by wavelet membership.
+	// Both patterns are needed: "/attachments" matches the bare upload path and
+	// "/attachments/" matches the {id} sub-paths; both delegate to the same handler.
+	if attachStore != nil {
+		ah := attachapi.New(attachStore, transport.MembershipChecker{WaveMap: srv.WaveMap}, identify)
+		routes := authSvc.Middleware(ah.Routes())
+		mux.Handle("/attachments", routes)
+		mux.Handle("/attachments/", routes)
 	}
 	if cfg.webRoot != "" {
 		// Serve the browser client from the same origin as the socket (so the page,
