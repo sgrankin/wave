@@ -396,7 +396,18 @@ What's on the fork's `main`, and how execution deviated from the plan above:
     convergence (`npm run test:browser`) — a committed Playwright test driving the
     real UI against a real `waved`, asserting a fresh client converges (covers the
     create-then-edit-a-blip case + threaded reply). Node vs browser tests separated
-    by their `node:` imports.
+    by their `node:` imports. Scenarios use a small harness
+    (`web/test/browser-harness.ts`: `client`/`typeInto`/`clickReply`/
+    `waitForBlipTexts`); `make check` runs Go + web type/unit/component, `make
+    check-all` adds the browser e2e.
+  - **Observability** (added so the next convergence bug is one grep, not ten
+    steps): the server logs the delta flow at `debug` — `delta submitted/applied/
+    delivered`, keyed by `wavelet` + `nonce` + version (the nonce correlates a
+    submit through apply to fan-out). The client mirrors it: `?debug=1` turns on a
+    console delta-trace (submit → cc.edit → sendDelta → ack) and a state overlay
+    (`<wave-debug>`: version/inflight/queue/blips), and exposes the client at
+    `window.__wave`. (Deliberately NOT OTel — single machine; the existing nonce is
+    the correlation id, structured logs get ~80% of the value.)
   - **Four real bugs found via the browser loop** (none caught by unit tests):
     empty-doc projection/DOM mismatch (offset null → native edit), a Lit
     reactive-field-initializer shadow that killed re-render, a Lit comment marker
