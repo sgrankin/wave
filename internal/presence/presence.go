@@ -38,10 +38,16 @@ const (
 )
 
 // State is a participant's own presence (client → server; participant ignored on
-// the wire and stamped server-side).
+// the wire and stamped server-side). Anchor/Focus are the caret's rune offsets in
+// the focused blip (Focus is the moving end; Anchor==Focus is a collapsed caret);
+// -1 means "no caret here". They are RAW offsets, not OT-transformed — presence is
+// deliberately off the convergence path, so a remote offset is briefly stale after a
+// local edit until the peer re-publishes (see docs/architecture/07-presence.md §1).
 type State struct {
 	Typing bool   `json:"typing"`
 	BlipID string `json:"blipId"` // the focused blip, "" for none
+	Anchor int    `json:"anchor"` // selection anchor rune offset, -1 for none
+	Focus  int    `json:"focus"`  // selection focus (caret) rune offset, -1 for none
 }
 
 // Update is one participant's presence change (server → client). Online=false is a
@@ -50,6 +56,8 @@ type Update struct {
 	Participant string `json:"participant"`
 	Typing      bool   `json:"typing"`
 	BlipID      string `json:"blipId"`
+	Anchor      int    `json:"anchor"`
+	Focus       int    `json:"focus"`
 	Online      bool   `json:"online"`
 }
 
@@ -131,7 +139,14 @@ func (h *Hub) broadcastLocked(room string, sender *conn, u Update) {
 }
 
 func updateFrom(c *conn, online bool) Update {
-	return Update{Participant: c.participant.Address(), Typing: c.state.Typing, BlipID: c.state.BlipID, Online: online}
+	return Update{
+		Participant: c.participant.Address(),
+		Typing:      c.state.Typing,
+		BlipID:      c.state.BlipID,
+		Anchor:      c.state.Anchor,
+		Focus:       c.state.Focus,
+		Online:      online,
+	}
 }
 
 // AccessChecker gates presence by wavelet membership (mirrors transport.AccessChecker).

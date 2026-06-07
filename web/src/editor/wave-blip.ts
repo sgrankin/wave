@@ -39,6 +39,15 @@ export class WaveBlip extends LitElement {
     this.controller.editBlip(this.blip.id, ops);
   };
 
+  // onCaret relays this blip's local caret/selection (the view reports rune offsets;
+  // we tag them with this blip's id) to the controller, which publishes it on the
+  // presence channel so peers can render it.
+  private onCaret = (e: Event): void => {
+    e.stopPropagation();
+    const { anchor, focus } = (e as CustomEvent<{ anchor: number; focus: number }>).detail;
+    this.controller.setCaret?.(this.blip.id, anchor, focus);
+  };
+
   private onReply = (): void => {
     this.controller.replyToBlip(this.blip.id, false);
   };
@@ -81,7 +90,9 @@ export class WaveBlip extends LitElement {
         <blip-view
           .content=${content}
           .selfAddress=${this.controller.user}
+          .remoteCarets=${this.controller.remoteCaretsFor?.(this.blip.id) ?? []}
           @edit=${this.onEdit}
+          @caret=${this.onCaret}
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>

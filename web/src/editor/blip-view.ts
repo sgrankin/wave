@@ -30,6 +30,7 @@ import {
   splitLineAt,
 } from "./blipdoc.ts";
 import type { BlipProjection, Paragraph, Span } from "./blipdoc.ts";
+import type { RemoteCaret } from "./controller.ts";
 
 // A saved selection range (both endpoints as doc offsets).
 interface SavedSelection {
@@ -41,6 +42,7 @@ export class BlipView extends LitElement {
   static override properties = {
     content: { attribute: false },
     selfAddress: { attribute: false },
+    remoteCarets: { attribute: false },
   };
 
   // `declare` (no field initializer) + assign in the constructor: a reactive
@@ -50,6 +52,10 @@ export class BlipView extends LitElement {
   declare content: DocOp;
   // The signed-in participant's address, so @mentions of them render emphasized.
   declare selfAddress: string;
+  // Other participants' carets/selections in THIS blip (rune offsets + color/name),
+  // rendered as colored bars/highlights over the text. Set by the parent from the
+  // presence channel; empty when nobody else is focused here.
+  declare remoteCarets: readonly RemoteCaret[];
 
   private proj: BlipProjection = project(DocOp.empty());
   private pendingCaret: number | null = null; // caret an edit wants after re-render
@@ -63,6 +69,7 @@ export class BlipView extends LitElement {
     super();
     this.content = DocOp.empty();
     this.selfAddress = "";
+    this.remoteCarets = [];
   }
 
   // Light DOM so window.getSelection() reaches the editable content.
@@ -282,6 +289,10 @@ export class BlipView extends LitElement {
     if (this.hasFocus) return;
     this.hasFocus = true;
     this.requestUpdate();
+    // Track the caret only while focused (selectionchange is a document event, so we
+    // subscribe per-focus to avoid every blip reacting to every selection move).
+    document.addEventListener("selectionchange", this.onSelectionChange);
+    this.reportCaret(); // publish the initial caret position
   };
 
   private onFocusout = (e: FocusEvent): void => {
@@ -289,7 +300,32 @@ export class BlipView extends LitElement {
     if (this.contains(e.relatedTarget as Node | null)) return;
     this.hasFocus = false;
     this.requestUpdate();
+    document.removeEventListener("selectionchange", this.onSelectionChange);
   };
+
+  private onSelectionChange = (): void => {
+    if (this.hasFocus) this.reportCaret();
+  };
+
+  // reportCaret publishes the local caret/selection (rune offsets within this blip)
+  // to the parent via a "caret" event; <wave-conversation> relays it on the presence
+  // channel so peers can render it. No-op when the selection is not in this editor.
+  private reportCaret(): void {
+    const sel = window.getSelection();
+    if (sel === null || sel.rangeCount === 0 || !this.contains(sel.anchorNode)) return;
+    const anchor = this.domToOffset(sel.anchorNode!, sel.anchorOffset) ?? -1;
+    const focus =
+      sel.focusNode !== null && this.contains(sel.focusNode)
+        ? (this.domToOffset(sel.focusNode, sel.focusOffset) ?? anchor)
+        : anchor;
+    this.dispatchEvent(
+      new CustomEvent<{ anchor: number; focus: number }>("caret", {
+        detail: { anchor, focus },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
 
   // --- projection-aware lookups ---
 
@@ -426,12 +462,103 @@ export class BlipView extends LitElement {
     super.connectedCallback();
     this.addEventListener("focusin", this.onFocusin);
     this.addEventListener("focusout", this.onFocusout);
+    // Remote carets are absolutely positioned from live geometry, so they must be
+    // repositioned when the page scrolls or resizes (capture catches the scroll of
+    // the conversation pane, which does not bubble).
+    window.addEventListener("scroll", this.onViewportChange, true);
+    window.addEventListener("resize", this.onViewportChange);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     this.removeEventListener("focusin", this.onFocusin);
     this.removeEventListener("focusout", this.onFocusout);
+    document.removeEventListener("selectionchange", this.onSelectionChange);
+    window.removeEventListener("scroll", this.onViewportChange, true);
+    window.removeEventListener("resize", this.onViewportChange);
+    if (this.recaretRaf !== 0) cancelAnimationFrame(this.recaretRaf);
+  }
+
+  // onViewportChange repositions remote carets on scroll/resize, rAF-throttled, and
+  // only when some are shown (idle blips do no work).
+  private recaretRaf = 0;
+  private onViewportChange = (): void => {
+    if (this.remoteCarets.length === 0 || this.recaretRaf !== 0) return;
+    this.recaretRaf = requestAnimationFrame(() => {
+      this.recaretRaf = 0;
+      this.renderRemoteCarets();
+    });
+  };
+
+  // renderRemoteCarets (re)builds the colored caret bars + selection highlights for
+  // peers focused on THIS blip, positioned from offsetToDom geometry. Offsets are raw
+  // (not OT-transformed), so they are clamped to the current doc and may be briefly
+  // stale after a local edit until the peer re-publishes — by design (07-presence §1).
+  private renderRemoteCarets(): void {
+    const overlay = this.renderRoot.querySelector<HTMLElement>(".remote-carets");
+    if (overlay === null) return;
+    overlay.replaceChildren();
+    if (this.remoteCarets.length === 0) return;
+    const docLen = this.proj.length;
+    const oRect = overlay.getBoundingClientRect();
+    const clampedDomPos = (off: number): { node: Node; offset: number } | null =>
+      this.offsetToDom(Math.max(0, Math.min(off, docLen)));
+
+    for (const rc of this.remoteCarets) {
+      if (rc.focus < 0) continue;
+      const fpos = clampedDomPos(rc.focus);
+      if (fpos === null) continue;
+      const r = document.createRange();
+      try {
+        r.setStart(fpos.node, fpos.offset);
+        r.collapse(true);
+      } catch {
+        continue;
+      }
+      let rect = r.getBoundingClientRect();
+      if (rect.height === 0) {
+        // A collapsed range in an empty line can return a zero-size rect; fall back to
+        // the enclosing element's box so the caret still shows on the right line.
+        const el = fpos.node.nodeType === Node.ELEMENT_NODE ? (fpos.node as HTMLElement) : fpos.node.parentElement;
+        const pr = el?.getBoundingClientRect();
+        if (pr !== undefined) rect = pr;
+      }
+
+      // Selection highlight when anchor != focus.
+      if (rc.anchor >= 0 && rc.anchor !== rc.focus) {
+        const lo = clampedDomPos(Math.min(rc.anchor, rc.focus));
+        const hi = clampedDomPos(Math.max(rc.anchor, rc.focus));
+        if (lo !== null && hi !== null) {
+          const selR = document.createRange();
+          try {
+            selR.setStart(lo.node, lo.offset);
+            selR.setEnd(hi.node, hi.offset);
+            for (const cr of Array.from(selR.getClientRects())) {
+              const hl = document.createElement("div");
+              hl.className = "remote-sel";
+              hl.style.cssText =
+                `top:${cr.top - oRect.top}px;left:${cr.left - oRect.left}px;` +
+                `width:${cr.width}px;height:${cr.height}px;background:${rc.color};opacity:0.18;`;
+              overlay.appendChild(hl);
+            }
+          } catch {
+            /* a bad range just skips the highlight; the caret bar still renders */
+          }
+        }
+      }
+
+      const bar = document.createElement("div");
+      bar.className = "remote-caret";
+      bar.style.cssText =
+        `top:${rect.top - oRect.top}px;left:${rect.left - oRect.left}px;` +
+        `height:${rect.height || 18}px;background:${rc.color};`;
+      const flag = document.createElement("div");
+      flag.className = "remote-caret-flag";
+      flag.textContent = rc.name;
+      flag.style.background = rc.color;
+      bar.appendChild(flag);
+      overlay.appendChild(bar);
+    }
   }
 
   // willUpdate captures the caret before a re-render so it survives updates that
@@ -502,6 +629,17 @@ export class BlipView extends LitElement {
         }
         .blip-toolbar button:hover { background: #e8e8e8; }
         .blip-toolbar button:focus-visible { outline: 2px solid #4060c0; outline-offset: 1px; }
+        /* Remote-caret overlay: an absolutely-positioned, non-interactive layer over
+           the text. It sits OUTSIDE .blip-doc (a stray element inside the contenteditable
+           would corrupt the caret↔offset mapping); positions are computed in updated(). */
+        .remote-carets { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+        .remote-caret { position: absolute; width: 2px; border-radius: 1px; }
+        .remote-caret-flag {
+          position: absolute; top: -2px; left: 0; transform: translateY(-100%);
+          font: 600 10px system-ui, sans-serif; color: #fff; white-space: nowrap;
+          padding: 1px 4px; border-radius: 3px 3px 3px 0; line-height: 1.2;
+        }
+        .remote-sel { position: absolute; border-radius: 2px; }
         .blip-toolbar button[aria-pressed="true"] {
           background: #c8d8f0;
           border-color: #7aa;
@@ -530,10 +668,13 @@ export class BlipView extends LitElement {
         @beforeinput=${this.onBeforeInput}
         @paste=${this.onPaste}
       >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>
+      <div class="remote-carets" aria-hidden="true"></div>
     `;
   }
 
   protected override updated(): void {
+    // Reposition remote carets after every render (the DOM/text just changed).
+    this.renderRemoteCarets();
     // pendingSelection takes priority: restore a non-collapsed selection (after B/I).
     if (this.pendingSelection !== null) {
       const sel = this.pendingSelection;

@@ -7,17 +7,24 @@
 // change callback. It reconnects with backoff; the server re-sends the room snapshot
 // on each (re)connect, so state re-synchronizes after a blip.
 
-// RemotePresence is one other participant's current awareness state.
+// RemotePresence is one other participant's current awareness state. anchor/focus
+// are the caret's rune offsets in blipId (focus = caret/moving end; anchor==focus is
+// a collapsed caret; -1 = no caret). They are RAW offsets (not OT-transformed), so a
+// remote caret is briefly stale after a local edit until the peer re-publishes.
 export interface RemotePresence {
   participant: string;
   typing: boolean;
   blipId: string;
+  anchor: number;
+  focus: number;
 }
 
 // localState is what we publish about ourselves.
 interface LocalState {
   typing: boolean;
   blipId: string;
+  anchor: number;
+  focus: number;
 }
 
 // wireUpdate is one server→client message (mirrors presence.Update).
@@ -25,6 +32,8 @@ interface WireUpdate {
   participant: string;
   typing: boolean;
   blipId: string;
+  anchor: number;
+  focus: number;
   online: boolean;
 }
 
@@ -37,8 +46,8 @@ export class PresenceClient {
   private readonly remote = new Map<string, RemotePresence>();
   private readonly listeners = new Set<() => void>();
 
-  private local: LocalState = { typing: false, blipId: "" };
-  private sent: LocalState = { typing: false, blipId: "" };
+  private local: LocalState = { typing: false, blipId: "", anchor: -1, focus: -1 };
+  private sent: LocalState = { typing: false, blipId: "", anchor: -1, focus: -1 };
   private sendTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly url: string;
@@ -60,7 +69,7 @@ export class PresenceClient {
     this.ws = ws;
     ws.onopen = (): void => {
       // Re-publish our state on (re)connect so peers see it after a reconnect.
-      this.sent = { typing: false, blipId: "" };
+      this.sent = { typing: false, blipId: "", anchor: -1, focus: -1 };
       this.flush();
     };
     ws.onmessage = (ev: MessageEvent): void => {
@@ -70,7 +79,14 @@ export class PresenceClient {
       } catch {
         return;
       }
-      if (u.online) this.remote.set(u.participant, { participant: u.participant, typing: u.typing, blipId: u.blipId });
+      if (u.online)
+        this.remote.set(u.participant, {
+          participant: u.participant,
+          typing: u.typing,
+          blipId: u.blipId,
+          anchor: u.anchor ?? -1,
+          focus: u.focus ?? -1,
+        });
       else this.remote.delete(u.participant);
       this.notify();
     };
@@ -103,9 +119,10 @@ export class PresenceClient {
     return [...this.remote.values()];
   }
 
-  /** Set our own state (typing + focused blip); sent throttled. */
-  setLocal(typing: boolean, blipId: string): void {
-    this.local = { typing, blipId };
+  /** Set our own state (typing + focused blip + caret offsets); sent throttled.
+   *  anchor/focus default to -1 (no caret) for callers that only track the blip. */
+  setLocal(typing: boolean, blipId: string, anchor = -1, focus = -1): void {
+    this.local = { typing, blipId, anchor, focus };
     if (this.sendTimer === null) {
       this.sendTimer = setTimeout(() => {
         this.sendTimer = null;
@@ -116,7 +133,9 @@ export class PresenceClient {
 
   private flush(): void {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
-    if (this.local.typing === this.sent.typing && this.local.blipId === this.sent.blipId) return;
+    const l = this.local;
+    const s = this.sent;
+    if (l.typing === s.typing && l.blipId === s.blipId && l.anchor === s.anchor && l.focus === s.focus) return;
     this.sent = { ...this.local };
     try {
       this.ws.send(JSON.stringify(this.local));

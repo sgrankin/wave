@@ -16,7 +16,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { client, startServer, stopServer } from "./browser-harness.ts";
+import { client, startServer, stopServer, waitForBlipTexts } from "./browser-harness.ts";
 import type { Page } from "playwright";
 
 before(startServer);
@@ -109,6 +109,50 @@ test("Enter mid-word splits the line at the caret", async () => {
     assert.deepEqual(await paraTexts(page), ["hello", "world"]);
   } finally {
     await page.close();
+  }
+});
+
+// Live remote carets: a peer's caret renders as a colored, labeled bar in the other
+// client's editor (the flagship presence feature — roadmap 08 §1a).
+test("a peer's caret renders as a labeled colored bar in the other client", async () => {
+  const wave = "w+caret-remote";
+  const alice = await client("alice@example.com", wave);
+  try {
+    const bob = await client("bob@example.com", wave);
+    try {
+      // alice types in the root blip and bob converges to the text.
+      const ablip = alice.locator(".blip-doc").first();
+      await ablip.click();
+      await alice.keyboard.type("hello world");
+      await waitForBlipTexts(bob, ["hello world"]);
+
+      // alice's caret (published on the presence channel) renders in bob's editor as a
+      // .remote-caret bar whose flag names alice.
+      await bob.waitForFunction(
+        () => {
+          const flag = document.querySelector(".remote-caret .remote-caret-flag");
+          return flag !== null && (flag.textContent ?? "").includes("alice");
+        },
+        undefined,
+        { timeout: 10_000 },
+      );
+      const info = await bob.evaluate(() => {
+        const bar = document.querySelector(".remote-caret");
+        const r = bar?.getBoundingClientRect();
+        const blip = document.querySelector(".blip-doc")?.getBoundingClientRect();
+        return {
+          count: document.querySelectorAll(".remote-caret").length,
+          left: r ? Math.round(r.left) : -1,
+          insideBlip: !!(r && blip && r.left >= blip.left - 2 && r.left <= blip.right + 2),
+        };
+      });
+      assert.equal(info.count, 1, "exactly one remote caret (alice's) is shown");
+      assert.ok(info.insideBlip, `the caret bar sits within the blip (left=${info.left})`);
+    } finally {
+      await bob.close();
+    }
+  } finally {
+    await alice.close();
   }
 });
 

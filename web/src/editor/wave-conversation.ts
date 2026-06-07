@@ -31,9 +31,10 @@ import {
 } from "../wave/conversation.ts";
 import { MANIFEST_ID, addParticipantOp, blipContentOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
-import { contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
+import { colorFor, contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
 import { avatar, participantChip } from "./participant.ts";
 import { PresenceClient } from "../wave/presence.ts";
+import type { RemoteCaret } from "./controller.ts";
 import "./wave-thread.ts";
 
 // TYPING_IDLE_MS: how long after the last edit we keep showing "typing".
@@ -63,6 +64,11 @@ export class WaveConversation extends LitElement {
   private presence: PresenceClient | null = null;
   private presenceUnsub: (() => void) | null = null;
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
+  // Our own presence state, the single source of truth for what we publish: which
+  // blip we are focused on, whether we are typing, and our caret/selection offsets.
+  // Kept here (not in the timer closures) so the typing-idle timer only flips the
+  // typing flag and never resurrects a stale focused blip.
+  private pres = { typing: false, blipId: "", anchor: -1, focus: -1 };
 
   constructor() {
     super();
@@ -100,14 +106,47 @@ export class WaveConversation extends LitElement {
     this.client = null;
   }
 
-  // markTyping publishes "I am typing in blipId" to the presence channel and arms a
-  // timer to clear the typing flag after a short idle (keeping the focused blip).
+  // publishPresence sends our current presence state (throttled by the client).
+  private publishPresence(): void {
+    this.presence?.setLocal(this.pres.typing, this.pres.blipId, this.pres.anchor, this.pres.focus);
+  }
+
+  // markTyping flags "typing in blipId" and arms a timer to clear the typing flag
+  // after a short idle. The timer only flips the flag — the focused blip + caret are
+  // whatever they currently are, so a focus change during the window is not undone.
   private markTyping(blipId: string): void {
-    this.presence?.setLocal(true, blipId);
+    this.pres.typing = true;
+    this.pres.blipId = blipId;
+    this.publishPresence();
     if (this.typingTimer !== null) clearTimeout(this.typingTimer);
     this.typingTimer = setTimeout(() => {
-      this.presence?.setLocal(false, blipId);
+      this.pres.typing = false;
+      this.publishPresence();
     }, TYPING_IDLE_MS);
+  }
+
+  // setCaret records our caret/selection in blipId (from the focused <blip-view>) and
+  // publishes it so peers can render it.
+  private setCaret(blipId: string, anchor: number, focus: number): void {
+    this.pres.blipId = blipId;
+    this.pres.anchor = anchor;
+    this.pres.focus = focus;
+    this.publishPresence();
+  }
+
+  // remoteCaretsFor returns the peers currently caretted in blipId, ready to render
+  // (offsets + the peer's avatar color and display name).
+  private remoteCaretsFor(blipId: string): RemoteCaret[] {
+    const peers = this.presence?.remotes() ?? [];
+    return peers
+      .filter((p) => p.blipId === blipId && p.focus >= 0)
+      .map((p) => ({
+        participant: p.participant,
+        anchor: p.anchor,
+        focus: p.focus,
+        color: colorFor(p.participant),
+        name: displayNameFor(p.participant, profiles.get(p.participant)),
+      }));
   }
 
   private async start(): Promise<void> {
@@ -172,6 +211,8 @@ export class WaveConversation extends LitElement {
         this.markTyping(id); // publish "typing in this blip" to the presence channel
         void client.submit([blipContentOp(author, id, new DocOp(ops))]);
       },
+      setCaret: (blipId, anchor, focus) => this.setCaret(blipId, anchor, focus),
+      remoteCaretsFor: (blipId) => this.remoteCaretsFor(blipId),
       continueThread: (threadId) => {
         void client.submitWith((blip) => {
           const manifest = blip(MANIFEST_ID);
@@ -432,6 +473,7 @@ const STYLES = html`
     }
     wave-conversation blip-view {
       display: block;
+      position: relative; /* containing block for the remote-caret overlay */
       border: 1px solid #ddd;
       border-radius: 6px;
       padding: 8px 10px;
