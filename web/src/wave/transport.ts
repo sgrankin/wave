@@ -108,6 +108,11 @@ export interface OptimisticClientOptions {
   headers?: Record<string, string>;
 }
 
+// ConnState is the live connection status, surfaced for a UI indicator. "connecting"
+// = initial dial; "live" = socket up; "reconnecting" = a recoverable drop, redialing;
+// "offline-fatal" = stopped on a non-recoverable error; "closed" = client shut down.
+export type ConnState = "connecting" | "live" | "reconnecting" | "offline-fatal" | "closed";
+
 export class OptimisticClient {
   private readonly url: string;
   private readonly name: WaveletName;
@@ -134,6 +139,11 @@ export class OptimisticClient {
 
   // Replica-changed listeners (the Go coalesced notify channel).
   private changeListeners: Array<() => void> = [];
+
+  // Live connection status + its listeners (for a UI indicator). Distinct from
+  // changeListeners: connection state is not a replica change.
+  private connState: ConnState = "connecting";
+  private statusListeners: Array<() => void> = [];
 
   /**
    * Create an optimistic client for the given wavelet, authoring as author.
@@ -301,10 +311,31 @@ export class OptimisticClient {
     this.changeListeners.push(cb);
   }
 
+  /** The current live connection status. */
+  connectionStatus(): ConnState {
+    return this.connState;
+  }
+
+  /** Subscribe to connection-status changes; returns an unsubscribe function. */
+  onStatus(cb: () => void): () => void {
+    this.statusListeners.push(cb);
+    return () => {
+      this.statusListeners = this.statusListeners.filter((l) => l !== cb);
+    };
+  }
+
+  // setConnState updates the connection status and notifies listeners on a change.
+  private setConnState(s: ConnState): void {
+    if (this.connState === s) return;
+    this.connState = s;
+    for (const l of this.statusListeners) l();
+  }
+
   /** End the session and unblock any waiters. */
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.setConnState("closed");
     if (this.ws !== null) {
       const ws = this.ws;
       this.ws = null;
@@ -325,6 +356,7 @@ export class OptimisticClient {
     let first = true;
     for (;;) {
       if (this.closed) return;
+      this.setConnState(first ? "connecting" : "reconnecting");
       let ws: WebSocket;
       try {
         ws = await this.dial();
@@ -342,6 +374,7 @@ export class OptimisticClient {
         }
         return;
       }
+      this.setConnState("live");
       const res = await this.runSession(ws, first);
       first = false;
       if (this.closed) return;
@@ -718,6 +751,7 @@ export class OptimisticClient {
   private setFatal(err: Error): void {
     dlog("FATAL", errMsg(err));
     if (this.fatal === null) this.fatal = err;
+    this.setConnState("offline-fatal");
     this.broadcast();
   }
 

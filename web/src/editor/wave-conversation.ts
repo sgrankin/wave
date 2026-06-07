@@ -63,6 +63,7 @@ export class WaveConversation extends LitElement {
   private profilesUnsub: (() => void) | null = null;
   private presence: PresenceClient | null = null;
   private presenceUnsub: (() => void) | null = null;
+  private statusUnsub: (() => void) | null = null;
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
   // Our own presence state, the single source of truth for what we publish: which
   // blip we are focused on, whether we are typing, and our caret/selection offsets.
@@ -99,6 +100,8 @@ export class WaveConversation extends LitElement {
     this.profilesUnsub = null;
     this.presenceUnsub?.();
     this.presenceUnsub = null;
+    this.statusUnsub?.();
+    this.statusUnsub = null;
     this.presence?.close();
     this.presence = null;
     if (this.typingTimer !== null) clearTimeout(this.typingTimer);
@@ -178,6 +181,10 @@ export class WaveConversation extends LitElement {
       this.rev++;
       this.onChange?.();
     });
+    // Reflect the live connection state honestly (connecting / connected /
+    // reconnecting / offline) — the transport reconnects silently otherwise.
+    this.statusUnsub = client.onStatus(() => this.applyConnStatus());
+    this.applyConnStatus();
     // Presence rides a separate transient socket (/presence) — derived from the OT
     // socket URL — so it never perturbs the delta channel. It re-renders the tree on
     // remote changes (typing/joining/leaving).
@@ -193,12 +200,33 @@ export class WaveConversation extends LitElement {
     }
     try {
       await client.open();
-      // Who you are is shown by the shell's identity widget; the bar carries only
-      // connection state.
-      this.status = "connected";
-      this.rev++;
-    } catch (e) {
-      this.status = `error: ${String(e)}`;
+    } catch {
+      // A fatal or close-before-open surfaces via the connection-status indicator
+      // (applyConnStatus, driven by onStatus); the setup errors above already set
+      // this.status. Nothing else to do here.
+    }
+    this.applyConnStatus();
+    this.rev++;
+  }
+
+  // applyConnStatus maps the client's live connection state to the status-bar text.
+  // (The bad-name / bad-identity setup errors set before the client is created are
+  // not overwritten — applyConnStatus only runs once a client exists.)
+  private applyConnStatus(): void {
+    switch (this.client?.connectionStatus()) {
+      case "connecting":
+        this.status = "connecting…";
+        break;
+      case "live":
+        this.status = "connected";
+        break;
+      case "reconnecting":
+        this.status = "reconnecting…";
+        break;
+      case "offline-fatal":
+        this.status = "offline — reload to reconnect";
+        break;
+      // "closed": the component is being torn down; leave the text as-is.
     }
   }
 
@@ -313,7 +341,7 @@ export class WaveConversation extends LitElement {
 
     return html`
       ${STYLES}
-      <div class=${"conv-bar" + (/^(error|bad)/.test(this.status) ? " error" : "")}>${this.status}</div>
+      <div class=${"conv-bar" + connBarClass(this.status)}>${this.status}</div>
       ${roster}
       ${this._renderPresence()}
       ${body}
@@ -402,6 +430,14 @@ export class WaveConversation extends LitElement {
 
 customElements.define("wave-conversation", WaveConversation);
 
+// connBarClass picks the status-bar style: red for failure/offline states, amber for
+// transient connecting/reconnecting, none (muted grey) for the steady "connected".
+function connBarClass(status: string): string {
+  if (/^(error|bad|offline)/.test(status)) return " error";
+  if (/^(reconnect|connecting)/.test(status)) return " warn";
+  return "";
+}
+
 // Light-DOM styles for the whole tree. Scoped by element/class names since there
 // is no shadow root. Threads indent their replies; blips are bordered cards.
 const STYLES = html`
@@ -430,6 +466,10 @@ const STYLES = html`
     }
     wave-conversation .conv-bar.error {
       color: #c62828;
+      font-weight: 600;
+    }
+    wave-conversation .conv-bar.warn {
+      color: #b26a00;
     }
     wave-conversation .conv-empty {
       font: 13px system-ui, sans-serif;
