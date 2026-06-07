@@ -40,6 +40,10 @@ export class WaveConversation extends LitElement {
   url = "";
   wave = "";
   user = "";
+  // Optional hook the app shell sets to learn when this wave's replica changes
+  // (e.g. to refresh the inbox digest). Read lazily on each replica change (which
+  // only fires after open() resolves), so binding order vs. connect does not matter.
+  onChange: (() => void) | null = null;
 
   declare status: string;
   declare rev: number; // bumped on every client change to force a re-render
@@ -101,6 +105,7 @@ export class WaveConversation extends LitElement {
     }
     client.onChange(() => {
       this.rev++;
+      this.onChange?.();
     });
     try {
       await client.open();

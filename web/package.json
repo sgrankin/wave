@@ -8,7 +8,7 @@
     "test": "node --test src/wave/*.test.ts src/editor/*.test.ts",
     "build": "node esbuild.mjs",
     "test:web": "node testing/web-runner.mjs",
-    "test:browser": "node --test test/*.browser.test.ts",
+    "test:browser": "node --test --test-concurrency=1 test/*.browser.test.ts",
     "test:integration": "node --test test/integration.test.ts"
   },
   "devDependencies": {

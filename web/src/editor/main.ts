@@ -1,25 +1,21 @@
 // Browser entry point: discover the signed-in identity from the session cookie
-// (via /whoami), then mount a <wave-conversation> for the wave named in the URL,
-// pointed at the same-origin WebSocket endpoint.
+// (via /whoami), then mount the <wave-app> shell (inbox/search on the left, the
+// active wave on the right). The active wave is read from the ?wave= query param
+// by the shell and updated as the user navigates.
 //
-//   /?wave=example.com%2Fw%2Bdemo%2F~%2Fconv%2Broot
+//   /                        → inbox, no wave open
+//   /?wave=example.com%2Fw%2Bxyz%2F~%2Fconv%2Broot   → that wave open
 //
 // The wave id must be percent-encoded — it contains '+' and '/', and a literal
-// '+' in a query string decodes to a space (yielding a different, invalid name;
-// the server rejects it). Identity comes from the session cookie (set by /login),
-// not the URL. On a 401
-// the page sends the user to /login and returns. As a convenience for demos and
-// tests, a ?user=<address> hint is forwarded to /login (dev mode trusts it); the
-// cookie remains authoritative once set. The WebSocket endpoint is /socket on the
-// same origin (so it shares host/port and the auth cookie).
+// '+' in a query string decodes to a space. Identity comes from the session
+// cookie (set by /login), not the URL. On a 401 the page sends the user to /login.
 
-import "./wave-conversation.ts";
-import type { WaveConversation } from "./wave-conversation.ts";
+import "./wave-app.ts";
+import type { WaveApp } from "./wave-app.ts";
 import { setDebug } from "../wave/debug.ts";
 import { WaveDebug } from "./debug-panel.ts";
 
 const params = new URLSearchParams(location.search);
-const wave = params.get("wave") ?? "example.com/w+demo/~/conv+root";
 
 // `?debug=1` turns on the client's delta-flow console trace and the state overlay.
 const debug = params.get("debug") === "1";
@@ -62,15 +58,14 @@ async function boot(): Promise<void> {
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   const url = `${wsProto}//${location.host}/socket`;
 
-  const conv = document.createElement("wave-conversation") as WaveConversation;
-  conv.url = url;
-  conv.wave = wave;
-  conv.user = address;
-  document.body.appendChild(conv);
+  const app = document.createElement("wave-app") as WaveApp;
+  app.wsUrl = url;
+  app.user = address;
+  document.body.appendChild(app);
 
   if (debug) {
     const panel = new WaveDebug();
-    panel.provider = () => conv.getClient();
+    panel.provider = () => app.getActiveClient();
     document.body.appendChild(panel);
   }
 }

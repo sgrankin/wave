@@ -71,7 +71,6 @@ export async function startServer(): Promise<void> {
       "-net", "unix", "-addr", sock,
       "-db", ":memory:",
       "-http", "",
-      "-index=false",
       "-ws", `127.0.0.1:${port}`,
       "-webroot", "web/dist",
       "-log-level", "warn",
@@ -107,6 +106,19 @@ export async function client(user: string, waveLocal: string): Promise<Page> {
   const page = await browser.newPage();
   await page.goto(pageURL(user, waveLocal));
   await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  return page;
+}
+
+/** Open the app shell for `user` at the root (inbox, no wave selected); waits
+ *  until the shell (the New-wave button) has rendered. */
+export async function openApp(user: string): Promise<Page> {
+  if (browser === undefined) throw new Error("browser-harness: startServer() not called");
+  const page = await browser.newPage();
+  const redirect = "/";
+  await page.goto(
+    `http://127.0.0.1:${port}/login?user=${encodeURIComponent(user)}&redirect=${encodeURIComponent(redirect)}`,
+  );
+  await page.locator(".wl-new").waitFor({ state: "attached", timeout: 10_000 });
   return page;
 }
 
