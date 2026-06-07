@@ -622,31 +622,20 @@ export class BlipView extends LitElement {
         .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
         .blip-doc .wave-image { display: block; margin: 4px 0; user-select: none; }
         .blip-doc .wave-image img { max-width: 100%; max-height: 320px; border-radius: 6px; vertical-align: bottom; }
-        /* Floated out of flow so it reserves no vertical space when hidden and the
-           text never shifts on focus. The card (wave-conversation blip-view) is
-           position:relative, so this anchors to its top-right inside corner — over
-           the usually-empty whitespace beside a short first line, and always within
-           the card's own padding box so it can never reach the blip above. The opaque
-           background keeps it legible if it ever floats over a long first line. */
+        /* Hidden (no reserved space) until the blip is focused, then shown IN FLOW
+           above the text — so it never covers content (it just pushes the text down,
+           the expected "entered edit mode" affordance) and wraps instead of
+           overflowing on a narrow phone. (An earlier absolutely-positioned float
+           reserved no space but covered the first line on small screens.) */
         .blip-toolbar {
-          position: absolute;
-          top: 4px;
-          right: 6px;
-          z-index: 1;
-          display: flex;
+          display: none;
+          flex-wrap: wrap;
           gap: 2px;
-          padding: 2px;
-          border-radius: 5px;
-          background: rgba(255, 255, 255, 0.92);
-          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
-          opacity: 0;
-          pointer-events: none;
-          transition: opacity 0.1s;
+          margin: 0 0 6px;
           user-select: none;
         }
         .blip-toolbar.visible {
-          opacity: 1;
-          pointer-events: auto;
+          display: flex;
         }
         .blip-toolbar button {
           font: inherit;

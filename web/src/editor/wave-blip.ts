@@ -109,8 +109,23 @@ export class WaveBlip extends LitElement {
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>
-          <button class="reply-inline-btn" @click=${this.onReplyInline}>Reply inline</button>
-          <button class="attach-btn" @click=${this.onAttachClick}>Attach</button>
+          <!-- preventDefault on mousedown so clicking the button does NOT blur the
+               editor: the caret stays, so the inline reply / attachment anchors at the
+               caret's line (anchorOffset reads it) instead of falling back to the end. -->
+          <button
+            class="reply-inline-btn"
+            @mousedown=${(e: MouseEvent) => e.preventDefault()}
+            @click=${this.onReplyInline}
+          >
+            Reply inline
+          </button>
+          <button
+            class="attach-btn"
+            @mousedown=${(e: MouseEvent) => e.preventDefault()}
+            @click=${this.onAttachClick}
+          >
+            Attach
+          </button>
           <input
             class="attach-input"
             type="file"

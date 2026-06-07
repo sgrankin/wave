@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -553,6 +554,10 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 		mux.Handle("/attachments", routes)
 		mux.Handle("/attachments/", routes)
 	}
+	// Serve the .webmanifest with the correct content-type (Go's mime table doesn't
+	// know the extension and would default to text/plain, which some browsers — iOS
+	// especially — treat as an invalid manifest, breaking PWA install / standalone).
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 	// Serve the browser client from the same origin as the socket (so the page, the
 	// WebSocket, and the auth cookie share host/port). The more specific "/socket"
 	// etc. patterns still win over "/". An embed build (-tags embed) ships the client
