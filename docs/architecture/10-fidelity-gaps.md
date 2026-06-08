@@ -30,11 +30,12 @@ Status key: ✅ shipped 2026-06-08.
 4. ✅ **[Server] A removed participant keeps receiving the live stream** — DONE (cut at
    the removal boundary; reviewed). Original text: until they
    disconnect (membership enforced only at Open/Resync) — an access-control leak.
-5. **[Agent] wave memory primitives** (task #34 flagship) — ✅ MOSTLY DONE (reviewed SHIP).
+5. ✅ **[Agent] wave memory primitives — DONE** (task #34 flagship; reviewed SHIP).
    ✅ lifecycle & discovery: `POST/GET /agent/waves` + `POST /agent/leave`. ✅ structured
    key-value state: a per-wave `<state>` document + `set.state`/`delete.state` intents +
-   state in the snapshot (doc 11). An agent can own/find/abandon its waves AND store/read
-   machine-readable memory in them. REMAINING: only the reactive `state.changed` event.
+   state in the snapshot + the reactive `state.changed` event (doc 11). An agent can
+   own/find/abandon its waves AND store/read/react-to machine-readable memory in them —
+   "wave as shareable agent memory" is realized. (Minor leftover: `blip.edited` debounce.)
 
 ## OT core (internal/op, internal/doc, web/src/wave) — overall fidelity HIGH
 Transform (all 4 sub-transforms), Compose, Invert, the asymmetric annotation algebra,
@@ -142,11 +143,10 @@ intents). Gaps, ranked for the agent-first goal:
   waves. (The socket is still one-wave; these manage the set of waves around it.)
 - ✅ **structured state — DONE** (reviewed SHIP): a per-wave `<state>` key/value document
   (`conv.StateDocumentID`, seeded atomically with the wave), `set.state` / `delete.state`
-  intents, and the `state` map in the `wave.opened` snapshot — an agent's OT-native shared
-  memory. Reviewed: a concurrent-create corruption (fixed by seeding) and an invalid-UTF-8
-  panic-DoS (fixed via `op.NewAttributes`) both closed. Design + remaining: doc 11. REMAINING
-  is only the reactive **`state.changed` event** (others' live writes; lower priority — an
-  agent reads its own writes and re-reads on reconnect).
+  intents, the `state` map in the `wave.opened` snapshot, AND the reactive `state.changed`
+  event (others' live writes) — an agent's OT-native shared memory, write+read+react. Reviewed:
+  a concurrent-create corruption (fixed by seeding) and an invalid-UTF-8 panic-DoS (fixed via
+  `op.NewAttributes`) both closed. Design: doc 11.
 - medium / missing — annotation ops/events (agent reads/writes flat text only, though the
   OT layer supports annotations); title/tag ops + change events (snapshot lacks both).
 - medium / partial — `blip.edited` fires per delta with no debounce/coalesce → floods an

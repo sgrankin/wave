@@ -1,7 +1,9 @@
 # 11 — Agent structured state (design)
 
-Status: **mostly implemented; reactive event remaining** (2026-06-08). The remaining
-piece of the flagship "wave as shareable agent memory" goal (task #34, doc 10 §Agent).
+Status: **IMPLEMENTED & shipped (reviewed SHIP)** (2026-06-08). Completed the flagship
+"wave as shareable agent memory" goal (task #34, doc 10 §Agent). Write (`set.state` /
+`delete.state` intents, lazy-create→seeded), read (`state` in the `wave.opened` snapshot),
+and react (the `state.changed` event for others' live writes) are all done and tested.
 The wave **lifecycle/discovery** primitives (create / list / leave) are shipped (agentgw
 REST endpoints); this doc designs the **structured key-value state** primitive — the part
 that lets a wave hold machine-readable memory, not just prose blips.
