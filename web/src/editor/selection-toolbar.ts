@@ -228,9 +228,11 @@ export class SelectionToolbar extends LitElement {
     this.reposition();
   }
 
-  // reposition places the (host) bar. Coarse/touch: span the visual viewport's width
-  // and sit just above the on-screen keyboard (the visual viewport's bottom edge), so
-  // it is never hidden behind the keyboard — the bug a plain `bottom: 0` dock had.
+  // reposition places the (host) bar. Coarse/touch: a full-width bar pinned to the TOP
+  // of the visual viewport. The top is the one uncrowded zone on iOS — the selection
+  // callout (Copy/Look Up/…) sits at the selection mid-screen, and the keyboard + its
+  // native accessory/format bars own the bottom; a top bar competes with neither (and
+  // is stable whether or not the keyboard is up, since the keyboard shrinks the bottom).
   // Fine/mouse: float centered above the selection, flipping below if there's no room.
   private reposition(): void {
     if (!this.visible) {
@@ -241,15 +243,9 @@ export class SelectionToolbar extends LitElement {
     }
     if (this.coarse) {
       const vv = window.visualViewport;
-      const left = vv ? vv.offsetLeft : 0;
-      const width = vv ? vv.width : window.innerWidth;
-      this.style.left = `${Math.round(left)}px`;
-      this.style.width = `${Math.round(width)}px`;
-      // Measure height AFTER the width is applied (it drives wrapping), then anchor the
-      // bar's bottom to the visual viewport's bottom (top of the keyboard, if shown).
-      const h = this.getBoundingClientRect().height;
-      const vBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-      this.style.top = `${Math.round(Math.max(0, vBottom - h))}px`;
+      this.style.left = `${Math.round(vv ? vv.offsetLeft : 0)}px`;
+      this.style.width = `${Math.round(vv ? vv.width : window.innerWidth)}px`;
+      this.style.top = `${Math.round(vv ? vv.offsetTop : 0)}px`; // top of the visible viewport
       return;
     }
     this.style.width = ""; // auto-width for the floating bubble
@@ -399,9 +395,9 @@ const STYLES = html`
       margin: 2px 3px;
       background: rgba(255, 255, 255, 0.22);
     }
-    /* Touch: a full-width bar the host JS-positions just above the on-screen keyboard
-       (the visual viewport's bottom). The bar fills the host's width (set in JS); it
-       does NOT self-dock at bottom:0 — that hides behind the keyboard while editing. */
+    /* Touch: a full-width bar the host JS-positions at the TOP of the visual viewport
+       (clear of the selection callout and the bottom keyboard/accessory bars). The bar
+       fills the host's width (set in JS). */
     selection-toolbar .sel-toolbar.coarse.visible {
       display: flex;
       /* One line, never wrapped (user ask). "safe center" centers when it fits and
@@ -414,8 +410,10 @@ const STYLES = html`
     selection-toolbar .sel-toolbar.coarse {
       width: 100%;
       box-sizing: border-box;
-      border-radius: 0;
-      padding: 7px calc(6px + env(safe-area-inset-right)) 7px calc(6px + env(safe-area-inset-left));
+      border-radius: 0 0 10px 10px; /* top bar: round the bottom corners */
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+      padding: calc(7px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right)) 7px
+        calc(6px + env(safe-area-inset-left));
       gap: 3px;
     }
     selection-toolbar .sel-toolbar.coarse button {
