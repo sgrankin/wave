@@ -597,6 +597,32 @@ test("blipLastModifiedVersion advances on remote edits, not own edits", () => {
   assert.equal(a.blipLastModifiedVersion("b"), 0, "loadSnapshot clears last-modified");
 });
 
+// blip() must return a STABLE instance until the next apply replaces it. The editor's
+// IME-composition staleness guard (blip-view.onCompositionEnd) compares the content
+// DocOp by IDENTITY across compositionstart→end to detect a remote delta that landed
+// mid-composition. That only works if repeated reads return the same instance (no
+// defensive copy / fresh fallback) until a real op composes a new one. Pin it here so a
+// future refactor that returns a fresh-but-equal DocOp per call can't silently make
+// every composition abort.
+test("blip() returns a stable instance until the next apply (IME composition guard relies on it)", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const bob = mkPID("bob@example.com");
+  const srv = new SimServer(name);
+  const seed = srv.seed(alice, "X");
+  const c = new CC(name, alice, synthVersion(0), "sessA");
+  assert.equal(c.onServerDelta(seed.ops, seed.resulting, ""), null);
+
+  const first = c.blip("b");
+  assert.ok(first !== undefined, "blip exists after seed");
+  assert.strictEqual(c.blip("b"), first, "repeated reads return the SAME instance (no defensive copy)");
+
+  // A remote edit to the blip replaces the instance — exactly the change the guard
+  // must detect.
+  c.onServerDelta(insertCharOp(bob, 1, 1, "Y"), synthVersion(seed.resulting.version + 1), "sessB.1");
+  assert.notStrictEqual(c.blip("b"), first, "an applied remote edit yields a new instance");
+});
+
 // undo reverts a local edit through the CC and redo re-applies it. Acks the edit
 // first so undo has no in-flight delta and produces a sendable delta.
 test("undo and redo a local blip edit through the CC", () => {
