@@ -105,6 +105,28 @@ export class BlipView extends LitElement {
 
   // --- input handling ---
 
+  // onKeydown handles undo/redo (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Cmd/Ctrl+Y). In a
+  // fully-controlled contenteditable the browser's native undo stack is empty (every
+  // beforeinput is preventDefault'd), so Cmd-Z may not fire a historyUndo
+  // beforeinput at all — keydown is the reliable signal. We preventDefault and emit
+  // an "undo" request for the host to route to the per-blip undo manager.
+  private onKeydown = (e: KeyboardEvent): void => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    let redo: boolean;
+    if (k === "z") {
+      redo = e.shiftKey;
+    } else if (k === "y" && !e.shiftKey) {
+      redo = true; // Cmd/Ctrl+Y is redo on Windows-style bindings
+    } else {
+      return;
+    }
+    e.preventDefault();
+    this.dispatchEvent(
+      new CustomEvent<{ redo: boolean }>("undo", { detail: { redo }, bubbles: true, composed: true }),
+    );
+  };
+
   private onBeforeInput = (e: InputEvent): void => {
     // Controlled editor: the DOM must change ONLY via re-render from the model.
     // preventDefault unconditionally and FIRST, so that even a selection we cannot
@@ -735,6 +757,7 @@ export class BlipView extends LitElement {
         aria-multiline="true"
         aria-label="Blip content"
         @beforeinput=${this.onBeforeInput}
+        @keydown=${this.onKeydown}
         @paste=${this.onPaste}
       >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>
       <div class="remote-carets" aria-hidden="true"></div>

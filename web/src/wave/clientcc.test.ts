@@ -532,10 +532,89 @@ test("CC tracks blip authorship: author = first op's creator; contributors accum
   // Alice creates blip "b" (its FIRST op → she is the author).
   assert.equal(c.onServerDelta([blipContentOp(alice, "b", docInsert("hello"))], synthVersion(1), ""), null);
   // Bob then edits it (a contributor, not the author).
-  assert.equal(c.onServerDelta(insertCharOp(bob, 5, 5, "\!"), synthVersion(2), ""), null);
+  assert.equal(c.onServerDelta(insertCharOp(bob, 5, 5, "!"), synthVersion(2), ""), null);
 
   assert.equal(c.blipAuthor("b"), alice, "author is the creator of the blip's first op");
   assert.deepEqual(c.blipContributors("b"), [alice, bob], "contributors in first-seen order (author first)");
   assert.equal(c.blipAuthor("missing"), undefined, "unknown blip has no author");
   assert.deepEqual(c.blipContributors("missing"), [], "unknown blip has no contributors");
+});
+
+// undo reverts a local edit through the CC and redo re-applies it. Acks the edit
+// first so undo has no in-flight delta and produces a sendable delta.
+test("undo and redo a local blip edit through the CC", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const srv = new SimServer(name);
+  const seed = srv.seed(alice, ""); // blip "b" exists, empty
+  const c = new CC(name, alice, synthVersion(0), "sessA");
+  assert.equal(c.onServerDelta(seed.ops, seed.resulting, ""), null);
+
+  // Type "X" into b, then ack it.
+  const out = c.edit(insertCharOp(alice, 0, 0, "X"));
+  assert.ok(out !== null);
+  assert.ok(docOpEqual(blipDoc(c, "b"), docInsert("X")), "optimistic content is X");
+  assert.ok(c.canUndo("b"));
+  const sub = srv.submit(out.delta, out.nonce);
+  assert.equal(c.onAck(sub.resulting, sub.ops.length), null);
+
+  // Undo: content reverts to empty, a delta is produced to submit.
+  const undoOut = c.undo("b");
+  assert.ok(undoOut !== null, "undo produced a delta to send");
+  assert.equal(blipDoc(c, "b").components.length, 0, "content reverted to empty");
+  assert.equal(c.canUndo("b"), false);
+  assert.ok(c.canRedo("b"));
+  const uSub = srv.submit(undoOut.delta, undoOut.nonce);
+  assert.equal(c.onAck(uSub.resulting, uSub.ops.length), null);
+
+  // Redo: content is X again.
+  const redoOut = c.redo("b");
+  assert.ok(redoOut !== null, "redo produced a delta");
+  assert.ok(docOpEqual(blipDoc(c, "b"), docInsert("X")), "redo restored X");
+  assert.equal(c.canRedo("b"), false);
+  assert.ok(c.canUndo("b"));
+});
+
+// undo of a local edit made concurrently with a remote edit transforms PAST the
+// remote edit and converges: alice undoes her "A" while bob's "B" stays.
+test("undo past a concurrent remote edit converges", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const bob = mkPID("bob@example.com");
+  const srv = new SimServer(name);
+  const seed = srv.seed(alice, "X"); // blip "b" = "X"
+
+  const a = new CC(name, alice, synthVersion(0), "sessA");
+  const b = new CC(name, bob, synthVersion(0), "sessB");
+  for (const c of [a, b]) {
+    assert.equal(c.onServerDelta(seed.ops, seed.resulting, ""), null);
+  }
+
+  // Concurrent: alice inserts "A" at 0 -> "AX"; bob inserts "B" at end -> "XB".
+  const aOut = a.edit(insertCharOp(alice, 1, 0, "A"))!;
+  const bOut = b.edit(insertCharOp(bob, 1, 1, "B"))!;
+  const bSub = srv.submit(bOut.delta, bOut.nonce);
+  const aSub = srv.submit(aOut.delta, aOut.nonce);
+  // Deliver each its own ack then the other's delta.
+  assert.equal(a.onAck(aSub.resulting, aSub.ops.length), null);
+  assert.equal(a.onServerDelta(bSub.ops, bSub.resulting, bOut.nonce), null);
+  assert.equal(b.onAck(bSub.resulting, bSub.ops.length), null);
+  assert.equal(b.onServerDelta(aSub.ops, aSub.resulting, aOut.nonce), null);
+  const converged = srv.blipDoc("b");
+  assert.deepEqual([...converged.components], [{ kind: "characters", text: "AXB" }]);
+  assert.ok(docOpEqual(blipDoc(a, "b"), converged) && docOpEqual(blipDoc(b, "b"), converged), "both at AXB");
+
+  // Alice undoes her "A": her undo manager transforms inverse(insert A) past bob's
+  // "B", so the result removes only A -> "XB".
+  const undoOut = a.undo("b")!;
+  assert.ok(docOpEqual(blipDoc(a, "b"), docInsert("XB")), "alice undo removed A, kept B");
+
+  // Submit the undo and deliver to bob; the server and both clients converge on "XB".
+  const uSub = srv.submit(undoOut.delta, undoOut.nonce);
+  assert.equal(a.onAck(uSub.resulting, uSub.ops.length), null);
+  assert.equal(b.onServerDelta(uSub.ops, uSub.resulting, undoOut.nonce), null);
+  const want = srv.blipDoc("b");
+  assert.deepEqual([...want.components], [{ kind: "characters", text: "XB" }]);
+  assert.ok(docOpEqual(blipDoc(a, "b"), want), "alice converged on XB");
+  assert.ok(docOpEqual(blipDoc(b, "b"), want), "bob converged on XB");
 });

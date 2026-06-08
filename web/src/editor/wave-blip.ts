@@ -45,6 +45,15 @@ export class WaveBlip extends LitElement {
     this.controller.editBlip(this.blip.id, ops);
   };
 
+  // onUndo routes a Cmd-Z / Cmd-Shift-Z request from this blip's view to the
+  // controller's per-blip undo manager (redo when detail.redo).
+  private onUndo = (e: Event): void => {
+    e.stopPropagation();
+    const { redo } = (e as CustomEvent<{ redo: boolean }>).detail;
+    if (redo) this.controller.redo?.(this.blip.id);
+    else this.controller.undo?.(this.blip.id);
+  };
+
   // onCaret relays this blip's local caret/selection (the view reports doc-item offsets;
   // we tag them with this blip's id) to the controller, which publishes it on the
   // presence channel so peers can render it.
@@ -118,6 +127,7 @@ export class WaveBlip extends LitElement {
           .remoteCarets=${this.controller.remoteCaretsFor?.(this.blip.id) ?? []}
           @edit=${this.onEdit}
           @caret=${this.onCaret}
+          @undo=${this.onUndo}
         ></blip-view>
         <div class="blip-actions">
           <button class="reply-btn" @click=${this.onReply}>Reply</button>

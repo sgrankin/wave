@@ -39,8 +39,9 @@
 // Port of internal/clientcc/clientcc.go.
 
 import { compose } from "./compose.ts";
+import { UndoManager } from "./undo.ts";
 import { transformOps } from "./waveop.ts";
-import { DocOp, HashedVersion, newWaveletDelta } from "./types.ts";
+import { CONTRIBUTOR_ADD, DocOp, HashedVersion, newWaveletDelta } from "./types.ts";
 import type { Operation, Participant, WaveletDelta, WaveletName } from "./types.ts";
 
 // Outgoing is a delta the state machine wants submitted, with the per-submission
@@ -94,6 +95,12 @@ export class CC {
   // is always seen first); a snapshot open would not carry it (reset in loadSnapshot).
   private blipMeta = new Map<string, { author: Participant; contributors: Set<Participant> }>();
 
+  // Per-blip undo managers (local edits are undoable; remote edits are fed as
+  // non-undoable so undo transforms past them). Fed the SAME applied op stream as
+  // the optimistic replica, in the same order, so they stay in lockstep with the
+  // blip contents. Cleared on a snapshot/resync reset (the history is then stale).
+  private undoMgrs = new Map<string, UndoManager>();
+
   // New creates a client state machine for wavelet name authored by author,
   // starting from the given confirmed version (e.g. version zero for a fresh
   // open; the snapshot/history version for a resync). sessionId is a per-session
@@ -118,6 +125,7 @@ export class CC {
     this.blips = new Map(blips);
     this.parts = new Set(parts);
     this.blipMeta = new Map(); // a snapshot carries content, not per-blip authorship
+    this.undoMgrs.clear(); // undo history does not survive a reset (it targets old state)
   }
 
   // serverVersion returns the latest confirmed server version (what a fresh idle
@@ -178,8 +186,28 @@ export class CC {
   // optimistic document and carry a per-op versionIncrement (normally 1).
   edit(ops: Operation[]): Outgoing | null {
     this.apply(ops);
+    // Record each blip content op as undoable, one undo unit per edit() call (per
+    // input event). A later remote op on the same blip is fed as non-undoable in
+    // onServerDelta, so undo transforms past it.
+    for (const o of ops) {
+      if (o.kind === "blip") {
+        const m = this.undoFor(o.blipId);
+        m.undoableOp(o.op.contentOp);
+        m.checkpoint();
+      }
+    }
     this.queue.push(...ops);
     return this.trySend();
+  }
+
+  // undoFor lazily creates the undo manager for a blip.
+  private undoFor(blipId: string): UndoManager {
+    let m = this.undoMgrs.get(blipId);
+    if (m === undefined) {
+      m = new UndoManager();
+      this.undoMgrs.set(blipId, m);
+    }
+    return m;
   }
 
   // onServerDelta incorporates a delta the server applied. ops are its
@@ -245,8 +273,58 @@ export class CC {
     d = dPrime;
 
     this.apply(d);
+    // Remote edits on a blip are non-undoable: feed them so a later undo of a
+    // local edit transforms past them. (Our own deltas are recognized by nonce and
+    // settled above without reaching here, so d is purely others' ops.)
+    for (const o of d) {
+      if (o.kind === "blip") {
+        this.undoFor(o.blipId).nonUndoableOp(o.op.contentOp);
+      }
+    }
     this.recv = resulting;
     return this.settleAndSend();
+  }
+
+  // canUndo / canRedo report whether the blip has an undoable / redoable edit.
+  canUndo(blipId: string): boolean {
+    return this.undoMgrs.get(blipId)?.canUndo() ?? false;
+  }
+  canRedo(blipId: string): boolean {
+    return this.undoMgrs.get(blipId)?.canRedo() ?? false;
+  }
+
+  // undo reverts the most recent local edit to blipId: it computes the undo op
+  // (transformed to apply at the current content), applies it to the optimistic
+  // replica, and queues it for submission — returning a delta to send (or null if
+  // nothing to undo or a delta is already in flight). The undo op is NOT recorded
+  // as a new undoable edit; it is already on the blip's redo stack.
+  undo(blipId: string): Outgoing | null {
+    return this.applyUndoOp(blipId, this.undoMgrs.get(blipId)?.undo() ?? null);
+  }
+
+  // redo re-applies the most recently undone edit to blipId (the mirror of undo).
+  redo(blipId: string): Outgoing | null {
+    return this.applyUndoOp(blipId, this.undoMgrs.get(blipId)?.redo() ?? null);
+  }
+
+  // applyUndoOp submits an undo/redo content op for blipId without re-recording it
+  // as undoable (the manager already moved it between the undo/redo stacks).
+  private applyUndoOp(blipId: string, contentOp: DocOp | null): Outgoing | null {
+    if (contentOp === null) {
+      return null;
+    }
+    const op: Operation = {
+      kind: "blip",
+      blipId,
+      op: {
+        ctx: { creator: this.author, timestamp: Date.now(), versionIncrement: 1, hashedVersion: null },
+        contentOp,
+        method: CONTRIBUTOR_ADD,
+      },
+    };
+    this.apply([op]);
+    this.queue.push(op);
+    return this.trySend();
   }
 
   // onAck records that the in-flight delta was accepted, resulting in the given

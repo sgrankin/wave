@@ -260,6 +260,34 @@ export class OptimisticClient {
     return this.submitWith(() => ops);
   }
 
+  /**
+   * Undo the most recent local edit to blipId: applies the (transform-corrected)
+   * undo op to the optimistic replica and submits it like any edit. A no-op if
+   * there is nothing to undo. Mirrors submitWith's send path.
+   */
+  undo(blipId: string): void {
+    if (this.fatal !== null) throw this.fatal;
+    const o = this.cc.undo(blipId);
+    this.signal();
+    this.sendDelta(o);
+  }
+
+  /** Redo the most recently undone edit to blipId (the mirror of undo). */
+  redo(blipId: string): void {
+    if (this.fatal !== null) throw this.fatal;
+    const o = this.cc.redo(blipId);
+    this.signal();
+    this.sendDelta(o);
+  }
+
+  /** Whether blipId has an undoable / redoable local edit (to enable affordances). */
+  canUndo(blipId: string): boolean {
+    return this.cc.canUndo(blipId);
+  }
+  canRedo(blipId: string): boolean {
+    return this.cc.canRedo(blipId);
+  }
+
   /** Return the optimistic content of a blip, or undefined if it does not exist. */
   blipContent(blipId: string): DocOp | undefined {
     return this.cc.blip(blipId);

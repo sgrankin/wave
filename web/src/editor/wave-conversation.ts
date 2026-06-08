@@ -267,6 +267,14 @@ export class WaveConversation extends LitElement {
         this.markTyping(id); // publish "typing in this blip" to the presence channel
         void client.submit([blipContentOp(author, id, new DocOp(ops))]);
       },
+      undo: (id) => {
+        this.markTyping(id);
+        client.undo(id);
+      },
+      redo: (id) => {
+        this.markTyping(id);
+        client.redo(id);
+      },
       setCaret: (blipId, anchor, focus) => this.setCaret(blipId, anchor, focus),
       remoteCaretsFor: (blipId) => this.remoteCaretsFor(blipId),
       blipAuthor: (blipId) => client.blipAuthor(blipId),

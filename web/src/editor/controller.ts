@@ -39,6 +39,11 @@ export interface ConvController {
   blipContent(blipId: string): DocOp;
   // Apply+submit a content op (from <blip-view>) against an existing blip.
   editBlip(blipId: string, ops: Component[]): void;
+  // Undo / redo the most recent local edit to blipId (Cmd-Z / Cmd-Shift-Z). The
+  // undo op is transform-corrected against intervening remote edits. Optional — a
+  // fake/headless controller may omit it.
+  undo?(blipId: string): void;
+  redo?(blipId: string): void;
   // Append a new blip to a thread (threadId "" selects the root thread) and
   // create that blip's content, in one delta.
   continueThread(threadId: string): void;
