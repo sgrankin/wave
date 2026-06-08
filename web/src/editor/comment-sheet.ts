@@ -153,10 +153,12 @@ export class CommentSheet extends LitElement {
         >
           <div class="cs-head">
             <span class="cs-title">💬 Comment</span>
-            <button class="cs-close" @click=${this.close} aria-label="Close comment">×</button>
           </div>
           <div class="cs-body">
             <wave-thread .thread=${this.thread} .controller=${this.controller}></wave-thread>
+          </div>
+          <div class="cs-foot">
+            <button class="cs-done" @click=${this.close}>Done</button>
           </div>
         </div>
       </div>
@@ -224,27 +226,37 @@ const STYLES = html`
       font: 600 14px system-ui, sans-serif;
       color: #333;
     }
-    comment-sheet .cs-close {
-      font: 22px/1 system-ui, sans-serif;
-      color: #777;
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 2px 8px;
-      border-radius: 6px;
-    }
-    comment-sheet .cs-close:hover {
-      background: #f0f0f0;
-      color: #333;
-    }
-    comment-sheet .cs-close:focus-visible {
-      outline: 2px solid #4060c0;
-      outline-offset: 1px;
-    }
     comment-sheet .cs-body {
       padding: 8px 14px 14px;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
+    }
+    /* Sticky footer (outside the scroll area) so "Done" is always reachable, even for a
+       long thread. "Done" closes the sheet — the comment is already saved live (edits
+       sync as you type), so there is no separate "save" step. */
+    comment-sheet .cs-foot {
+      flex: none;
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 10px 14px;
+      border-top: 1px solid #eee;
+    }
+    comment-sheet .cs-done {
+      font: 600 14px system-ui, sans-serif;
+      color: #fff;
+      background: #4060c0;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 20px;
+      cursor: pointer;
+    }
+    comment-sheet .cs-done:hover {
+      background: #36509c;
+    }
+    comment-sheet .cs-done:focus-visible {
+      outline: 2px solid #9db4ff;
+      outline-offset: 2px;
     }
     /* The thread inside the sheet is already the comment context; its left rule/indent
        (from the in-flow .reply styling) is redundant here. */

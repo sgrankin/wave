@@ -72,6 +72,14 @@ test("the toolbar floats on-screen, next to the selection", async () => {
     await typeInto(page, 0, "position the bar near this selected text");
     await selectFirstPara(page, 13, 21); // select "the bar "
     await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    // The bar is already visible from the typing caret; wait until the RANGE selection
+    // is processed (Bold enabled) so it has repositioned over the selection, not the
+    // caret — otherwise the geometry read races the reposition.
+    await page.waitForFunction(
+      () => document.querySelector('.sel-toolbar button[data-cmd="bold"]')?.hasAttribute("disabled") === false,
+      undefined,
+      { timeout: 5000 },
+    );
 
     const geom = await page.evaluate(() => {
       const bar = document.querySelector(".sel-toolbar")!.getBoundingClientRect();
@@ -140,18 +148,42 @@ test("the toolbar's Comment button anchors an inline reply and opens the sheet",
   }
 });
 
-test("collapsing the selection hides the toolbar", async () => {
-  const page = await client("alice@example.com", "w+seltoolbar-hide");
+test("the bar shows for a caret (Bold disabled, H1/Comment usable) and hides on blur", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-caret");
   try {
-    await typeInto(page, 0, "select then collapse");
-    await selectFirstPara(page, 0, 6);
+    // Typing leaves a collapsed caret in the blip — the bar shows without a selection
+    // (H1/Comment don't need one), and remains for caret-only line/comment commands.
+    await typeInto(page, 0, "caret only here");
     await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
 
-    // Collapse the selection (caret only) → the bar hides.
-    await page.evaluate(() => {
-      const s = window.getSelection()!;
-      s.collapseToEnd();
-    });
+    // Bold/Italic need a range, so they're disabled with just a caret; H1 and Comment
+    // act on the caret's line and stay enabled.
+    assert.equal(
+      await page.locator('.sel-toolbar button[data-cmd="bold"]').isDisabled(),
+      true,
+      "Bold is disabled with no selection",
+    );
+    assert.equal(
+      await page.locator('.sel-toolbar button[data-cmd="h1"]').isDisabled(),
+      false,
+      "H1 is usable with just a caret",
+    );
+    assert.equal(
+      await page.locator('.sel-toolbar button[data-cmd="comment"]').isDisabled(),
+      false,
+      "Comment is usable with just a caret",
+    );
+
+    // Selecting a range enables Bold.
+    await selectFirstPara(page, 0, 5);
+    await page.waitForFunction(
+      () => document.querySelector('.sel-toolbar button[data-cmd="bold"]')?.hasAttribute("disabled") === false,
+      undefined,
+      { timeout: 5000 },
+    );
+
+    // Moving focus out of the editor hides the bar.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.locator(".sel-toolbar.visible").waitFor({ state: "hidden", timeout: 5000 });
   } finally {
     await page.close();

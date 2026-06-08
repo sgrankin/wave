@@ -37,11 +37,16 @@ export class SelectionToolbar extends LitElement {
     visible: { state: true },
     states: { state: true },
     coarse: { state: true },
+    collapsed: { state: true },
   };
 
   declare private visible: boolean;
   declare private states: { bold: boolean; italic: boolean; lineType: string | null };
   declare private coarse: boolean; // touch layout (bottom-docked) vs. floating
+  // Whether the current selection is collapsed (a caret, no range). The bar still
+  // shows — H1/H2/H3/list and Comment act on the caret's line — but B/I (which need a
+  // range) are disabled.
+  declare private collapsed: boolean;
 
   // The editor the current selection lives in, resolved on each refresh. Commands
   // dispatch to these directly (the bar is fixed at the document root, so events
@@ -51,6 +56,9 @@ export class SelectionToolbar extends LitElement {
   // The selection's viewport rect, captured at refresh and used to position the bar
   // in updated() (after the bar has rendered, so its own size is measurable).
   private selRect: DOMRect | null = null;
+  // The host blip-view's rect; for a collapsed caret the bar is centered over the blip
+  // (stable) rather than over the caret (which would jitter as you type).
+  private hostRect: DOMRect | null = null;
   private raf = 0;
   private mql: MediaQueryList | null = null;
 
@@ -59,6 +67,7 @@ export class SelectionToolbar extends LitElement {
     this.visible = false;
     this.states = { bold: false, italic: false, lineType: null };
     this.coarse = false;
+    this.collapsed = false;
   }
 
   // Light DOM (matches the rest of the editor; styles are scoped by tag name).
@@ -72,6 +81,10 @@ export class SelectionToolbar extends LitElement {
     this.coarse = this.mql.matches;
     this.mql.addEventListener("change", this.onPointerKindChange);
     document.addEventListener("selectionchange", this.onSelectionChange);
+    // Focus changes show/hide the bar: focusin into an editor reveals it for a caret;
+    // focusout hides it (a blur may not fire selectionchange, so we can't rely on that).
+    document.addEventListener("focusin", this.onSelectionChange);
+    document.addEventListener("focusout", this.onSelectionChange);
     // Capture: catch the conversation pane's scroll (which does not bubble) so the
     // floating bar tracks the selection as the user scrolls.
     window.addEventListener("scroll", this.onViewportChange, true);
@@ -87,6 +100,8 @@ export class SelectionToolbar extends LitElement {
     super.disconnectedCallback();
     this.mql?.removeEventListener("change", this.onPointerKindChange);
     document.removeEventListener("selectionchange", this.onSelectionChange);
+    document.removeEventListener("focusin", this.onSelectionChange);
+    document.removeEventListener("focusout", this.onSelectionChange);
     window.removeEventListener("scroll", this.onViewportChange, true);
     window.removeEventListener("resize", this.onViewportChange);
     window.visualViewport?.removeEventListener("resize", this.onViewportChange);
@@ -120,7 +135,7 @@ export class SelectionToolbar extends LitElement {
   // shown) resolves the host editor and captures the selection rect for positioning.
   private refresh(): void {
     const sel = window.getSelection();
-    if (sel === null || sel.rangeCount === 0 || sel.isCollapsed) {
+    if (sel === null || sel.rangeCount === 0) {
       this.hide();
       return;
     }
@@ -139,6 +154,14 @@ export class SelectionToolbar extends LitElement {
       this.hide();
       return;
     }
+    const collapsed = sel.isCollapsed;
+    // Only while the editor is actually focused — otherwise a lingering selection or
+    // caret (after the editor blurred) would keep the bar up. (contains() is true for
+    // the element itself, so a focused .blip-doc counts.)
+    if (!blipDoc.contains(document.activeElement)) {
+      this.hide();
+      return;
+    }
     const blipView = startEl?.closest<HTMLElement>("blip-view") as BlipView | null;
     const waveBlip = startEl?.closest<HTMLElement>("wave-blip") as WaveBlip | null;
     if (blipView === null) {
@@ -153,6 +176,8 @@ export class SelectionToolbar extends LitElement {
     this.blipView = blipView;
     this.waveBlip = waveBlip;
     this.selRect = rect;
+    this.hostRect = blipView.getBoundingClientRect();
+    this.collapsed = collapsed;
     this.states = blipView.commandStates();
     this.visible = true;
   }
@@ -222,11 +247,17 @@ export class SelectionToolbar extends LitElement {
       this.style.top = "";
       return;
     }
-    // Float above the selection, centered, clamped to the viewport; flip below if
-    // there is no room above. Measured after render so the bar's own size is known.
+    // Float above the selection, clamped to the viewport; flip below if there's no
+    // room above. Measured after render so the bar's own size is known. For a collapsed
+    // caret, center the bar over the BLIP (stable) rather than over the caret — else it
+    // would jump horizontally as you type.
     const tb = this.getBoundingClientRect();
     const sr = this.selRect;
-    let left = sr.left + sr.width / 2 - tb.width / 2;
+    const centerX =
+      this.collapsed && this.hostRect !== null
+        ? this.hostRect.left + this.hostRect.width / 2
+        : sr.left + sr.width / 2;
+    let left = centerX - tb.width / 2;
     left = Math.max(EDGE, Math.min(left, window.innerWidth - tb.width - EDGE));
     let top = sr.top - tb.height - GAP;
     if (top < EDGE) top = sr.bottom + GAP; // no room above → below
@@ -236,11 +267,18 @@ export class SelectionToolbar extends LitElement {
 
   protected override render(): TemplateResult {
     const s = this.states;
-    const btn = (cmd: string, label: string, pressed: boolean, content: TemplateResult | string): TemplateResult =>
+    const btn = (
+      cmd: string,
+      label: string,
+      pressed: boolean,
+      content: TemplateResult | string,
+      disabled = false,
+    ): TemplateResult =>
       html`<button
         data-cmd=${cmd}
         aria-label=${label}
         aria-pressed=${pressed ? "true" : "false"}
+        ?disabled=${disabled}
         class=${pressed ? "pressed" : ""}
         @click=${() => this.run(cmd)}
       >
@@ -255,14 +293,14 @@ export class SelectionToolbar extends LitElement {
         @mousedown=${this.keepSelection}
         @pointerdown=${this.keepSelection}
       >
-        ${btn("bold", "Bold", s.bold, html`<b>B</b>`)}
-        ${btn("italic", "Italic", s.italic, html`<i>I</i>`)}
+        ${btn("bold", "Bold", s.bold, html`<b>B</b>`, this.collapsed)}
+        ${btn("italic", "Italic", s.italic, html`<i>I</i>`, this.collapsed)}
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}
         ${btn("li", "Bullet list", s.lineType === "li", "•")}
         <span class="sep" aria-hidden="true"></span>
-        ${btn("comment", "Comment on selection", false, html`<span class="cmt">💬 Comment</span>`)}
+        ${btn("comment", "Comment", false, html`<span class="cmt">💬 Comment</span>`)}
       </div>
     `;
   }
@@ -289,8 +327,11 @@ const STYLES = html`
       top: 0;
       left: 0;
       z-index: 1000;
-      /* The host is only a positioning anchor; the bar inside carries the visuals.
-         pointer-events flow to the bar; nothing here intercepts the page otherwise. */
+      /* The bar can float over the editor (it shows for a bare caret now), so it must
+         NOT intercept clicks meant for the text — only its buttons are interactive.
+         pointer-events: none here + auto on the buttons lets a click on the bar's
+         background pass through to the editor underneath. */
+      pointer-events: none;
     }
     selection-toolbar .sel-toolbar {
       display: none;
@@ -302,6 +343,7 @@ const STYLES = html`
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
       user-select: none;
       -webkit-user-select: none;
+      pointer-events: none;
     }
     selection-toolbar .sel-toolbar.visible {
       display: inline-flex;
@@ -316,6 +358,7 @@ const STYLES = html`
       background: transparent;
       color: #f0f2f5;
       cursor: pointer;
+      pointer-events: auto; /* the bar is click-through; its buttons are not */
     }
     selection-toolbar .sel-toolbar button:hover {
       background: rgba(255, 255, 255, 0.14);
@@ -323,6 +366,14 @@ const STYLES = html`
     selection-toolbar .sel-toolbar button.pressed {
       background: #4060c0;
       color: #fff;
+    }
+    selection-toolbar .sel-toolbar button:disabled {
+      opacity: 0.38;
+      cursor: default;
+      pointer-events: none; /* don't intercept editor clicks while inert */
+    }
+    selection-toolbar .sel-toolbar button:disabled:hover {
+      background: transparent;
     }
     selection-toolbar .sel-toolbar button:focus-visible {
       outline: 2px solid #9db4ff;

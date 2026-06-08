@@ -295,8 +295,8 @@ test("an inline reply anchors a marker in the parent text and keeps it editable"
     { timeout: 10_000 },
   );
 
-  // Close the sheet (its backdrop overlays the doc) before returning to the parent.
-  await page.locator("comment-sheet .cs-close").click();
+  // Close the sheet via Done (its backdrop overlays the doc) before returning to the parent.
+  await page.locator("comment-sheet .cs-done").click();
   await page.locator("comment-sheet .cs-panel").waitFor({ state: "detached", timeout: 10_000 });
 
   // The parent blip stays editable and caret-correct despite the embedded anchor:
@@ -346,9 +346,14 @@ test("attaching an image uploads it and renders an inline img from the server", 
     { timeout: 10_000 },
   );
   // And it actually loaded — the server served the bytes through auth + membership.
-  const loaded = await page.evaluate(() => {
-    const img = document.querySelector(".wave-image img");
-    return img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0;
-  });
-  assert.equal(loaded, true, "the attachment image loaded from the server");
+  // Poll for load completion (the <img> appears with its src before the bytes finish
+  // downloading; a single check right after the src appears races the load).
+  await page.waitForFunction(
+    () => {
+      const img = document.querySelector(".wave-image img");
+      return img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0;
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
 });
