@@ -23,6 +23,7 @@ import {
   clearStyleRange,
   deleteInlineElement,
   deleteLineMarker,
+  lineAttributes,
   project,
   rangeStyle,
   replaceText,
@@ -149,9 +150,23 @@ export class BlipView extends LitElement {
         this.tryEdit(() => replaceText(this.content, lo, hi, e.data ?? ""), lo + runeCount(e.data ?? ""));
         break;
       case "insertParagraph":
-      case "insertLineBreak":
+      case "insertLineBreak": {
+        // List continuation: pressing Enter inside a list item starts a NEW list
+        // item (carry the line type + indent), rather than dropping to a plain line.
+        // Headings deliberately do NOT continue — Enter after a heading is a plain
+        // line, as in every editor. Enter on an EMPTY list item exits the list.
+        const para = this.paragraphAtOffset(lo);
+        if (para !== null && para.lineType === "li" && para.lineOffset !== null) {
+          if (range.collapsed && para.textLength === 0) {
+            this.tryEdit(() => setLineType(this.content, para.lineOffset!, "li", null), para.lineOffset);
+            break;
+          }
+          this.tryEdit(() => splitLineAt(this.content, lo, hi, lineAttributes("li", para.indent)), lo + 2);
+          break;
+        }
         this.tryEdit(() => splitLineAt(this.content, lo, hi, Attributes.empty()), lo + 2);
         break;
+      }
       case "deleteContentBackward":
       case "deleteWordBackward":
       case "deleteByCut":
