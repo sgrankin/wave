@@ -20,4 +20,13 @@ type ReadStateStore interface {
 	// ReadVersions returns all of the participant's read versions, keyed by
 	// wavelet name (the WaveletName.Serialize() form), for batch use by the inbox.
 	ReadVersions(participant id.ParticipantID) (map[string]uint64, error)
+
+	// SetBlipReadVersion records that the participant has read blip blipID of the
+	// wavelet through version — the PER-BLIP granularity OG Wave tracks (which blips
+	// are unread, not just whether the wave changed). Monotonic per blip. It is
+	// additive to the wavelet-level read above (which still backs the inbox dot).
+	SetBlipReadVersion(participant id.ParticipantID, wavelet id.WaveletName, blipID string, version uint64) error
+	// BlipReadVersions returns the participant's per-blip read versions for one
+	// wavelet, keyed by blip id (absent ⇒ 0 ⇒ unread once the blip has any version).
+	BlipReadVersions(participant id.ParticipantID, wavelet id.WaveletName) (map[string]uint64, error)
 }
