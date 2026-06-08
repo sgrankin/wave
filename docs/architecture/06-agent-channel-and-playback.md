@@ -231,7 +231,11 @@ confirmed, 0 refuted, no critical) and hardened. The §A.8 decisions resolved as
    TLS.
 4. **Event taxonomy:** the six events shipped (no debounce yet — `blip.edited` fires
    per applied delta; coalescing is a later refinement). `wave.opened` carries the
-   connect-time snapshot.
+   connect-time snapshot. **`operation.error` shipped (2026-06-08):** a failed
+   `SubmitIntent` (invalid target, rate-limited, lost OT race) is reported back with
+   the failed intent's kind, an optional echoed `id`, and the reason — so an LLM
+   harness has an in-band retry/correct signal instead of fire-and-forget. Routed
+   through the gateway's main loop so all `eventsOut` writes stay serialized.
 
 **Intents shipped:** `post.blip`, `reply.blip` (sibling or inline reply to a specific
 blip — closes the top extensibility gap so an agent can answer the blip that mentioned
@@ -243,16 +247,19 @@ prevent higher-level loops (two agents mutually reacting); that is the harness's
 (the `Harness` doc says so). The §A.6 "drop other agents' events" rule is **not**
 implemented in the runtime (it needs account-kind lookup) — left to the harness.
 
-**Deferred / known limitations** (most overlap Batch 7 operability): an unbounded
-container cache — `StrictMembershipChecker` denies non-members but still instantiates
-an empty container per looked-up name (bound/evict in Batch 7); `add.participant` by
-an agent is unrestricted (no per-agent allowlist) — acceptable while agents are
-operator-configured/trusted; membership is checked once at connect, not re-checked
-mid-session (matches the transport's once-at-Open model; ties into the
-RemoveParticipant revocation work in doc 04 §8); the wire `seq` field from §A.5 is not
-yet emitted (gap-detection deferred); blip text in events is read live (may be newer
-than the event's version under concurrent edits — fine for a reactive harness, since
-the mention *decision* is delta-accurate).
+**Deferred / known limitations:** `add.participant` by an agent is unrestricted (no
+per-agent allowlist) — acceptable while agents are operator-configured/trusted; the
+wire `seq` field from §A.5 is not yet emitted (gap-detection deferred); blip text in
+events is read live (may be newer than the event's version under concurrent edits —
+fine for a reactive harness, since the mention *decision* is delta-accurate); no
+create-wave / discovery intents yet (one wave per socket — the "wave as memory"
+lifecycle gap, see docs/architecture/10-fidelity-gaps.md); `blip.edited` debounce
+still unshipped.
+
+**Resolved since (2026-06-08):** the unbounded container cache is now bounded by
+WaveMap idle eviction (`-wave-cache-idle`); mid-session membership IS re-checked —
+a removed participant's live stream is cut at the removal boundary (transport) and
+reconnect is denied. See doc 10.
 
 ---
 
