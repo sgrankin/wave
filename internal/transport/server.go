@@ -504,6 +504,11 @@ func (s *session) forward(sub *server.Subscription) {
 // participant — the point past which they are no longer a member and must stop
 // receiving the wavelet's live stream. Returns false on an unauthenticated
 // (dev/local) connection, which has no participant boundary to enforce.
+//
+// It conservatively reports true even if the same delta also re-adds the
+// participant: that cannot arise from one author (apply rejects a duplicate add),
+// and the re-added participant simply reconnects — so cutting is safe, and erring
+// toward cutting keeps the membership boundary strict.
 func (s *session) removesSelf(delta cc.TransformedWaveletDelta) bool {
 	if s.authParticipant == nil {
 		return false
