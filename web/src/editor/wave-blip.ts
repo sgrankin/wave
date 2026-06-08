@@ -23,6 +23,12 @@ import "./wave-thread.ts";
 // PILL_SNIPPET_MAX: characters of a comment shown on its collapsed pill.
 const PILL_SNIPPET_MAX = 48;
 
+// READ_DWELL_MS: how long an unread blip must stay in view before it is marked
+// read. The dwell (rather than marking the instant it intersects) means a blip
+// flicked past while scrolling is not counted as read, and matches "you actually
+// looked at it". Short enough that a blip you're reading clears promptly.
+const READ_DWELL_MS = 800;
+
 export class WaveBlip extends LitElement {
   static override properties = {
     blip: { attribute: false },
@@ -32,8 +38,69 @@ export class WaveBlip extends LitElement {
   declare blip: Blip;
   declare controller: ConvController;
 
+  // Mark-on-view plumbing: an IntersectionObserver tracks whether this blip is in
+  // the viewport; while it is AND the blip is unread, a dwell timer runs, and on
+  // expiry the blip is marked read. Both inputs (visibility, unread-ness) are
+  // re-evaluated together in maybeSyncDwell so a blip that becomes unread *while*
+  // already on screen (a remote edit) also arms the dwell.
+  private observer: IntersectionObserver | null = null;
+  private visible = false;
+  private dwellTimer: ReturnType<typeof setTimeout> | null = null;
+
   protected override createRenderRoot(): HTMLElement {
     return this;
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // Observe our own host element. IntersectionObserver may be absent in a
+    // non-browser test runtime; degrade to "never auto-marks read" there.
+    if (typeof IntersectionObserver !== "undefined") {
+      this.observer = new IntersectionObserver(
+        (entries) => {
+          const e = entries[entries.length - 1];
+          if (e === undefined) return;
+          this.visible = e.isIntersecting;
+          this.maybeSyncDwell();
+        },
+        { threshold: 0.1 },
+      );
+      this.observer.observe(this);
+    }
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.observer?.disconnect();
+    this.observer = null;
+    if (this.dwellTimer !== null) {
+      clearTimeout(this.dwellTimer);
+      this.dwellTimer = null;
+    }
+  }
+
+  // updated re-syncs the dwell after every render: a re-render is how a remote edit
+  // that just made this (visible) blip unread reaches us, so this is where we arm
+  // the dwell for the "became unread while on screen" case.
+  protected override updated(): void {
+    this.maybeSyncDwell();
+  }
+
+  // maybeSyncDwell starts the read-dwell timer when the blip is both visible and
+  // unread (and none is running), and cancels it otherwise. On expiry it marks the
+  // blip read through the controller. Idempotent — safe to call on every render and
+  // every intersection change.
+  private maybeSyncDwell(): void {
+    const unread = this.visible && (this.controller.isBlipUnread?.(this.blip.id) ?? false);
+    if (unread && this.dwellTimer === null) {
+      this.dwellTimer = setTimeout(() => {
+        this.dwellTimer = null;
+        this.controller.markBlipViewed?.(this.blip.id);
+      }, READ_DWELL_MS);
+    } else if (!unread && this.dwellTimer !== null) {
+      clearTimeout(this.dwellTimer);
+      this.dwellTimer = null;
+    }
   }
 
   // onEdit forwards a blip content op (from the controlled <blip-view>) to the
@@ -144,9 +211,10 @@ export class WaveBlip extends LitElement {
   protected override render(): TemplateResult {
     if (this.blip.deleted) return this.renderDeleted();
     const content = this.controller.blipContent(this.blip.id);
+    const unread = this.controller.isBlipUnread?.(this.blip.id) ?? false;
     return html`
-      <div class="wave-blip">
-        ${this.renderByline()}
+      <div class="wave-blip ${unread ? "unread" : ""}">
+        ${this.renderByline(unread)}
         <blip-view
           .content=${content}
           .selfAddress=${this.controller.user}
@@ -207,14 +275,21 @@ export class WaveBlip extends LitElement {
   }
 
   // renderByline shows who wrote this blip: a small avatar + display name above the
-  // content. Empty when the author is unknown (e.g. a snapshot open).
-  private renderByline(): TemplateResult {
+  // content, plus an "unread" dot when the blip has unseen remote changes. Shows the
+  // dot even when the author is unknown, so the unread cue never depends on the
+  // byline being present.
+  private renderByline(unread: boolean): TemplateResult {
+    const dot = unread
+      ? html`<span class="unread-dot" title="Unread" aria-label="Unread">●</span>`
+      : html``;
     const author = this.controller.blipAuthor?.(this.blip.id);
-    if (author === undefined || author === "") return html``;
+    if (author === undefined || author === "") {
+      return unread ? html`<div class="blip-byline">${dot}</div>` : html``;
+    }
     profiles.ensure([author]);
     const profile = profiles.get(author);
     return html`<div class="blip-byline" title=${author}>
-      ${avatar(author, profile, 18)}<span class="byline-name">${displayNameFor(author, profile)}</span>
+      ${dot}${avatar(author, profile, 18)}<span class="byline-name">${displayNameFor(author, profile)}</span>
     </div>`;
   }
 

@@ -540,6 +540,63 @@ test("CC tracks blip authorship: author = first op's creator; contributors accum
   assert.deepEqual(c.blipContributors("missing"), [], "unknown blip has no contributors");
 });
 
+// Per-blip last-modified tracks REMOTE edits only (the unread signal): a delta
+// from another participant advances the blip's last-modified version to the
+// resulting version; the participant's OWN edits (optimistic, then settled by
+// nonce in a resync tail) never advance it — the author has read what they wrote.
+test("blipLastModifiedVersion advances on remote edits, not own edits", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const bob = mkPID("bob@example.com");
+  const srv = new SimServer(name);
+  const seed = srv.seed(alice, "X"); // alice creates blip "b" = "X"
+
+  const a = new CC(name, alice, synthVersion(0), "sessA");
+  assert.equal(a.onServerDelta(seed.ops, seed.resulting, ""), null);
+  // The seed is alice's own creation delta (no nonce here, so it counts as remote
+  // from her replica's view — but in practice her own deltas carry her nonce and
+  // settle without reaching the last-modified pass). What matters: a foreign edit
+  // sets it, her own optimistic edit does not.
+  const afterSeed = a.blipLastModifiedVersion("b");
+
+  // Alice's own optimistic edit must NOT advance her last-modified for "b".
+  const aOut = a.edit(insertCharOp(alice, 1, 1, "Y"))!; // "XY" optimistically
+  assert.equal(
+    a.blipLastModifiedVersion("b"),
+    afterSeed,
+    "own optimistic edit must not advance last-modified",
+  );
+  // Even once her own delta is acked, last-modified is unchanged (ack settles, no
+  // last-modified pass; the author has read her own write).
+  const aSub = srv.submit(aOut.delta, aOut.nonce);
+  assert.equal(a.onAck(aSub.resulting, aSub.ops.length), null);
+  assert.equal(
+    a.blipLastModifiedVersion("b"),
+    afterSeed,
+    "settling own delta must not advance last-modified",
+  );
+
+  // Bob edits "b" remotely; alice receives it (foreign nonce) and her last-modified
+  // for "b" advances to that delta's resulting version.
+  const bobDelta = newWaveletDelta(bob, aSub.resulting, [
+    blipContentOp(bob, "b", new DocOp([{ kind: "retain", count: 2 }, { kind: "characters", text: "Z" }])),
+  ]);
+  const bSub = srv.submit(bobDelta, "sessB.1");
+  assert.equal(a.onServerDelta(bSub.ops, bSub.resulting, "sessB.1"), null);
+  assert.equal(
+    a.blipLastModifiedVersion("b"),
+    bSub.resulting.version,
+    "remote edit advances last-modified to its resulting version",
+  );
+
+  // An unknown blip reports 0.
+  assert.equal(a.blipLastModifiedVersion("missing"), 0, "unknown blip last-modified is 0");
+
+  // A snapshot/resync reset clears last-modified (re-derived from post-snapshot deltas).
+  a.loadSnapshot(bSub.resulting, new Map([["b", srv.blipDoc("b")]]), [alice, bob]);
+  assert.equal(a.blipLastModifiedVersion("b"), 0, "loadSnapshot clears last-modified");
+});
+
 // undo reverts a local edit through the CC and redo re-applies it. Acks the edit
 // first so undo has no in-flight delta and produces a sendable delta.
 test("undo and redo a local blip edit through the CC", () => {

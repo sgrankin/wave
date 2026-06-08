@@ -33,6 +33,7 @@ import {
 import { invert } from "../wave/docop.ts";
 import { MANIFEST_ID, addParticipantOp, blipContentOp, removeParticipantOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
+import { fetchReadState, markBlipRead } from "../wave/api.ts";
 import { colorFor, contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
 import { avatar, participantChip } from "./participant.ts";
 import { PresenceClient } from "../wave/presence.ts";
@@ -76,6 +77,12 @@ export class WaveConversation extends LitElement {
   private presenceUnsub: (() => void) | null = null;
   private statusUnsub: (() => void) | null = null;
   private typingTimer: ReturnType<typeof setTimeout> | null = null;
+  // The signed-in participant's per-blip read versions (blipId → version read
+  // through), fetched once when the wave opens and advanced locally as blips are
+  // viewed. The authoritative side of the unread comparison is the client's
+  // per-blip last-modified version; a blip is unread when last-modified exceeds
+  // this. Absent ⇒ never read (version 0).
+  private blipReads = new Map<string, number>();
   // Our own presence state, the single source of truth for what we publish: which
   // blip we are focused on, whether we are typing, and our caret/selection offsets.
   // Kept here (not in the timer closures) so the typing-idle timer only flips the
@@ -237,6 +244,28 @@ export class WaveConversation extends LitElement {
     }
     this.applyConnStatus();
     this.rev++;
+    // Fetch the participant's per-blip read versions so the unread markers paint on
+    // load (a blip is unread until its read version catches up to its last-modified
+    // version). Best-effort: a failure just leaves everything looking read. Fetched
+    // ONCE per open (this element's lifetime): a mid-session resyncReset rebuilds the
+    // client's last-modified map from full history but does NOT re-fetch reads — that
+    // is intentional, since this session's locally-advanced reads (held in blipReads)
+    // already suppress unread for what was viewed, and re-fetching could only lose a
+    // mark whose POST had not yet landed.
+    void fetchReadState(this.wave)
+      .then((reads) => {
+        // Merge by max per blip rather than replace: a blip the participant viewed
+        // (mark-on-view) before this fetch resolved already advanced its local read
+        // version, and the server's older value must not undo that. Read versions
+        // only ever advance, so max is the correct reconciliation.
+        for (const [blipId, v] of reads) {
+          if (v > (this.blipReads.get(blipId) ?? 0)) this.blipReads.set(blipId, v);
+        }
+        this.rev++;
+      })
+      .catch(() => {
+        /* best-effort: no read markers rather than an error */
+      });
   }
 
   // applyConnStatus maps the client's live connection state to the status-bar text.
@@ -299,6 +328,14 @@ export class WaveConversation extends LitElement {
       remoteCaretsFor: (blipId) => this.remoteCaretsFor(blipId),
       blipAuthor: (blipId) => client.blipAuthor(blipId),
       blipContributors: (blipId) => client.blipContributors(blipId),
+      isBlipUnread: (blipId) => client.blipLastModifiedVersion(blipId) > (this.blipReads.get(blipId) ?? 0),
+      markBlipViewed: (blipId) => {
+        const lastMod = client.blipLastModifiedVersion(blipId);
+        if (lastMod <= (this.blipReads.get(blipId) ?? 0)) return; // already read
+        this.blipReads.set(blipId, lastMod); // clear locally now (no round-trip wait)
+        this.rev++; // drop the unread marker on the next render
+        void markBlipRead(this.wave, blipId, lastMod); // persist; best-effort
+      },
       continueThread: (threadId) => {
         void client.submitWith((blip) => {
           const manifest = blip(MANIFEST_ID);
@@ -393,12 +430,16 @@ export class WaveConversation extends LitElement {
 
     let body: TemplateResult;
     let sheet: TemplateResult = html``;
+    let unreadCount = 0;
     if (manifest === undefined || controller === null) {
       body = html`<p class="conv-empty">No conversation yet…</p>`;
     } else {
       try {
         const m = readManifest(manifest);
         body = html`<wave-thread .thread=${m.rootThread} .controller=${controller}></wave-thread>`;
+        // Count unread in-flow blips from the model (accurate this render; a DOM
+        // query would lag by a frame since this template isn't committed yet).
+        unreadCount = countUnreadInThread(m.rootThread, controller);
         // Inline comments are not rendered in flow; when one is open, show it in the
         // sheet. Resolve the thread by id from the live manifest each render, so a new
         // reply (or the just-created thread settling in) appears without reopening.
@@ -427,8 +468,46 @@ export class WaveConversation extends LitElement {
       ${this._renderPresence()}
       ${body}
       ${sheet}
+      ${this._renderUnreadNav(unreadCount)}
     `;
   }
+
+  // _renderUnreadNav shows a floating "jump to next unread" pill when in-flow blips
+  // have unseen remote changes, with the count. Tapping it scrolls the next unread
+  // blip below the fold into view (wrapping to the first) — which, being viewed,
+  // then clears via mark-on-view. Inline-comment blips (rendered in the sheet, not
+  // in flow) are out of scope for this nav. The count is computed from the model in
+  // render() (accurate this frame); the jump reads the committed DOM on click.
+  private _renderUnreadNav(n: number): TemplateResult {
+    if (n === 0) return html``;
+    return html`<button
+      class="unread-nav"
+      title="Jump to the next unread message"
+      @click=${this.onJumpUnread}
+    >
+      ↓ ${n} unread
+    </button>`;
+  }
+
+  // inFlowUnread returns the unread blip elements in document order, excluding any
+  // inside the comment sheet (those are navigated by opening their thread, not by
+  // this scroll affordance).
+  private inFlowUnread(): HTMLElement[] {
+    return Array.from(this.querySelectorAll<HTMLElement>(".wave-blip.unread")).filter(
+      (el) => el.closest("comment-sheet") === null,
+    );
+  }
+
+  // onJumpUnread scrolls the next unread in-flow blip into view: the first one whose
+  // top is below a small margin from the viewport top (i.e. not already at the top),
+  // wrapping to the first unread when all are already above. Centering it brings it
+  // fully on screen so mark-on-view can then clear it.
+  private onJumpUnread = (): void => {
+    const els = this.inFlowUnread();
+    if (els.length === 0) return;
+    const next = els.find((el) => el.getBoundingClientRect().top > 80) ?? els[0]!;
+    next.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
 
   // _renderPresence shows the transient awareness line: an avatar per online peer
   // (dimmed unless typing) and a "… is typing" note. Best-effort — empty when no
@@ -547,6 +626,22 @@ function findThread(thread: Thread, id: string): Thread | null {
   return null;
 }
 
+// countUnreadInThread counts the in-flow unread blips reachable from a thread: each
+// non-deleted blip the controller reports unread, recursing into its NON-inline
+// reply threads only (inline-comment threads render in the sheet, not in flow, and
+// are reached by opening them — out of scope for the scroll nav). Mirrors what
+// <wave-blip> renders, so the count matches the .wave-blip.unread elements on screen.
+function countUnreadInThread(thread: Thread, controller: ConvController): number {
+  let n = 0;
+  for (const b of thread.blips) {
+    if (!b.deleted && (controller.isBlipUnread?.(b.id) ?? false)) n++;
+    for (const t of b.threads) {
+      if (!t.inline) n += countUnreadInThread(t, controller);
+    }
+  }
+  return n;
+}
+
 // connBarClass picks the status-bar style: red for failure/offline states, amber for
 // transient connecting/reconnecting, none (muted grey) for the steady "connected".
 function connBarClass(status: string): string {
@@ -635,6 +730,48 @@ const STYLES = html`
     }
     wave-conversation .wave-blip {
       margin: 6px 0;
+    }
+    /* Unread: a blip with remote changes the participant hasn't viewed yet. A blue
+       left accent on the card + a dot in the byline; cleared after a short dwell in
+       view (mark-on-view). Kept subtle so it reads as "new" without shouting. */
+    wave-conversation .wave-blip.unread blip-view {
+      border-left: 3px solid #4060c0;
+      background: #f7f9ff;
+    }
+    wave-conversation .blip-byline .unread-dot {
+      color: #4060c0;
+      font-size: 10px;
+      line-height: 1;
+    }
+    /* Floating "jump to next unread" pill, bottom-right. Fixed so it stays reachable
+       while scrolling a long conversation; only rendered when something is unread. */
+    wave-conversation .unread-nav {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 30;
+      font: 12px system-ui, sans-serif;
+      font-weight: 600;
+      color: #fff;
+      background: #4060c0;
+      border: none;
+      border-radius: 16px;
+      padding: 8px 14px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      cursor: pointer;
+    }
+    wave-conversation .unread-nav:hover {
+      background: #34509f;
+    }
+    wave-conversation .unread-nav:focus-visible {
+      outline: 2px solid #fff;
+      outline-offset: -4px;
+    }
+    @media (pointer: coarse) {
+      wave-conversation .unread-nav {
+        padding: 11px 16px;
+        font-size: 13px;
+      }
     }
     /* Author byline above each blip: who wrote it (avatar + name). */
     wave-conversation .blip-byline {

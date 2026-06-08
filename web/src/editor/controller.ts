@@ -76,6 +76,15 @@ export interface ConvController {
   blipAuthor?(blipId: string): Participant | undefined;
   // Every participant who has authored an op on a blip (author first). Optional.
   blipContributors?(blipId: string): Participant[];
+  // Whether a blip is unread for the signed-in participant: it was last modified by
+  // a REMOTE edit at a version past the participant's stored read version for it.
+  // Drives the unread marker. Optional — a fake/headless controller may omit it
+  // (then nothing is ever unread).
+  isBlipUnread?(blipId: string): boolean;
+  // Mark a blip read up to its current last-modified version (clearing its unread
+  // marker), called when the participant has viewed it (a dwell after it scrolls
+  // into view). A no-op if the blip is already read. Optional.
+  markBlipViewed?(blipId: string): void;
 }
 
 // blipContentOp wraps a content DocOp as a wavelet blip operation authored by

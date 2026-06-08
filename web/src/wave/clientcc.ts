@@ -101,6 +101,13 @@ export class CC {
   // blip contents. Cleared on a snapshot/resync reset (the history is then stale).
   private undoMgrs = new Map<string, UndoManager>();
 
+  // Per-blip last-modified server version, set from REMOTE deltas (others' edits)
+  // as the version they were confirmed at. It is the authoritative side of the
+  // per-blip unread comparison (blip is unread when this exceeds the participant's
+  // read version for it). A participant's OWN optimistic edits do not set it (the
+  // author has implicitly read what they wrote); a later remote edit advances it.
+  private blipLastModified = new Map<string, number>();
+
   // New creates a client state machine for wavelet name authored by author,
   // starting from the given confirmed version (e.g. version zero for a fresh
   // open; the snapshot/history version for a resync). sessionId is a per-session
@@ -126,6 +133,7 @@ export class CC {
     this.parts = new Set(parts);
     this.blipMeta = new Map(); // a snapshot carries content, not per-blip authorship
     this.undoMgrs.clear(); // undo history does not survive a reset (it targets old state)
+    this.blipLastModified.clear(); // last-modified is re-derived from post-snapshot remote deltas
   }
 
   // serverVersion returns the latest confirmed server version (what a fresh idle
@@ -156,6 +164,15 @@ export class CC {
   blipContributors(blipId: string): Participant[] {
     const m = this.blipMeta.get(blipId);
     return m === undefined ? [] : [...m.contributors];
+  }
+
+  // blipLastModifiedVersion returns the server version at which the blip was last
+  // modified by a REMOTE edit, or 0 if it has had none (created locally, only ever
+  // self-edited, or seeded from a snapshot). It is the authoritative side of the
+  // per-blip unread comparison: the blip is unread for this participant when this
+  // exceeds their stored read version for it.
+  blipLastModifiedVersion(blipId: string): number {
+    return this.blipLastModified.get(blipId) ?? 0;
   }
 
   // inflightActive reports whether a delta is currently in flight (submitted,
@@ -276,10 +293,14 @@ export class CC {
     this.apply(d);
     // Remote edits on a blip are non-undoable: feed them so a later undo of a
     // local edit transforms past them. (Our own deltas are recognized by nonce and
-    // settled above without reaching here, so d is purely others' ops.)
+    // settled above without reaching here, so d is purely others' ops.) The same
+    // pass advances the blip's authoritative last-modified version to this delta's
+    // resulting version: a remote edit makes the blip unread for this participant
+    // until they read it (own optimistic edits, settled above, never reach here).
     for (const o of d) {
       if (o.kind === "blip") {
         this.undoFor(o.blipId).nonUndoableOp(o.op.contentOp);
+        this.blipLastModified.set(o.blipId, resulting.version);
       }
     }
     this.recv = resulting;

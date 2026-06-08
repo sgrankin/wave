@@ -308,6 +308,16 @@ export class OptimisticClient {
     return this.cc.blipContributors(blipId);
   }
 
+  /**
+   * Return the server version at which a blip was last modified by a REMOTE edit
+   * (another participant's), or 0 if none — the authoritative side of the per-blip
+   * unread comparison. The caller compares it against the participant's stored
+   * read version for the blip (from /api/read).
+   */
+  blipLastModifiedVersion(blipId: string): number {
+    return this.cc.blipLastModifiedVersion(blipId);
+  }
+
   /** Return the optimistic participant set as an array (unordered). */
   participants(): Participant[] {
     return this.cc.participants();
