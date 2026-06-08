@@ -617,6 +617,59 @@ const STYLES = html`
     wave-conversation .blip-actions {
       margin: 2px 0 0;
     }
+    /* Inline-comment overview: a scannable strip of collapsed pills under the blip, so
+       comments are visible (not hidden behind the in-text 💬). Tap a pill → its sheet. */
+    wave-conversation .comment-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 6px 0 2px;
+    }
+    wave-conversation .comment-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: 100%;
+      font: 12px system-ui, sans-serif;
+      color: #3949ab;
+      background: #eef1fb;
+      border: 1px solid #d6ddf5;
+      border-radius: 13px;
+      padding: 3px 9px;
+      cursor: pointer;
+    }
+    wave-conversation .comment-pill:hover {
+      background: #e2e8fb;
+    }
+    wave-conversation .comment-pill:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
+    }
+    wave-conversation .comment-pill .cp-glyph {
+      font-size: 0.85em;
+      opacity: 0.7;
+    }
+    wave-conversation .comment-pill .cp-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 22em;
+    }
+    wave-conversation .comment-pill .cp-count {
+      font-size: 11px;
+      font-weight: 600;
+      background: #4060c0;
+      color: #fff;
+      border-radius: 9px;
+      padding: 0 6px;
+      line-height: 1.5;
+    }
+    @media (pointer: coarse) {
+      wave-conversation .comment-pill {
+        padding: 7px 12px;
+        font-size: 13px;
+      }
+    }
     wave-conversation .reply-btn,
     wave-conversation .reply-inline-btn,
     wave-conversation .attach-btn,

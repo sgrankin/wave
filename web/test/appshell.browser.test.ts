@@ -318,6 +318,35 @@ test("an inline reply anchors a marker in the parent text and keeps it editable"
   assert.equal(markers, 1, "anchor marker intact after editing the parent");
 });
 
+test("inline comments appear as pills under the blip and reopen the sheet", async () => {
+  const page = await openApp("frank@example.com");
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  const blip = page.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("Some text to comment on", { delay: 5 });
+
+  // Create an inline comment, type into the sheet, and close it.
+  await page.locator(".reply-inline-btn").first().click();
+  await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator("comment-sheet .blip-doc").last().pressSequentially("my note", { delay: 5 });
+  await page.locator("comment-sheet .cs-done").click();
+  await page.locator("comment-sheet .cs-panel").waitFor({ state: "detached", timeout: 10_000 });
+
+  // The comment is now visible as a pill under the blip (not hidden behind the anchor).
+  const pill = page.locator(".comment-pill").first();
+  await pill.waitFor({ state: "visible", timeout: 10_000 });
+  await page.waitForFunction(
+    () => (document.querySelector(".comment-pill")?.textContent ?? "").includes("my note"),
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Tapping the pill reopens that thread's sheet.
+  await pill.click();
+  await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 10_000 });
+});
+
 test("attaching an image uploads it and renders an inline img from the server", async () => {
   const page = await openApp("erin@example.com");
   await page.locator(".wl-new").click();

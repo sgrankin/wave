@@ -12,10 +12,14 @@ import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
 
 import type { Component } from "../wave/types.ts";
-import type { Blip } from "../wave/conversation.ts";
+import type { Blip, Thread } from "../wave/conversation.ts";
 import type { ConvController } from "./controller.ts";
+import { paragraphText, project } from "./blipdoc.ts";
 import "./blip-view.ts";
 import "./wave-thread.ts";
+
+// PILL_SNIPPET_MAX: characters of a comment shown on its collapsed pill.
+const PILL_SNIPPET_MAX = 48;
 
 export class WaveBlip extends LitElement {
   static override properties = {
@@ -139,6 +143,7 @@ export class WaveBlip extends LitElement {
             @change=${this.onAttachFile}
           />
         </div>
+        ${this.renderCommentPills()}
         ${this.blip.threads
           .filter((t) => !t.inline)
           .map(
@@ -152,6 +157,55 @@ export class WaveBlip extends LitElement {
       </div>
     `;
   }
+
+  // renderCommentPills shows the blip's inline comments as a compact, scannable strip
+  // of collapsed pills (snippet + reply count) — so comments are VISIBLE, not hidden
+  // behind the in-text 💬 anchor. Tapping a pill (or the anchor) opens that thread in
+  // the comment sheet. Orphaned comments (their anchor text deleted) still appear here.
+  private renderCommentPills(): TemplateResult {
+    const inline = this.blip.threads.filter((t) => t.inline);
+    if (inline.length === 0) return html``;
+    return html`<div class="comment-pills">
+      ${inline.map((t) => {
+        const snippet = this.threadSnippet(t);
+        const count = t.blips.length;
+        return html`<button
+          class="comment-pill"
+          title=${snippet === "" ? "Comment" : snippet}
+          @click=${() => this.openComment(t.id)}
+        >
+          <span class="cp-glyph" aria-hidden="true">💬</span>
+          <span class="cp-text">${snippet === "" ? "Comment" : truncate(snippet, PILL_SNIPPET_MAX)}</span>
+          ${count > 1 ? html`<span class="cp-count">${count}</span>` : ""}
+        </button>`;
+      })}
+    </div>`;
+  }
+
+  // threadSnippet is the plain text of a comment thread's first blip, for its pill.
+  private threadSnippet(t: Thread): string {
+    const first = t.blips[0];
+    if (first === undefined) return "";
+    const proj = project(this.controller.blipContent(first.id));
+    return proj.paragraphs.map(paragraphText).join(" ").trim();
+  }
+
+  // openComment opens a thread's comment sheet (same path as tapping its 💬 anchor).
+  private openComment(id: string): void {
+    this.dispatchEvent(
+      new CustomEvent<{ id: string; focus: boolean }>("anchor-activate", {
+        detail: { id, focus: false },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+}
+
+// truncate shortens s to max runes, appending an ellipsis when cut.
+function truncate(s: string, max: number): string {
+  const runes = [...s];
+  return runes.length <= max ? s : runes.slice(0, max).join("") + "…";
 }
 
 customElements.define("wave-blip", WaveBlip);
