@@ -39,7 +39,7 @@ export class WaveBlip extends LitElement {
     this.controller.editBlip(this.blip.id, ops);
   };
 
-  // onCaret relays this blip's local caret/selection (the view reports rune offsets;
+  // onCaret relays this blip's local caret/selection (the view reports doc-item offsets;
   // we tag them with this blip's id) to the controller, which publishes it on the
   // presence channel so peers can render it.
   private onCaret = (e: Event): void => {
@@ -52,8 +52,8 @@ export class WaveBlip extends LitElement {
     this.controller.replyToBlip(this.blip.id, false);
   };
 
-  // onReplyInline anchors a reply within the parent blip's text, at the line the
-  // caret is in (or the end of the blip if the caret is elsewhere).
+  // onReplyInline anchors a reply within the parent blip's text, at the exact caret
+  // offset (or the end of the blip if the caret is elsewhere).
   private onReplyInline = (): void => {
     this.commentInline();
   };

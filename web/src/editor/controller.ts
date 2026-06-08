@@ -19,9 +19,10 @@ export const MANIFEST_ID = "conversation";
 // <wave-conversation> bootstrap notes.
 export const ROOT_BLIP_ID = "b+root";
 
-// RemoteCaret is one peer's caret/selection within a blip, ready to render: rune
-// offsets plus presentation (the peer's avatar color + display name). anchor==focus
-// (or anchor<0) is a collapsed caret; anchor!=focus is a selection range.
+// RemoteCaret is one peer's caret/selection within a blip, ready to render: doc-item
+// offsets (text runes + 2 per inline widget — the same basis as domToOffset/offsetToDom;
+// all peers must agree) plus presentation (the peer's avatar color + display name).
+// anchor==focus (or anchor<0) is a collapsed caret; anchor!=focus is a selection range.
 export interface RemoteCaret {
   participant: string;
   anchor: number;
@@ -56,7 +57,7 @@ export interface ConvController {
   // Upload file as an attachment and insert an inline <image> referencing it into
   // blipId at the given doc offset (the caret offset). Best-effort (no-op on failure).
   attachImage(blipId: string, file: File, offset: number): void;
-  // Publish our caret/selection (rune offsets) in blipId to the presence channel so
+  // Publish our caret/selection (doc-item offsets) in blipId to the presence channel so
   // peers can render it. Optional — a fake/headless controller may omit it.
   setCaret?(blipId: string, anchor: number, focus: number): void;
   // The peers currently caretted in blipId, ready to render as remote carets.

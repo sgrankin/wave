@@ -265,10 +265,10 @@ export interface ImageRef {
 }
 
 // insertImage returns the operation inserting an inline image element
-// <image attachment="attachmentID"/> into a blip body at the given document offset
-// (the editor uses a line boundary so it does not shift an intra-paragraph caret,
-// like insertReplyAnchor). Compose it onto the parent blip's content. (Port of
-// conv.InsertImage.)
+// <image attachment="attachmentID"/> into a blip body at the given exact document
+// offset (a mid-text caret position); the editor's caret mapping counts the 2-item
+// element so a mid-text image stays caret-exact, like insertReplyAnchor. Compose it
+// onto the parent blip's content. (Port of conv.InsertImage.)
 export function insertImage(body: DocOp, attachmentID: string, offset: number): DocOp {
   const n = body.documentLength();
   if (offset < 0 || offset > n) {

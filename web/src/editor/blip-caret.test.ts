@@ -243,6 +243,23 @@ export async function testInlineWidgetOffsetRoundTrip(t: T): Promise<void> {
   if (interior !== null) eq(m.domToOffset(interior.node, interior.offset), 5, "interior clamps to before the widget");
 }
 
+// A caret parked anywhere "inside" an atomic widget (on the widget span, or on its
+// <img> descendant) resolves to the SAME offset — before the widget — never into it.
+export async function testCaretInsideWidgetIsAtomic(t: T): Promise<void> {
+  const el = await renderBlip(bodyWithMidTextWidgets());
+  const m = mapping(el);
+  const para = paras(el)[0]!;
+  const imgSpan = para.querySelector<HTMLElement>(".wave-image");
+  const img = imgSpan?.querySelector<HTMLElement>("img");
+  if (imgSpan === null || imgSpan === undefined || img === null || img === undefined) {
+    throw new Error("no inline image widget rendered");
+  }
+  // The image is at doc offset 9 (its elementStart). Every in-widget caret → 9 (before).
+  eq(m.domToOffset(imgSpan, 0), 9, "caret on the widget span @0 → before the widget (9)");
+  eq(m.domToOffset(imgSpan, 1), 9, "caret on the widget span @1 → still before (atomic, not after)");
+  eq(m.domToOffset(img, 0), 9, "caret on the <img> descendant → before the widget (9)");
+}
+
 // Typing immediately before a mid-text widget inserts at the widget's elementStart;
 // immediately after inserts past its 2 items — NOT snapped to the line end.
 export async function testTypingAroundMidTextWidget(t: T): Promise<void> {

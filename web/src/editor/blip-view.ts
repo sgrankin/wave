@@ -52,7 +52,7 @@ export class BlipView extends LitElement {
   declare content: DocOp;
   // The signed-in participant's address, so @mentions of them render emphasized.
   declare selfAddress: string;
-  // Other participants' carets/selections in THIS blip (rune offsets + color/name),
+  // Other participants' carets/selections in THIS blip (doc-item offsets + color/name),
   // rendered as colored bars/highlights over the text. Set by the parent from the
   // presence channel; empty when nobody else is focused here.
   declare remoteCarets: readonly RemoteCaret[];
@@ -223,6 +223,9 @@ export class BlipView extends LitElement {
     this.emit(ops, caretAfter);
   }
 
+  // Alias of tryEdit (which already swallows a throwing builder), named at the
+  // forward-delete call site to signal that a range over a widget is EXPECTED to throw
+  // (textBetween rejects element items) → no-op, not a bug.
   private tryEditAllowFail = this.tryEdit;
 
   // --- toolbar commands ---
@@ -327,9 +330,11 @@ export class BlipView extends LitElement {
     if (this.hasFocus) this.reportCaret();
   };
 
-  // reportCaret publishes the local caret/selection (rune offsets within this blip)
-  // to the parent via a "caret" event; <wave-conversation> relays it on the presence
-  // channel so peers can render it. No-op when the selection is not in this editor.
+  // reportCaret publishes the local caret/selection (doc-item offsets within this blip —
+  // text runes plus 2 per inline widget, the SAME basis as domToOffset/offsetToDom) to
+  // the parent via a "caret" event; <wave-conversation> relays it on the presence channel
+  // so peers can render it. All peers must use this item basis. No-op when the selection
+  // is not in this editor.
   private reportCaret(): void {
     const sel = window.getSelection();
     if (sel === null || sel.rangeCount === 0 || !this.contains(sel.anchorNode)) return;
@@ -441,7 +446,7 @@ export class BlipView extends LitElement {
     const paras = Array.from(root.querySelectorAll<HTMLElement>(".para"));
     if (paras.length === 0) return null;
 
-    let idx = this.proj.paragraphs.length - 1;
+    let idx = -1;
     let itemOff = 0;
     for (let i = 0; i < this.proj.paragraphs.length; i++) {
       const p = this.proj.paragraphs[i]!;
@@ -450,6 +455,14 @@ export class BlipView extends LitElement {
         itemOff = Math.max(0, offset - p.textStart); // a doc-ITEM offset within the paragraph
         break;
       }
+    }
+    if (idx === -1) {
+      // offset is past every paragraph (the end-of-doc gap between the last paragraphEnd
+      // and proj.length, e.g. a remote focus clamped to proj.length): map to the END of
+      // the last paragraph, not its start.
+      idx = this.proj.paragraphs.length - 1;
+      const last = this.proj.paragraphs[idx];
+      itemOff = last === undefined ? 0 : last.paragraphEnd - last.textStart;
     }
     const paraEl = paras[Math.min(idx, paras.length - 1)];
     if (paraEl === undefined) return null;
@@ -941,9 +954,10 @@ function docItemsBefore(para: HTMLElement, node: Node, domOffset: number): numbe
       if (n.nodeType === Node.TEXT_NODE) {
         items += runeCount((n.textContent ?? "").slice(0, domOffset));
       } else if (isWidget(n)) {
-        // Caret on the widget element itself: domOffset 0 ⇒ before it (add nothing);
-        // >0 ⇒ after it (add its items).
-        if (domOffset > 0) items += docItemCount(n);
+        // Caret on the widget element itself: atomic → resolve to BEFORE the widget (add
+        // nothing), the same rule as a caret parked on a descendant of the widget below.
+        // A real "after the widget" caret lands on .para at the widget's childIndex+1
+        // (counted via countBeforeChildIndex), not here.
       } else {
         countBeforeChildIndex(n, domOffset);
       }

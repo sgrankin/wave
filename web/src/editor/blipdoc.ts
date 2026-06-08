@@ -244,7 +244,13 @@ function sameStyles(a: Readonly<Record<string, string>>, b: Readonly<Record<stri
 
 // --- caret mapping ---
 
-/** caretToOffset maps a paragraph index + in-paragraph rune offset to a doc offset. */
+/**
+ * caretToOffset maps a paragraph index + in-paragraph rune offset to a doc offset.
+ * TEXT-ONLY: it ignores inline widgets (it clamps to textLength), so it must NOT be
+ * used for caret mapping in paragraphs that can contain reply/image elements — the DOM
+ * walk (domToOffset/docItemsBefore) is the item-aware mapping. Retained for the blipdoc
+ * unit tests (no production callers).
+ */
 export function caretToOffset(proj: BlipProjection, para: number, textOffset: number): number {
   const p = proj.paragraphs[para];
   if (p === undefined) return proj.length;
