@@ -113,6 +113,14 @@ func (m *WaveMap) Count() int {
 // replaying its delta log) on first access and caching it. Repeated calls for
 // the same name return the same container.
 //
+// RETENTION INVARIANT (load-bearing when WithEviction is set): a caller that may
+// submit to a container must either hold a live Subscription (Open/Subscribe pins
+// it against eviction) or re-resolve via Container() before each operation. A
+// container retained without a subscription past idleTTL can be evicted and
+// reloaded as a fresh instance elsewhere, so submitting through the stale
+// reference would split-brain the wavelet. Every current caller opens (subscribes)
+// or uses the container synchronously within one request, so the invariant holds.
+//
 // NOTE: the map lock is held across Load (storage read + replay), so a slow
 // first-load of one wavelet serializes opens of all others. Fine at
 // single-machine scale; revisit with a per-key load lock (singleflight) if
