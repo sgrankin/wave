@@ -35,6 +35,29 @@ function selectFirstPara(page: Page, start: number, end: number): Promise<void> 
   );
 }
 
+test("Highlight applies a background color to the selection", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-hl");
+  try {
+    await typeInto(page, 0, "highlight me");
+    await selectFirstPara(page, 0, 9); // select "highlight"
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+
+    await page.locator('.sel-toolbar button[data-cmd="highlight"]').click();
+
+    await page.waitForFunction(
+      () => document.querySelector('.blip-doc .para span[style*="background-color"]') !== null,
+      undefined,
+      { timeout: 5000 },
+    );
+    const highlighted = await page.evaluate(
+      () => document.querySelector('.blip-doc .para span[style*="background-color"]')?.textContent ?? "",
+    );
+    assert.equal(highlighted, "highlight", "the selected text was highlighted");
+  } finally {
+    await page.close();
+  }
+});
+
 test("selecting text shows the toolbar; Bold formats the selection", async () => {
   const page = await client("alice@example.com", "w+seltoolbar-bold");
   try {

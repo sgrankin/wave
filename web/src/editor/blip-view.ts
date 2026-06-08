@@ -40,6 +40,11 @@ interface SavedSelection {
   focus: number;
 }
 
+// HIGHLIGHT_COLOR is the single highlighter color the toolbar toggles (a soft
+// yellow). Modeled as a style/backgroundColor annotation, which spanStyle already
+// renders, so the toggle reuses the bold/italic machinery.
+const HIGHLIGHT_COLOR = "#fff3a0";
+
 export class BlipView extends LitElement {
   static override properties = {
     content: { attribute: false },
@@ -351,6 +356,9 @@ export class BlipView extends LitElement {
       case "strike":
         this.toolbarToggleStyle("strikethrough", "true");
         break;
+      case "highlight":
+        this.toolbarToggleStyle("backgroundColor", HIGHLIGHT_COLOR);
+        break;
       case "h1":
         this.toolbarSetLineType("h1");
         break;
@@ -372,12 +380,20 @@ export class BlipView extends LitElement {
   // commandStates reports which formatting commands are active for the current
   // selection, so the floating toolbar can show pressed buttons. Reads live from
   // the selection + model (the same queries the toolbar button states used).
-  commandStates(): { bold: boolean; italic: boolean; underline: boolean; strike: boolean; lineType: string | null } {
+  commandStates(): {
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    strike: boolean;
+    highlight: boolean;
+    lineType: string | null;
+  } {
     return {
       bold: this.activeCharStyle("fontWeight") === "bold",
       italic: this.activeCharStyle("fontStyle") === "italic",
       underline: this.activeCharStyle("underline") === "true",
       strike: this.activeCharStyle("strikethrough") === "true",
+      highlight: this.activeCharStyle("backgroundColor") === HIGHLIGHT_COLOR,
       lineType: this.caretLineType(),
     };
   }
