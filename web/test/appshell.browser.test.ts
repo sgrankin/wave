@@ -347,6 +347,22 @@ test("inline comments appear as pills under the blip and reopen the sheet", asyn
   await page.locator("comment-sheet .cs-panel").waitFor({ state: "visible", timeout: 10_000 });
 });
 
+test("a blip shows its author in a byline", async () => {
+  const page = await openApp("ivy@example.com");
+  await page.locator(".wl-new").click();
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  const blip = page.locator(".blip-doc").first();
+  await blip.click();
+  await blip.pressSequentially("authored by me", { delay: 5 });
+  // The byline names the author (the seeded root blip's creator = the opener). No display
+  // name is set, so it shows the dev address.
+  await page.waitForFunction(
+    () => (document.querySelector(".blip-byline")?.textContent ?? "").includes("ivy@example.com"),
+    undefined,
+    { timeout: 10_000 },
+  );
+});
+
 test("attaching an image uploads it and renders an inline img from the server", async () => {
   const page = await openApp("erin@example.com");
   await page.locator(".wl-new").click();

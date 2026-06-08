@@ -269,6 +269,8 @@ export class WaveConversation extends LitElement {
       },
       setCaret: (blipId, anchor, focus) => this.setCaret(blipId, anchor, focus),
       remoteCaretsFor: (blipId) => this.remoteCaretsFor(blipId),
+      blipAuthor: (blipId) => client.blipAuthor(blipId),
+      blipContributors: (blipId) => client.blipContributors(blipId),
       continueThread: (threadId) => {
         void client.submitWith((blip) => {
           const manifest = blip(MANIFEST_ID);
@@ -606,6 +608,23 @@ const STYLES = html`
     wave-conversation .wave-blip {
       margin: 6px 0;
     }
+    /* Author byline above each blip: who wrote it (avatar + name). */
+    wave-conversation .blip-byline {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 3px 2px;
+      font: 12px system-ui, sans-serif;
+      color: #555;
+    }
+    wave-conversation .blip-byline .byline-name {
+      font-weight: 600;
+      color: #444;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 60%;
+    }
     wave-conversation blip-view {
       display: block;
       position: relative; /* containing block for the remote-caret overlay */
@@ -646,8 +665,9 @@ const STYLES = html`
       outline-offset: 1px;
     }
     wave-conversation .comment-pill .cp-glyph {
+      display: inline-flex;
+      align-items: center;
       font-size: 0.85em;
-      opacity: 0.7;
     }
     wave-conversation .comment-pill .cp-text {
       overflow: hidden;

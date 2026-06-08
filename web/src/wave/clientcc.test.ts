@@ -520,3 +520,22 @@ function runConvergence(seed: number, steps: number): void {
     assert.equal(n.cc.serverVersion().compare(head), 0, `client ${i} not at server head (seed ${seed})`);
   }
 }
+
+// --- authorship tracking (the byline / pill-avatar source) ---
+
+test("CC tracks blip authorship: author = first op's creator; contributors accumulate", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const bob = mkPID("bob@example.com");
+  const c = new CC(name, alice, synthVersion(0), "sessAuth");
+
+  // Alice creates blip "b" (its FIRST op → she is the author).
+  assert.equal(c.onServerDelta([blipContentOp(alice, "b", docInsert("hello"))], synthVersion(1), ""), null);
+  // Bob then edits it (a contributor, not the author).
+  assert.equal(c.onServerDelta(insertCharOp(bob, 5, 5, "\!"), synthVersion(2), ""), null);
+
+  assert.equal(c.blipAuthor("b"), alice, "author is the creator of the blip's first op");
+  assert.deepEqual(c.blipContributors("b"), [alice, bob], "contributors in first-seen order (author first)");
+  assert.equal(c.blipAuthor("missing"), undefined, "unknown blip has no author");
+  assert.deepEqual(c.blipContributors("missing"), [], "unknown blip has no contributors");
+});

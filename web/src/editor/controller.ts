@@ -63,6 +63,11 @@ export interface ConvController {
   // The peers currently caretted in blipId, ready to render as remote carets.
   // Optional — returns [] (or is absent) when presence is unavailable.
   remoteCaretsFor?(blipId: string): RemoteCaret[];
+  // The participant who authored a blip (its creator), or undefined if unknown.
+  // Optional — a fake/headless controller may omit it.
+  blipAuthor?(blipId: string): Participant | undefined;
+  // Every participant who has authored an op on a blip (author first). Optional.
+  blipContributors?(blipId: string): Participant[];
 }
 
 // blipContentOp wraps a content DocOp as a wavelet blip operation authored by

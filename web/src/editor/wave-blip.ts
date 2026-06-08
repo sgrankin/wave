@@ -15,6 +15,8 @@ import type { Component } from "../wave/types.ts";
 import type { Blip, Thread } from "../wave/conversation.ts";
 import type { ConvController } from "./controller.ts";
 import { paragraphText, project } from "./blipdoc.ts";
+import { avatar } from "./participant.ts";
+import { displayNameFor, profiles } from "../wave/profiles.ts";
 import "./blip-view.ts";
 import "./wave-thread.ts";
 
@@ -109,6 +111,7 @@ export class WaveBlip extends LitElement {
     const content = this.controller.blipContent(this.blip.id);
     return html`
       <div class="wave-blip">
+        ${this.renderByline()}
         <blip-view
           .content=${content}
           .selfAddress=${this.controller.user}
@@ -158,6 +161,18 @@ export class WaveBlip extends LitElement {
     `;
   }
 
+  // renderByline shows who wrote this blip: a small avatar + display name above the
+  // content. Empty when the author is unknown (e.g. a snapshot open).
+  private renderByline(): TemplateResult {
+    const author = this.controller.blipAuthor?.(this.blip.id);
+    if (author === undefined || author === "") return html``;
+    profiles.ensure([author]);
+    const profile = profiles.get(author);
+    return html`<div class="blip-byline" title=${author}>
+      ${avatar(author, profile, 18)}<span class="byline-name">${displayNameFor(author, profile)}</span>
+    </div>`;
+  }
+
   // renderCommentPills shows the blip's inline comments as a compact, scannable strip
   // of collapsed pills (snippet + reply count) — so comments are VISIBLE, not hidden
   // behind the in-text 💬 anchor. Tapping a pill (or the anchor) opens that thread in
@@ -169,12 +184,17 @@ export class WaveBlip extends LitElement {
       ${inline.map((t) => {
         const snippet = this.threadSnippet(t);
         const count = t.blips.length;
+        const first = t.blips[0];
+        const author = first !== undefined ? this.controller.blipAuthor?.(first.id) : undefined;
+        if (author !== undefined && author !== "") profiles.ensure([author]);
         return html`<button
           class="comment-pill"
           title=${snippet === "" ? "Comment" : snippet}
           @click=${() => this.openComment(t.id)}
         >
-          <span class="cp-glyph" aria-hidden="true">💬</span>
+          <span class="cp-glyph" aria-hidden="true"
+            >${author !== undefined && author !== "" ? avatar(author, profiles.get(author), 16) : "💬"}</span
+          >
           <span class="cp-text">${snippet === "" ? "Comment" : truncate(snippet, PILL_SNIPPET_MAX)}</span>
           ${count > 1 ? html`<span class="cp-count">${count}</span>` : ""}
         </button>`;

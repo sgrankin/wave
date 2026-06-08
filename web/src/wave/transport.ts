@@ -270,6 +270,16 @@ export class OptimisticClient {
     return this.cc.blipIds();
   }
 
+  /** Return the participant who created a blip (its author), or undefined if unknown. */
+  blipAuthor(blipId: string): Participant | undefined {
+    return this.cc.blipAuthor(blipId);
+  }
+
+  /** Return every participant who has authored an op on a blip (author first). */
+  blipContributors(blipId: string): Participant[] {
+    return this.cc.blipContributors(blipId);
+  }
+
   /** Return the optimistic participant set as an array (unordered). */
   participants(): Participant[] {
     return this.cc.participants();

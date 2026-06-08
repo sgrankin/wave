@@ -84,11 +84,15 @@ export class CC {
   private inflight: Pending | null = null; // the one delta awaiting ack, or null
   private queue: Operation[] = []; // local ops not yet sent, kept transformed onto recv (after inflight)
 
-  // optimistic replica: blip contents (kept as composed DocOps) and the
-  // participant set. Enough to read back the document; metadata (contributors,
-  // per-blip versions) is not tracked here.
+  // optimistic replica: blip contents (kept as composed DocOps) and the participant
+  // set. Enough to read back the document.
   private blips = new Map<string, DocOp>();
   private parts = new Set<Participant>();
+  // Per-blip authorship, derived from the creator of each blip op applied: author is
+  // the creator of the FIRST op for a blip (its creation); contributors accumulate
+  // every creator. Recoverable because opens replay history in order (the creation op
+  // is always seen first); a snapshot open would not carry it (reset in loadSnapshot).
+  private blipMeta = new Map<string, { author: Participant; contributors: Set<Participant> }>();
 
   // New creates a client state machine for wavelet name authored by author,
   // starting from the given confirmed version (e.g. version zero for a fresh
@@ -113,6 +117,7 @@ export class CC {
     this.queue = [];
     this.blips = new Map(blips);
     this.parts = new Set(parts);
+    this.blipMeta = new Map(); // a snapshot carries content, not per-blip authorship
   }
 
   // serverVersion returns the latest confirmed server version (what a fresh idle
@@ -129,6 +134,20 @@ export class CC {
   // blip returns the optimistic content of a blip, or undefined if absent.
   blip(blipId: string): DocOp | undefined {
     return this.blips.get(blipId);
+  }
+
+  // blipAuthor returns the participant who created a blip (the creator of its first
+  // op), or undefined if unknown (absent blip, or a snapshot open that carried no
+  // authorship).
+  blipAuthor(blipId: string): Participant | undefined {
+    return this.blipMeta.get(blipId)?.author;
+  }
+
+  // blipContributors returns every participant who has authored an op on a blip, in
+  // first-seen order (the author first), or [] if unknown.
+  blipContributors(blipId: string): Participant[] {
+    const m = this.blipMeta.get(blipId);
+    return m === undefined ? [] : [...m.contributors];
   }
 
   // inflightActive reports whether a delta is currently in flight (submitted,
@@ -324,6 +343,16 @@ export class CC {
             throw new Error(`blip ${o.blipId}: composed content is not an initialization`);
           }
           this.blips.set(o.blipId, next);
+          // Track authorship: the first op's creator is the author; every creator is a
+          // contributor. (Both local and remote ops flow through here, so contributors
+          // accumulate across all editors.)
+          const creator = o.op.ctx.creator;
+          let meta = this.blipMeta.get(o.blipId);
+          if (meta === undefined) {
+            meta = { author: creator, contributors: new Set() };
+            this.blipMeta.set(o.blipId, meta);
+          }
+          meta.contributors.add(creator);
           break;
         }
         case "addParticipant":
