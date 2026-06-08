@@ -61,6 +61,9 @@ export class WaveApp extends LitElement {
   // The first inbox load seeds notifiedUnread without notifying, so existing unread
   // waves at startup are not announced as a burst.
   private notifyReady = false;
+  // Last-seen narrow/wide regime, to re-derive the master-detail collapse only when the
+  // breakpoint is CROSSED (so a within-regime resize doesn't override a user's toggle).
+  private wasNarrow = false;
 
   constructor() {
     super();
@@ -78,7 +81,12 @@ export class WaveApp extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.activeWave = waveFromURL();
+    // On a phone the panes are a master-detail pair (one at a time): a deep-linked wave
+    // opens straight to the conversation (inbox collapsed); otherwise show the inbox.
+    this.wasNarrow = isNarrow();
+    this.navCollapsed = this.activeWave !== "" && this.wasNarrow;
     window.addEventListener("popstate", this.onPopState);
+    window.addEventListener("resize", this.onResize);
     void this.loadInbox();
     this.pollTimer = setInterval(() => this.refreshList(), LIST_POLL_MS);
   }
@@ -86,10 +94,22 @@ export class WaveApp extends LitElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("popstate", this.onPopState);
+    window.removeEventListener("resize", this.onResize);
     if (this.searchTimer !== null) clearTimeout(this.searchTimer);
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
     if (this.pollTimer !== null) clearInterval(this.pollTimer);
   }
+
+  // onResize re-derives the master-detail collapse ONLY when crossing the narrow/wide
+  // breakpoint (e.g. phone rotation): narrow + a wave open → show the conversation;
+  // otherwise show both / the inbox. A within-regime resize is left alone so it never
+  // overrides a user's explicit toggle.
+  private onResize = (): void => {
+    const narrow = isNarrow();
+    if (narrow === this.wasNarrow) return;
+    this.wasNarrow = narrow;
+    this.navCollapsed = narrow && this.activeWave !== "";
+  };
 
   /** The active conversation's OT client, or null. For debug tooling. */
   getActiveClient(): OptimisticClient | null {
@@ -100,6 +120,9 @@ export class WaveApp extends LitElement {
   private onPopState = (): void => {
     this.activeWave = waveFromURL();
     this.playback = false; // navigation returns to the live editor
+    // Master-detail on a phone: back to a wave shows the conversation; back to the root
+    // (no wave) shows the inbox. (On desktop both panes show, so this is a no-op-ish.)
+    this.navCollapsed = this.activeWave !== "" && isNarrow();
   };
 
   private async loadInbox(): Promise<void> {
@@ -151,6 +174,10 @@ export class WaveApp extends LitElement {
 
   private handleSelect = (wave: string): void => {
     this.requestNotifyPermission(); // ask on a user gesture (browsers require one)
+    // On a phone, selecting a wave reveals the conversation full-screen (collapse the
+    // inbox). Done before the same-wave early return so re-tapping the open wave from the
+    // inbox view navigates back to it.
+    if (isNarrow()) this.navCollapsed = true;
     if (wave === this.activeWave) return;
     this.activeWave = wave;
     this.playback = false; // open a freshly-selected wave in the live editor
@@ -254,13 +281,13 @@ export class WaveApp extends LitElement {
         </div>
         <div class="app-right">
           <button
-            class="nav-toggle"
+            class=${"nav-toggle" + (this.navCollapsed ? " collapsed" : "")}
             @click=${this.toggleNav}
             title=${this.navCollapsed ? "Show inbox" : "Hide inbox"}
             aria-label=${this.navCollapsed ? "Show inbox" : "Hide inbox"}
             aria-pressed=${this.navCollapsed ? "true" : "false"}
           >
-            ${this.navCollapsed ? "☰" : "‹"}
+            ${this.navCollapsed ? "‹ Inbox" : "‹"}
           </button>
           ${this.activeWave === ""
             ? html`<div class="app-placeholder">Select a wave, or create a new one.</div>`
@@ -312,6 +339,12 @@ customElements.define("wave-app", WaveApp);
 // waveFromURL reads the active wave (serialized name) from the ?wave= query param.
 function waveFromURL(): string {
   return new URLSearchParams(location.search).get("wave") ?? "";
+}
+
+// isNarrow is true at phone/stacked widths, where the panes are a master-detail pair
+// (one at a time) rather than side-by-side. Matches the CSS breakpoint below.
+function isNarrow(): boolean {
+  return window.matchMedia("(max-width: 820px)").matches;
 }
 
 const STYLES = html`
@@ -408,21 +441,30 @@ const STYLES = html`
       margin-top: 40px;
       text-align: center;
     }
-    /* Below the conversation's own max measure (820px) a two-pane split can no longer
-       give it a usable width — the fixed 300px nav is pure subtraction from an
-       already-capped column — so stack: list on top (scrollable, capped height),
-       conversation filling the rest. */
+    /* Below the conversation's own max measure (820px) a two-pane split can't give it a
+       usable width, so the panes become a MASTER-DETAIL pair — one at a time. The inbox
+       shows when not collapsed; selecting a wave collapses it to show the conversation
+       full-screen (with a "‹ Inbox" back button). The global .nav-collapsed .app-left
+       rule hides the inbox in the collapsed state. */
     @media (max-width: 820px) {
       wave-app .app {
         flex-direction: column;
       }
-      wave-app .app-left {
+      wave-app .app:not(.nav-collapsed) .app-left {
         width: auto;
         min-width: 0;
-        max-height: 40vh;
-        overflow-y: auto;
+        max-height: none;
+        flex: 1;
         border-right: none;
-        border-bottom: 1px solid #e0e0e0;
+        border-bottom: none;
+      }
+      wave-app .app:not(.nav-collapsed) .app-right {
+        display: none; /* inbox view: hide the conversation pane */
+      }
+      /* A bigger, obviously-tappable back button on touch. */
+      wave-app .nav-toggle.collapsed {
+        font-weight: 600;
+        padding: 8px 14px;
       }
     }
   </style>

@@ -33,9 +33,11 @@ test("the blip editor grows with the window width, up to the readable cap", asyn
   try {
     await page.setViewportSize({ width: 1400, height: 900 });
     const wide = await blipWidth(page);
-    // 420px is below the 820px stacking breakpoint, so the panes stack and the editor
-    // is full-width-of-a-narrow-window (small); 1400px caps the conversation at 820px.
+    // Below the 820px breakpoint the panes become master-detail (one at a time); a wave
+    // is open so the conversation shows full-screen. Crossing the breakpoint re-derives
+    // that on the resize event, so wait for the conversation pane to settle before measuring.
     await page.setViewportSize({ width: 420, height: 900 });
+    await page.locator(".blip-doc").first().waitFor({ state: "visible", timeout: 5000 });
     const narrow = await blipWidth(page);
 
     assert.ok(wide > narrow + 200, `editor should grow with width: wide=${wide} narrow=${narrow}`);
@@ -64,12 +66,43 @@ test("the app is an installable PWA (service worker + manifest)", async () => {
   }
 });
 
+// On a phone the inbox and conversation are a master-detail pair (one at a time):
+// opening a wave shows the conversation full-screen with a "‹ Inbox" back button that
+// returns to the inbox.
+test("on a phone the inbox and conversation are a master-detail pair", async () => {
+  const page = await client("alice@example.com", "w+layout-md");
+  try {
+    await page.setViewportSize({ width: 380, height: 740 });
+    // A wave is open → conversation full-screen, inbox (app-left) hidden, back button shown.
+    await page.locator(".blip-doc").first().waitFor({ state: "visible", timeout: 5000 });
+    const leftHidden = await page.evaluate(() => {
+      const left = document.querySelector("wave-app .app-left");
+      return left !== null && getComputedStyle(left).display === "none";
+    });
+    assert.equal(leftHidden, true, "inbox is hidden while viewing a wave on a phone");
+    await page.locator(".nav-toggle.collapsed").waitFor({ state: "visible", timeout: 5000 });
+
+    // Tapping "‹ Inbox" reveals the inbox again (and hides the conversation pane).
+    await page.locator(".nav-toggle.collapsed").click();
+    await page.locator("wave-list .wl-new").waitFor({ state: "visible", timeout: 5000 });
+    const leftShown = await page.evaluate(
+      () => getComputedStyle(document.querySelector("wave-app .app-left")!).display !== "none",
+    );
+    assert.equal(leftShown, true, "the back button reveals the inbox");
+  } finally {
+    await page.close();
+  }
+});
+
 // Narrow widths must stay usable: the panes stack and the conversation keeps a
 // workable width instead of being squeezed to a sliver by the fixed list pane.
 test("a narrow viewport keeps the conversation usable (no horizontal scroll)", async () => {
   const page = await client("alice@example.com", "w+layout-narrow");
   try {
     await page.setViewportSize({ width: 380, height: 740 });
+    // Master-detail: the open wave's conversation shows full-screen once the resize
+    // re-derives the collapse; wait for it before measuring.
+    await page.locator(".blip-doc").first().waitFor({ state: "visible", timeout: 5000 });
     assert.ok(await blipWidth(page) > 250, "the editor stays usably wide when the panes stack");
     assert.equal(await hasHorizontalScroll(page), false, "no horizontal scroll at 380px");
   } finally {

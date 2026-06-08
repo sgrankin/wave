@@ -32,6 +32,13 @@ const GAP = 8;
 // Viewport edge padding (px) so the bar never touches the window edge.
 const EDGE = 8;
 
+// isTouchPrimary reports whether this is a touch device (→ bottom-docked bar). maxTouchPoints
+// is the reliable discriminator (Mac trackpad = 0; iPhone/iPad > 0, even in iPad desktop-mode
+// where matchMedia lies); any-pointer:coarse is the live fallback / paired-mouse signal.
+function isTouchPrimary(mql: MediaQueryList): boolean {
+  return (navigator.maxTouchPoints ?? 0) > 0 || mql.matches;
+}
+
 export class SelectionToolbar extends LitElement {
   static override properties = {
     visible: { state: true },
@@ -77,8 +84,12 @@ export class SelectionToolbar extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.mql = window.matchMedia("(pointer: coarse)");
-    this.coarse = this.mql.matches;
+    // Touch detection: navigator.maxTouchPoints is the reliable signal (a Mac trackpad
+    // is 0; iPhone/iPad are >0), since matchMedia("(pointer: coarse)") is stale/unreliable
+    // on iOS (esp. iPad desktop-mode). any-pointer:coarse is the live fallback (and lets a
+    // paired mouse flip it). Re-evaluated on the mql change event below.
+    this.mql = window.matchMedia("(any-pointer: coarse)");
+    this.coarse = isTouchPrimary(this.mql);
     this.mql.addEventListener("change", this.onPointerKindChange);
     document.addEventListener("selectionchange", this.onSelectionChange);
     // Focus changes show/hide the bar: focusin into an editor reveals it for a caret;
@@ -110,7 +121,7 @@ export class SelectionToolbar extends LitElement {
   }
 
   private onPointerKindChange = (e: MediaQueryListEvent): void => {
-    this.coarse = e.matches;
+    this.coarse = (navigator.maxTouchPoints ?? 0) > 0 || e.matches;
   };
 
   private onSelectionChange = (): void => this.schedule();
@@ -393,21 +404,26 @@ const STYLES = html`
        does NOT self-dock at bottom:0 — that hides behind the keyboard while editing. */
     selection-toolbar .sel-toolbar.coarse.visible {
       display: flex;
-      justify-content: center;
-      flex-wrap: wrap;
+      /* One line, never wrapped (user ask). "safe center" centers when it fits and
+         left-aligns instead of clipping when it doesn't; overflow-x scrolls as the
+         safety valve on a very narrow phone rather than wrapping to two rows. */
+      flex-wrap: nowrap;
+      justify-content: safe center;
+      overflow-x: auto;
     }
     selection-toolbar .sel-toolbar.coarse {
       width: 100%;
       box-sizing: border-box;
       border-radius: 0;
-      padding: 8px calc(8px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left));
-      gap: 4px;
+      padding: 7px calc(6px + env(safe-area-inset-right)) 7px calc(6px + env(safe-area-inset-left));
+      gap: 3px;
     }
     selection-toolbar .sel-toolbar.coarse button {
-      min-width: 44px;
-      min-height: 40px;
-      padding: 8px 12px;
-      font-size: 15px;
+      flex: 0 0 auto;
+      min-width: 36px;
+      min-height: 38px;
+      padding: 6px 9px;
+      font-size: 14px;
     }
   </style>
 `;
