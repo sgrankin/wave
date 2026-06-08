@@ -388,6 +388,18 @@ func (c *WaveletContainer) submitLocked(delta waveop.WaveletDelta, nonce string,
 			c.clk.Now().UnixMilli(), c.zero)
 	}
 
+	// Reject a content-mismatched (or malformed) operation BEFORE applying it: apply
+	// is Compose, which cancels deletions by length only, so an op whose deletes /
+	// replaces disagree with the document would otherwise be applied silently and
+	// corrupt the blip (and a bad updateAttributes would panic in compose). Validate
+	// the transformed ops against current state; replay never runs this.
+	if err := c.wavelet.ValidateDelta(transformed); err != nil {
+		if createdNow {
+			c.wavelet = nil // undo the phantom: nothing was applied or persisted
+		}
+		return SubmitResult{}, &cc.Error{Code: cc.InvalidOperation, Msg: "invalid operation", Err: err}
+	}
+
 	ts := c.clk.Now().UnixMilli()
 	head := c.wavelet.HashedVersion()
 	hashBytes := codec.HashBytes(transformed.Author(), head.Version(), ts, transformed.Ops())

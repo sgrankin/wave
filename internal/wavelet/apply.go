@@ -42,6 +42,46 @@ func (w *Data) ApplyDelta(delta waveop.WaveletDelta, serializedDelta []byte) err
 	return nil
 }
 
+// ValidateDelta checks every blip operation in delta against the document it would
+// apply to, WITHOUT mutating the wavelet. It is the submit-path guard against a
+// content-mismatched operation — one whose deletions/replacements disagree with the
+// document — which Compose would otherwise apply by length and silently corrupt the
+// blip (op.Validate). Replay of already-accepted stored deltas does not call this.
+//
+// Operations targeting the same blip within one delta are validated in sequence,
+// each against the content simulated after its predecessors, so a delta that creates
+// a blip and then edits it validates the edit against the post-create content.
+func (w *Data) ValidateDelta(delta waveop.WaveletDelta) error {
+	sim := map[string]op.DocOp{} // blipID → simulated content during this delta
+	for i := 0; i < delta.Len(); i++ {
+		wbo, ok := delta.Op(i).(waveop.WaveletBlipOperation)
+		if !ok {
+			continue // participant / no-op operations carry no document to validate
+		}
+		bc, ok := wbo.BlipOp.(waveop.BlipContentOperation)
+		if !ok {
+			continue
+		}
+		content, seen := sim[wbo.BlipID]
+		if !seen {
+			if blip := w.blips[wbo.BlipID]; blip != nil {
+				content = blip.content
+			} else {
+				content = op.EmptyDoc() // implicit blip creation: edits apply to the empty doc
+			}
+		}
+		if err := op.Validate(content, bc.ContentOp); err != nil {
+			return fmt.Errorf("wavelet: invalid op on blip %q: %w", wbo.BlipID, err)
+		}
+		next, err := op.Compose(content, bc.ContentOp)
+		if err != nil {
+			return fmt.Errorf("wavelet: op on blip %q: %w", wbo.BlipID, err)
+		}
+		sim[wbo.BlipID] = next
+	}
+	return nil
+}
+
 // applyOp applies a single operation, mutating wavelet state. atVersion is the
 // wavelet version reached after this operation (used as a blip's last-modified
 // version).
