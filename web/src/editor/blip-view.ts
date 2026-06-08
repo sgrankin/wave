@@ -10,12 +10,15 @@
 //
 // First cut: text + <line> paragraph structure + style annotations (rendered).
 // Handled inputs: insertText/replace, Enter (split line), Backspace/Delete
-// (in-paragraph + line-merge at a boundary), paste-as-text. Not yet: IME
-// composition, cross-paragraph selection edits. A formatting toolbar is provided
-// (bold/italic + line-type buttons) and operates via the same emit() path.
+// (in-paragraph + line-merge at a boundary), paste-as-text, and IME composition
+// (CJK / dictation / autocorrect — see onCompositionStart/End: the browser owns the
+// DOM during composition and the model reconciles from the committed string). Not
+// yet: cross-paragraph selection edits. A formatting toolbar is provided (bold/italic
+// + line-type buttons) and operates via the same emit() path.
 
 import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
+import { keyed } from "lit/directives/keyed.js";
 
 import { Attributes, DocOp, runeCount } from "../wave/types.ts";
 import type { Component } from "../wave/types.ts";
@@ -76,6 +79,28 @@ export class BlipView extends LitElement {
   // holds the range to restore after re-render instead of a collapsed caret.
   private pendingSelection: SavedSelection | null = null;
   private hasFocus = false; // tracks focusin/focusout; gates caret preservation in willUpdate
+  // IME composition (CJK, mobile dictation, autocorrect): the browser IGNORES
+  // preventDefault on composition input, so the controlled-editor trick can't apply
+  // there. While `composing` is true the browser owns the DOM — we let it insert the
+  // marked text natively, suppress our re-renders (they would destroy the IME), and
+  // reconcile the model from the committed string at compositionend. compositionRange
+  // is the model offset range the composition replaces, captured at compositionstart
+  // BEFORE the browser mutates anything (reads after that are unreliable).
+  private composing = false;
+  private compositionRange: { lo: number; hi: number } | null = null;
+  // The content instance at compositionstart. If `content` is a different instance at
+  // compositionend, a remote delta landed mid-composition and the captured offsets are
+  // stale — the commit is aborted rather than applied at the wrong place.
+  private compositionStartContent: DocOp | null = null;
+  // Set for one microtask after compositionend: some browsers fire a trailing
+  // insertText for the just-committed text, which would double-insert (compositionend
+  // already made it an op); swallow beforeinput during this window.
+  private justEndedComposition = false;
+  // Bumped to force a from-scratch rebuild of the .blip-doc subtree (it is `keyed` on
+  // this): used after a composition that aborted/cancelled, where the browser may have
+  // left native nodes that lit-html — diffing against its own template, not the live
+  // DOM — would not scrub. A normal edit leaves it unchanged (no extra churn).
+  private renderKey = 0;
 
   constructor() {
     super();
@@ -134,6 +159,19 @@ export class BlipView extends LitElement {
   };
 
   private onBeforeInput = (e: InputEvent): void => {
+    // IME composition (CJK, dictation, autocorrect): the browser ignores
+    // preventDefault on composition input, so intercepting it only diverges the DOM
+    // from the model. Let the browser insert the marked text natively and reconcile
+    // the model from the committed string at compositionend (onCompositionEnd). The
+    // `composing` guard also catches a commit delivered as a trailing insertText
+    // while the composition is still officially open.
+    if (e.inputType === "insertCompositionText" || this.composing) return;
+    // Trailing insertText right after compositionend (browser-dependent): compositionend
+    // already committed the text as an op, so swallow this to avoid a double-insert.
+    if (this.justEndedComposition) {
+      e.preventDefault();
+      return;
+    }
     // Controlled editor: the DOM must change ONLY via re-render from the model.
     // preventDefault unconditionally and FIRST, so that even a selection we cannot
     // map (a mapping miss) can never let the browser mutate the DOM out of band —
@@ -227,6 +265,92 @@ export class BlipView extends LitElement {
     const hi = Math.max(a, b);
     this.tryEdit(() => replaceText(this.content, lo, hi, text), lo + runeCount(text));
   };
+
+  // onCompositionStart marks the start of an IME composition and captures the model
+  // range it will replace — the selection at this instant, before the browser inserts
+  // any marked text. The commit at compositionend replaces this range with the final
+  // string. A selection we cannot map leaves compositionRange null (handled there).
+  private onCompositionStart = (): void => {
+    this.composing = true;
+    // Snapshot the content instance so compositionend can detect a concurrent remote
+    // delta (which would invalidate the captured offsets).
+    this.compositionStartContent = this.content;
+    const range = currentRange(this);
+    if (range === null) {
+      this.compositionRange = null;
+      return;
+    }
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = range.collapsed ? a : this.domToOffset(range.endContainer, range.endOffset);
+    this.compositionRange =
+      a === null || b === null ? null : { lo: Math.min(a, b), hi: Math.max(a, b) };
+  };
+
+  // onCompositionEnd commits the composition into the model: it turns the committed
+  // string into a replaceText op over the captured range, so the composed text is
+  // submitted (and converges to other clients) rather than living only as native DOM
+  // the next render would drop. The model round-trip re-renders the DOM back into
+  // agreement, discarding the browser's composition nodes. An empty commit (a cancel,
+  // or composed-to-nothing) emits nothing — the browser has already restored the DOM —
+  // and just flushes any render deferred while composing (e.g. a remote delta).
+  private onCompositionEnd = (e: CompositionEvent): void => {
+    this.composing = false;
+    // Guard against a trailing insertText for one microtask (see onBeforeInput).
+    this.justEndedComposition = true;
+    queueMicrotask(() => {
+      this.justEndedComposition = false;
+    });
+    const range = this.compositionRange;
+    const startContent = this.compositionStartContent;
+    this.compositionRange = null;
+    this.compositionStartContent = null;
+    const text = e.data ?? "";
+    // Abort the commit if we cannot trust it: the start selection didn't map, the
+    // composition was cancelled/empty, or the content changed under us mid-composition
+    // (a remote delta — the captured offsets are now stale, so committing would
+    // misplace the text). In every abort case we force a from-scratch rebuild of
+    // .blip-doc (bump renderKey → `keyed` re-creates it) so any DOM the browser left
+    // during composition is discarded and the view re-syncs with the model — a soft
+    // requestUpdate alone would not, since lit-html diffs against its own last template
+    // (not the live DOM) and would skip an unchanged subtree.
+    if (range === null || text === "" || this.content !== startContent) {
+      if (range !== null) this.pendingCaret = range.lo; // caret back where composition began
+      this.forceReconcile();
+      return;
+    }
+    // Build the model op for the committed text. If it can't be modeled — e.g. the
+    // composed range spans an inline widget (replaceText throws on an element item) —
+    // we can't emit, but the browser already inserted native nodes, so force a rebuild
+    // to scrub them (a silent swallow here would leave the DOM diverged from the model).
+    let ops: Component[];
+    try {
+      ops = replaceText(this.content, range.lo, range.hi, text);
+    } catch {
+      this.pendingCaret = range.lo;
+      this.forceReconcile();
+      return;
+    }
+    // emit dispatches the op; content round-trips back and re-renders the DOM to match,
+    // with the caret after the inserted text.
+    this.emit(ops, range.lo + runeCount(text));
+  };
+
+  // forceReconcile rebuilds the .blip-doc subtree from scratch on the next render
+  // (renderKey is `keyed`), discarding any DOM the browser left behind during a
+  // composition that did not round-trip through a model op. A soft requestUpdate
+  // would not suffice: lit-html diffs against its own last template, not the live
+  // DOM, so it skips an unchanged subtree even when the browser mutated it.
+  private forceReconcile(): void {
+    this.renderKey++;
+    this.requestUpdate();
+  }
+
+  // shouldUpdate suppresses re-renders while an IME composition is in flight: the
+  // browser owns the DOM then, and re-rendering (notably on a remote delta) would
+  // destroy the composition mid-flight. onCompositionEnd flushes the deferred update.
+  protected override shouldUpdate(): boolean {
+    return !this.composing;
+  }
 
   private deleteBackward(lo: number, hi: number): void {
     if (hi > lo) {
@@ -783,17 +907,22 @@ export class BlipView extends LitElement {
         }
         .remote-sel { position: absolute; border-radius: 2px; }
       </style>
-      <div
-        class="blip-doc"
-        contenteditable="true"
-        spellcheck="false"
-        role="textbox"
-        aria-multiline="true"
-        aria-label="Blip content"
-        @beforeinput=${this.onBeforeInput}
-        @keydown=${this.onKeydown}
-        @paste=${this.onPaste}
-      >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>
+      ${keyed(
+        this.renderKey,
+        html`<div
+          class="blip-doc"
+          contenteditable="true"
+          spellcheck="false"
+          role="textbox"
+          aria-multiline="true"
+          aria-label="Blip content"
+          @beforeinput=${this.onBeforeInput}
+          @keydown=${this.onKeydown}
+          @paste=${this.onPaste}
+          @compositionstart=${this.onCompositionStart}
+          @compositionend=${this.onCompositionEnd}
+        >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>`,
+      )}
       <div class="remote-carets" aria-hidden="true"></div>
     `;
   }
