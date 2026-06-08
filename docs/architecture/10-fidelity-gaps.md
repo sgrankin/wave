@@ -107,8 +107,10 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
 - **high / missing — undo/redo** (#2 above).
 - high / divergent — **links are render-only** (regex on bare URLs); can't link arbitrary
   text, no `link/*` annotation, doesn't round-trip. OG: `LinkAnnotationHandler` + toolbar.
-- ✅ highlight — DONE (toolbar toggle, `style/backgroundColor`). Remaining: **font color**
-  (text color; like highlight but needs a color picker; `spanStyle()` already renders it).
+- ✅ highlight + **font color — DONE** (toolbar: `style/backgroundColor` toggle + a
+  text-color `style/color` palette with a Default/clear; `spanStyle()` renders both). The
+  editor formatting toolbar is now complete (bold/italic/underline/strike/highlight/color/
+  links/headings/bullet+numbered lists, + IME).
 - ✅ **links on arbitrary text — DONE** (shipped+reviewed). A `link/manual` annotation
   carries the href; the projection surfaces it onto spans (zero-width — caret-safe), the
   selection-toolbar Link button prompts for a URL (scheme-less → https), and `safeHref`
