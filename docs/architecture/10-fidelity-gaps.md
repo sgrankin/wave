@@ -13,8 +13,15 @@ divergent), and a one-line action. Ordered within each subsystem by severity.
 
 Status key: ✅ shipped 2026-06-08.
 
-1. ✅ **[OT] No DocOp validator → silent document corruption** — DONE. `op.Validate` +
-   `wavelet.ValidateDelta` gate the submit path; reviewed (no bypass/false-positive).
+1. ✅ **[OT] No DocOp validator → silent document corruption** — DONE, now FULL. A
+   faithful port of `DocOpValidator`/`DocOpAutomaton` (the `docOpAutomaton` state
+   machine in `internal/op/automaton.go`) drives `op.Validate`; `wavelet.ValidateDelta`
+   gates the submit path. Enforces structural well-formedness (nesting/balance, no
+   insert-inside-delete, retain-in-bounds, deletion-target content match, the 3
+   annotation predicates) plus constructor-level attribute/annotation XML-name +
+   isValidUTF16Doc checks. Scope drops vs Java: schema (empty schema) and BMP-only
+   (astral/emoji allowed; only surrogates + noncharacters rejected). 20k differential
+   fuzz + DocOpValidatorTest port; reviewed (no bypass/false-positive).
 2. ✅ **[Editor] Undo/redo entirely absent** — DONE. Transform-based per-blip undo
    (`web/src/wave/undo.ts` + clientcc), Cmd-Z/Cmd-Shift-Z; reviewed (OT-correct, 80k
    fuzz). (Task #42.)
@@ -41,15 +48,17 @@ Status key: ✅ shipped 2026-06-08.
 Transform (all 4 sub-transforms), Compose, Invert, the asymmetric annotation algebra,
 attribute-conflict table, and wavelet-level transform are faithful near-line-for-line
 ports; annotations are fully general (no key allowlist). Gaps:
-- **high / missing — DocOp validator** (see #1 above). `DocOpValidator.java` +
-  `DocOpAutomaton.java` (~1750 lines) absent; `op/component.go:NewDocOp` disclaims
-  well-formedness "until the validator arrives" — it never did.
-- **medium / missing — structural well-formedness** (element nesting/balance, no
-  insert-inside-delete, no lone UTF-16 surrogates, retain-past-end). Folds into the
-  validator port.
-- **medium / partial — replaceAttributes/deleteElementStart old-attrs not checked**
-  against the live element on compose (updateAttributes IS checked, and panics on
-  mismatch). Same corruption class as the delete-content gap, lower frequency.
+- ✅ **DocOp validator — DONE** (see #1 above). `DocOpValidator.java` +
+  `DocOpAutomaton.java` (~1750 lines) ported to `internal/op/automaton.go` (the
+  `docOpAutomaton` driving `op.Validate`); reviewed SHIP.
+- ✅ **structural well-formedness — DONE** (element nesting/balance, no
+  insert-inside-delete, retain-past-end, deletion-target content match, the 3 annotation
+  predicates). Lone surrogates + noncharacters rejected via `firstBadTextRune`; astral
+  code points allowed (Go rune-based, deliberate divergence from Java BMP-only).
+- ✅ **replaceAttributes/deleteElementStart old-attrs — DONE** (closed by the validator
+  port). `checkReplaceAttributes` compares `oldAttributes` against the live element's
+  attributes and `checkDeleteElementStart` compares the deleted element's attributes —
+  both rejected on submit on mismatch (same corruption class as the delete-content gap).
 - low / divergent — char counting is by rune (Go/TS) vs UTF-16 code unit (Java);
   Go↔TS agree so convergence holds; only breaks Java byte-compat (out of scope).
 - low — N-ary tree compose (`DocOpCollector`) left-folded instead (perf only); cross-port
