@@ -137,15 +137,9 @@ func (m *GitHubMethod) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	participant, err := m.resolveOrMint(gh)
-	if err != nil {
-		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
-		return
-	}
-	// Convergence: policy-checked provision + session cookie. GitHub's policy is the
-	// constant @github namespace (resolved and minted addresses are both *@github),
-	// so it permits the participant in either case. The display name is the login.
-	if err := m.Service.MintSession(w, participant, gh.Login, m.Policy); err != nil {
+	// Convergence: MintIdP resolves the stable numeric id → bound account (returning),
+	// or uniqueness-checks the derived <login>@github (first login) before binding.
+	if _, err := m.Service.MintIdP(w, m.Credentials, m.loginFor(gh)); err != nil {
 		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
 		return
 	}
@@ -184,30 +178,25 @@ func (m *GitHubMethod) fetchUser(ctx context.Context, tok *oauth2.Token) (github
 	return u, nil
 }
 
-// resolveOrMint maps the GitHub identity to a Wave address: an existing credential
-// (keyed by the stable numeric id) → its account; otherwise the derived
-// <login>@github, recorded as a new credential. The login is NOT the key (it can
-// change); the numeric id is.
-func (m *GitHubMethod) resolveOrMint(gh githubUser) (id.ParticipantID, error) {
-	subject := strconv.FormatInt(gh.ID, 10)
-	if p, ok, err := resolveCredential(m.Credentials, "github", subject); err != nil {
-		return id.ParticipantID{}, err
-	} else if ok {
-		return p, nil
+// loginFor builds the MintIdP descriptor for a GitHub identity. The credential
+// subject is the stable numeric id (the login can change; the id can't), so a
+// renamed user keeps their account. The first-login address is <login>@github,
+// bounded by the @github namespace policy — a GitHub login can never derive an
+// address in another domain. The login is stored as the display name and credential
+// data; Derive runs only on a first login (no binding yet).
+func (m *GitHubMethod) loginFor(gh githubUser) IdPLogin {
+	return IdPLogin{
+		Method:      "github",
+		Subject:     strconv.FormatInt(gh.ID, 10),
+		DisplayName: gh.Login,
+		CreatedAt:   m.clk.Now().Unix(),
+		Derive: func() (id.ParticipantID, MintPolicy, string, error) {
+			participant, err := id.NewParticipantID(gh.Login + "@github")
+			if err != nil {
+				return id.ParticipantID{}, MintPolicy{}, "", fmt.Errorf("github login %q is not a valid address: %w", gh.Login, err)
+			}
+			data, _ := json.Marshal(map[string]string{"login": gh.Login})
+			return participant, m.Policy, string(data), nil
+		},
 	}
-	// First login: derive <login>@github and bind the credential. MintSession (the
-	// caller) re-checks the policy before issuing the cookie; we check here too so a
-	// bad login can't even be bound.
-	participant, err := id.NewParticipantID(gh.Login + "@github")
-	if err != nil {
-		return id.ParticipantID{}, fmt.Errorf("github login %q is not a valid address: %w", gh.Login, err)
-	}
-	if err := m.Policy.Permits(participant); err != nil {
-		return id.ParticipantID{}, err
-	}
-	data, _ := json.Marshal(map[string]string{"login": gh.Login})
-	if err := bindCredential(m.Credentials, "github", subject, participant, string(data), m.clk.Now().Unix()); err != nil {
-		return id.ParticipantID{}, err
-	}
-	return participant, nil
 }

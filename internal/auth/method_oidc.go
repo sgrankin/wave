@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -133,11 +134,27 @@ func (m *OIDCMethod) start(w http.ResponseWriter, r *http.Request) {
 
 // oidcClaims is the subset of ID-token claims we read.
 type oidcClaims struct {
-	Subject       string `json:"sub"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-	Name          string `json:"name"`
-	Nonce         string `json:"nonce"`
+	Subject       string   `json:"sub"`
+	Email         string   `json:"email"`
+	EmailVerified flexBool `json:"email_verified"`
+	Name          string   `json:"name"`
+	Nonce         string   `json:"nonce"`
+}
+
+// flexBool decodes a JSON boolean OR its string encodings ("true"/"false", "1"/"0").
+// The OIDC spec types email_verified as a boolean, but real providers (some Azure AD
+// tenants, SAML-bridged IdPs) emit it as a JSON string. A strict bool field would
+// make the whole claim decode fail and lock those users out — a fail-closed OUTAGE,
+// not a bypass, but a real one. Anything not recognizably true decodes to false, so
+// the security posture (only a genuine true grants the email's domain) is preserved.
+type flexBool bool
+
+// UnmarshalJSON accepts true/false, "true"/"false", "1"/"0" (case-insensitive),
+// treating anything else (including null) as false.
+func (b *flexBool) UnmarshalJSON(data []byte) error {
+	s := strings.ToLower(strings.Trim(strings.TrimSpace(string(data)), `"`))
+	*b = flexBool(s == "true" || s == "1")
+	return nil
 }
 
 // callback verifies state, exchanges the code with the PKCE verifier, verifies the
@@ -177,12 +194,10 @@ func (m *OIDCMethod) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	participant, policy, err := m.resolveOrMint(claims)
-	if err != nil {
-		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
-		return
-	}
-	if err := m.Service.MintSession(w, participant, claims.Name, policy); err != nil {
+	// Convergence: MintIdP resolves issuer+sub → bound account (returning), or
+	// uniqueness-checks the derived address (verified email, else sub@issuer-host)
+	// before binding — so a reassigned email cannot adopt another user's account.
+	if _, err := m.Service.MintIdP(w, m.Credentials, m.loginFor(claims)); err != nil {
 		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
 		return
 	}
@@ -212,7 +227,7 @@ func (m *OIDCMethod) verifyIDToken(ctx context.Context, rawID, wantNonce string)
 // mintPolicy is the address namespace this login may mint: the verified email's
 // domain when email_verified is set, else the issuer host (sub@<issuer-host>).
 func (m *OIDCMethod) mintPolicy(claims oidcClaims) MintPolicy {
-	if claims.EmailVerified && claims.Email != "" {
+	if bool(claims.EmailVerified) && claims.Email != "" {
 		if p, err := id.NewParticipantID(claims.Email); err == nil {
 			return DomainOnly(p.Domain())
 		}
@@ -220,39 +235,33 @@ func (m *OIDCMethod) mintPolicy(claims oidcClaims) MintPolicy {
 	return DomainOnly(m.issuerHost)
 }
 
-// resolveOrMint maps the OIDC identity to a Wave address and the MintPolicy that
-// governs the resulting session. An existing credential (keyed by issuer-host +
-// sub) resolves to its bound account — authoritative, vetted at bind time, so the
-// returned policy trivially permits it (a later flip in email_verified must not
-// lock a returning user out). Otherwise the address is derived (verified email,
-// else sub@<issuer-host>), policy-checked, and recorded as a new credential. The
-// single enforcement point is the caller's Service.MintSession.
-func (m *OIDCMethod) resolveOrMint(claims oidcClaims) (id.ParticipantID, MintPolicy, error) {
-	subject := m.issuerHost + "|" + claims.Subject
-	if p, ok, err := resolveCredential(m.Credentials, "oidc", subject); err != nil {
-		return id.ParticipantID{}, MintPolicy{}, err
-	} else if ok {
-		return p, DomainOnly(p.Domain()), nil
+// loginFor builds the MintIdP descriptor for an OIDC identity. The credential
+// subject is issuer-host|sub (stable across email changes). The first-login address
+// is the verified email, else sub@<issuer-host>, bounded by the matching namespace
+// policy — the IdP can never assert an address outside it. The `name` claim is the
+// display name; Derive runs only on a first login (no binding yet), so a returning
+// user is unaffected by a later email_verified flip.
+func (m *OIDCMethod) loginFor(claims oidcClaims) IdPLogin {
+	return IdPLogin{
+		Method:      "oidc",
+		Subject:     m.issuerHost + "|" + claims.Subject,
+		DisplayName: claims.Name,
+		CreatedAt:   m.clk.Now().Unix(),
+		Derive: func() (id.ParticipantID, MintPolicy, string, error) {
+			participant, err := m.deriveAddress(claims)
+			if err != nil {
+				return id.ParticipantID{}, MintPolicy{}, "", err
+			}
+			data, _ := json.Marshal(map[string]string{"issuer_host": m.issuerHost, "sub": claims.Subject})
+			return participant, m.mintPolicy(claims), string(data), nil
+		},
 	}
-	participant, err := m.deriveAddress(claims)
-	if err != nil {
-		return id.ParticipantID{}, MintPolicy{}, err
-	}
-	policy := m.mintPolicy(claims)
-	if err := policy.Permits(participant); err != nil {
-		return id.ParticipantID{}, MintPolicy{}, err
-	}
-	data, _ := json.Marshal(map[string]string{"issuer_host": m.issuerHost, "sub": claims.Subject})
-	if err := bindCredential(m.Credentials, "oidc", subject, participant, string(data), m.clk.Now().Unix()); err != nil {
-		return id.ParticipantID{}, MintPolicy{}, err
-	}
-	return participant, policy, nil
 }
 
 // deriveAddress is the address for a first OIDC login: the verified email if
 // present, else sub@<issuer-host>.
 func (m *OIDCMethod) deriveAddress(claims oidcClaims) (id.ParticipantID, error) {
-	if claims.EmailVerified && claims.Email != "" {
+	if bool(claims.EmailVerified) && claims.Email != "" {
 		p, err := id.NewParticipantID(claims.Email)
 		if err != nil {
 			return id.ParticipantID{}, fmt.Errorf("verified email %q is not a valid address: %w", claims.Email, err)

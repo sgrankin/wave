@@ -212,6 +212,50 @@ func TestGitHubCallbackResolvesExistingCredential(t *testing.T) {
 	}
 }
 
+// TestGitHubCallbackRejectsClaimedAddress is the account-takeover regression: a
+// FIRST GitHub login (no credential bound to its numeric id) whose derived address
+// <login>@github already belongs to another account must be REJECTED, not adopted.
+// Scenario: octocat@github exists (e.g. the original octocat, since renamed/deleted,
+// freeing the login); an attacker now holding the "octocat" login under a DIFFERENT
+// numeric id logs in. Without the uniqueness check this would hand them the existing
+// account; MintIdP's RegisterChosen rejects it instead.
+func TestGitHubCallbackRejectsClaimedAddress(t *testing.T) {
+	accounts := newMemAccounts()
+	creds := newMemCreds()
+	// octocat@github already exists, owned by someone else, with NO github credential
+	// bound to the attacker's numeric id.
+	_ = accounts.PutAccount(&storage.Account{
+		ID: mustPID(t, "octocat@github"), Kind: storage.AccountHuman,
+		Human: &storage.HumanAccount{DisplayName: "the original octocat"},
+	})
+
+	srv := githubStub(t, `{"id":999999,"login":"octocat"}`)
+	defer srv.Close()
+	svc := devSvc(t, accounts)
+	m := newGitHubMethodForTest(t, svc, creds, accounts, srv)
+
+	rec := driveCallback(t, m)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("takeover attempt status = %d (body %q), want 403", rec.Code, rec.Body.String())
+	}
+	// No credential was bound for the attacker's id (binding happens only after a
+	// successful uniqueness-checked provision).
+	if _, ok, _ := creds.GetCredential("github", "999999"); ok {
+		t.Error("attacker's credential must not be bound to a claimed address")
+	}
+	// The victim's account is untouched (display name not overwritten).
+	acct, ok, _ := accounts.GetAccount(mustPID(t, "octocat@github"))
+	if !ok || acct.Human == nil || acct.Human.DisplayName != "the original octocat" {
+		t.Errorf("victim account was mutated: %+v", acct.Human)
+	}
+	// No session cookie was issued.
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "wave_session" && c.Value != "" {
+			t.Error("a session cookie must not be issued on a rejected takeover")
+		}
+	}
+}
+
 // TestGitHubCallbackRejectsStateMismatch: a forged/absent state nonce is rejected
 // (CSRF defence), no account, no cookie.
 func TestGitHubCallbackRejectsStateMismatch(t *testing.T) {

@@ -203,13 +203,18 @@ func (s *Service) SetCookie(w http.ResponseWriter, participant id.ParticipantID)
 	})
 }
 
-// MintSession is the policy-enforcing convergence point for an interactive method
-// that has just verified an identity and DERIVED its address (GitHub → foo@github,
-// verified email → that email). It rejects an address outside policy (the §4
-// security boundary — a GitHub login cannot claim alice@example.com), provisions
-// the account (storing displayName), and sets the session cookie. A method MUST
-// route through this (or MintChosen) rather than calling SetCookie directly, so
-// the policy check is never skipped.
+// MintSession is the policy-enforcing convergence point for the DEV / trusted
+// derived-address path (DevLoginHandler): the caller has asserted an address it is
+// trusted to claim. It rejects an address outside policy (the §4 security boundary),
+// provisions-or-adopts the account (storing displayName), and sets the session
+// cookie. It deliberately ADOPTS a pre-existing account at the address — correct for
+// dev (re-login as an existing user) and trusted-header, where the request itself is
+// the proof of the address.
+//
+// Credential-backed IdP methods (GitHub, OIDC) must NOT use this: the address is
+// DERIVED from a mutable claim (a recyclable login / reassignable email), so adopting
+// a pre-existing account would be takeover. They route through MintIdP, which binds
+// to the stable (method, subject) and uniqueness-checks first logins.
 func (s *Service) MintSession(w http.ResponseWriter, participant id.ParticipantID, displayName string, policy MintPolicy) error {
 	if err := policy.Permits(participant); err != nil {
 		return fmt.Errorf("auth: mint denied: %w", err)
@@ -219,6 +224,68 @@ func (s *Service) MintSession(w http.ResponseWriter, participant id.ParticipantI
 	}
 	s.SetCookie(w, participant)
 	return nil
+}
+
+// IdPLogin describes a verified interactive-IdP login (GitHub, OIDC) for MintIdP.
+// The trust anchor is the stable (Method, Subject) credential key — a GitHub numeric
+// id, an OIDC issuer+sub — NOT the address, which is derived from a mutable claim.
+type IdPLogin struct {
+	// Method and Subject are the stable credential key (e.g. "github" + numeric id).
+	Method, Subject string
+	// DisplayName is the human name from the IdP (refreshed on every login).
+	DisplayName string
+	// CreatedAt is the unix-seconds timestamp stamped on a first-login binding.
+	CreatedAt int64
+	// Derive computes the FIRST-LOGIN address, the MintPolicy bounding its namespace,
+	// and the credential data blob. It is called ONLY when no binding exists, so a
+	// returning user is never blocked by a derive error from drifted claims (a login
+	// that no longer parses, an email_verified that flipped).
+	Derive func() (participant id.ParticipantID, policy MintPolicy, data string, err error)
+}
+
+// MintIdP is the single security-critical convergence point for credential-backed
+// IdP methods. It resolves the (Method, Subject) credential and splits two cases:
+//
+//   - RETURNING user (binding exists): the bound account is authoritative — ownership
+//     was proven when the binding was created. It refreshes the display name and
+//     issues the session WITHOUT re-deriving or re-checking policy, so drift in a
+//     mutable claim (a GitHub rename, an email_verified flip) can neither move the
+//     address nor lock the user out.
+//   - FIRST login (no binding): the derived address must be IN-POLICY and UNCLAIMED.
+//     Adopting a pre-existing account here would be account takeover — a recycled
+//     GitHub login or reassigned email could derive an address another credential
+//     already owns. It provisions the derived address with a uniqueness check
+//     (RegisterChosen), records the binding, and issues the session. Binding happens
+//     only after provisioning succeeds, so a rejected address leaves no orphan.
+//
+// It returns the resolved participant (for the caller to log).
+func (s *Service) MintIdP(w http.ResponseWriter, store storage.CredentialStore, in IdPLogin) (id.ParticipantID, error) {
+	if p, ok, err := resolveCredential(store, in.Method, in.Subject); err != nil {
+		return id.ParticipantID{}, err
+	} else if ok {
+		// Returning user: bound account is authoritative; refresh the name only.
+		if err := s.provisioner.EnsureDisplayName(p, in.DisplayName); err != nil {
+			return id.ParticipantID{}, err
+		}
+		s.SetCookie(w, p)
+		return p, nil
+	}
+	// First login: derive, then require the address be in-policy and unclaimed.
+	participant, policy, data, err := in.Derive()
+	if err != nil {
+		return id.ParticipantID{}, err
+	}
+	if err := policy.Permits(participant); err != nil {
+		return id.ParticipantID{}, fmt.Errorf("auth: mint denied: %w", err)
+	}
+	if err := s.provisioner.RegisterChosen(participant, in.DisplayName); err != nil {
+		return id.ParticipantID{}, err // includes "address is already taken" → takeover blocked
+	}
+	if err := bindCredential(store, in.Method, in.Subject, participant, data, in.CreatedAt); err != nil {
+		return id.ParticipantID{}, err
+	}
+	s.SetCookie(w, participant)
+	return participant, nil
 }
 
 // MintChosen is the policy-enforcing convergence point for a chosen-address method
