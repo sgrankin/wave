@@ -32,19 +32,20 @@ type wireBlip struct {
 // wireEvent is an event sent to the harness (type:"event"). Fields are populated
 // per Kind; wave.opened carries the connect-time snapshot (Participants + Blips).
 type wireEvent struct {
-	Type         string     `json:"type"` // always "event"
-	Kind         string     `json:"kind"`
-	Version      uint64     `json:"version,omitempty"`
-	Author       string     `json:"author,omitempty"`
-	BlipID       string     `json:"blipId,omitempty"`
-	Text         string     `json:"text,omitempty"`
-	Participant  string     `json:"participant,omitempty"`
-	Target       string     `json:"target,omitempty"`
-	Participants []string   `json:"participants,omitempty"` // wave.opened
-	Blips        []wireBlip `json:"blips,omitempty"`        // wave.opened
-	Intent       string     `json:"intent,omitempty"`       // operation.error: the failed intent's kind
-	ID           string     `json:"id,omitempty"`           // operation.error: the failed intent's echoed id
-	Error        string     `json:"error,omitempty"`        // operation.error: the failure reason
+	Type         string            `json:"type"` // always "event"
+	Kind         string            `json:"kind"`
+	Version      uint64            `json:"version,omitempty"`
+	Author       string            `json:"author,omitempty"`
+	BlipID       string            `json:"blipId,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	Participant  string            `json:"participant,omitempty"`
+	Target       string            `json:"target,omitempty"`
+	Participants []string          `json:"participants,omitempty"` // wave.opened
+	Blips        []wireBlip        `json:"blips,omitempty"`        // wave.opened
+	State        map[string]string `json:"state,omitempty"`        // wave.opened: structured key/value memory
+	Intent       string            `json:"intent,omitempty"`       // operation.error: the failed intent's kind
+	ID           string            `json:"id,omitempty"`           // operation.error: the failed intent's echoed id
+	Error        string            `json:"error,omitempty"`        // operation.error: the failure reason
 }
 
 // wireIntent is an intent received from the harness (type:"intent"). An optional id
@@ -59,6 +60,8 @@ type wireIntent struct {
 	Text        string `json:"text,omitempty"`
 	Participant string `json:"participant,omitempty"`
 	Inline      bool   `json:"inline,omitempty"` // reply.blip: anchor the reply inline
+	Key         string `json:"key,omitempty"`    // set.state / delete.state
+	Value       string `json:"value,omitempty"`  // set.state
 }
 
 // KindWaveOpened is the wire-only event kind for the connect-time snapshot (it has
@@ -186,7 +189,9 @@ func (g *Gateway) snapshot() wireEvent {
 		ids := w.BlipIDs()
 		sort.Strings(ids)
 		for _, id := range ids {
-			if id == conv.ManifestDocumentID {
+			// The manifest and the structured-state doc are not prose blips: skip them
+			// from Blips (the state doc is surfaced as State below).
+			if id == conv.ManifestDocumentID || id == conv.StateDocumentID {
 				continue
 			}
 			b, ok := w.Blip(id)
@@ -195,6 +200,12 @@ func (g *Gateway) snapshot() wireEvent {
 			}
 			text, _ := doc.PlainText(b.Content())
 			ev.Blips = append(ev.Blips, wireBlip{ID: id, Author: b.Author().Address(), Text: text})
+		}
+		// Surface the structured key/value memory so the agent reads it on connect.
+		if sd, ok := w.Blip(conv.StateDocumentID); ok {
+			if st := conv.ReadState(sd.Content()); len(st) > 0 {
+				ev.State = st
+			}
 		}
 	})
 	return ev
@@ -212,5 +223,5 @@ func wireEventFrom(ev Event) wireEvent {
 // intentOf maps a wire intent to a Go Intent (kind passed through; validation
 // happens in Translate at submit time).
 func intentOf(wi wireIntent) Intent {
-	return Intent{Kind: IntentKind(wi.Kind), ThreadID: wi.ThreadID, BlipID: wi.BlipID, Text: wi.Text, Participant: wi.Participant, Inline: wi.Inline}
+	return Intent{Kind: IntentKind(wi.Kind), ThreadID: wi.ThreadID, BlipID: wi.BlipID, Text: wi.Text, Participant: wi.Participant, Inline: wi.Inline, Key: wi.Key, Value: wi.Value}
 }

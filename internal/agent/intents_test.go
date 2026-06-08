@@ -338,3 +338,74 @@ func TestTranslateUnknownIntent(t *testing.T) {
 		t.Error("want error for an unknown intent kind")
 	}
 }
+
+func TestTranslateSetState(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+
+	// No state doc yet → set.state lazily creates it (initialization content), so the
+	// op stands alone (no compose needed) and ReadState sees the entry.
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentSetState, Key: "status", Value: "processing"},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDoc := contentOf(t, ops, conv.StateDocumentID)
+	if got := conv.ReadState(stateDoc); got["status"] != "processing" || len(got) != 1 {
+		t.Fatalf("created state = %v, want {status:processing}", got)
+	}
+
+	// With an existing state doc → set.state emits a MUTATION that composes onto it.
+	ops2, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentSetState, Key: "n", Value: "3"},
+		alice, 1000, readerFrom(map[string]op.DocOp{conv.StateDocumentID: stateDoc}), fixedID("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := op.Apply(stateDoc, contentOf(t, ops2, conv.StateDocumentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.ReadState(next); got["status"] != "processing" || got["n"] != "3" {
+		t.Fatalf("updated state = %v, want status+n", got)
+	}
+
+	// An empty key is rejected.
+	if _, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentSetState, Key: "", Value: "x"},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("x")); err == nil {
+		t.Error("set.state with an empty key should error")
+	}
+}
+
+func TestTranslateDeleteState(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	mut, err := conv.SetStateValue(conv.EmptyState(), "status", "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDoc, err := op.Apply(conv.EmptyState(), mut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentDeleteState, Key: "status"},
+		alice, 1000, readerFrom(map[string]op.DocOp{conv.StateDocumentID: stateDoc}), fixedID("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := op.Apply(stateDoc, contentOf(t, ops, conv.StateDocumentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := conv.ReadState(next); len(got) != 0 {
+		t.Fatalf("after delete, state = %v, want {}", got)
+	}
+
+	// delete.state with no state document errors.
+	if _, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentDeleteState, Key: "x"},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("x")); err == nil {
+		t.Error("delete.state with no state document should error")
+	}
+}

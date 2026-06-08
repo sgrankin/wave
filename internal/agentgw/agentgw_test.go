@@ -1,6 +1,7 @@
 package agentgw_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -438,4 +439,70 @@ func TestAgentWaveManagement(t *testing.T) {
 		t.Fatalf("leave-again = %d, want 403", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// TestAgentStateMemory proves the structured-state memory primitive end to end: an
+// agent writes state with a set.state intent, and a fresh gateway's wave.opened
+// snapshot reports it back (write → read-on-connect).
+func TestAgentStateMemory(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)))
+	wid, _ := id.NewWaveID("example.com", "w+state")
+	wlid, _ := id.NewWaveletID("example.com", "conv+root")
+	name := id.NewWaveletName(wid, wlid)
+	c, err := wm.Container(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+	addCtx := waveop.Context{Creator: alice, Timestamp: 1000, VersionIncrement: 1}
+	if _, err := c.Submit(waveop.NewWaveletDelta(alice, c.Version(), []waveop.Operation{
+		waveop.AddParticipant{Ctx: addCtx, Participant: bot},
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	fixedID := func() string { return "b+unused" }
+
+	// The agent writes two state keys via intents.
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(2000)), fixedID)
+	lc.Open()
+	for _, kv := range []struct{ k, v string }{{"status", "ready"}, {"runs", "7"}} {
+		if err := lc.SubmitIntent(agent.Intent{Kind: agent.IntentSetState, Key: kv.k, Value: kv.v}); err != nil {
+			t.Fatalf("set.state %s: %v", kv.k, err)
+		}
+	}
+	lc.Close()
+
+	// A fresh gateway's wave.opened snapshot reports the state back.
+	lc2 := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(3000)), fixedID)
+	lc2.Open()
+	defer lc2.Close()
+	gw := agent.NewGateway(lc2, bot, nil)
+	var buf bytes.Buffer
+	if err := gw.Run(context.Background(), &buf, strings.NewReader("")); err != nil {
+		t.Fatalf("gateway run: %v", err)
+	}
+	var snap struct {
+		Kind  string            `json:"kind"`
+		State map[string]string `json:"state"`
+	}
+	if err := json.NewDecoder(&buf).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snap.Kind != agent.KindWaveOpened {
+		t.Fatalf("first event = %q, want wave.opened", snap.Kind)
+	}
+	if snap.State["status"] != "ready" || snap.State["runs"] != "7" || len(snap.State) != 2 {
+		t.Fatalf("snapshot state = %v, want {status:ready, runs:7}", snap.State)
+	}
 }

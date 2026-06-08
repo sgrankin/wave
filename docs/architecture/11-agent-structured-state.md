@@ -1,17 +1,21 @@
 # 11 — Agent structured state (design)
 
-Status: **core implemented; agent-channel wiring remaining** (2026-06-08). The remaining
+Status: **mostly implemented; reactive event remaining** (2026-06-08). The remaining
 piece of the flagship "wave as shareable agent memory" goal (task #34, doc 10 §Agent).
 The wave **lifecycle/discovery** primitives (create / list / leave) are shipped (agentgw
 REST endpoints); this doc designs the **structured key-value state** primitive — the part
 that lets a wave hold machine-readable memory, not just prose blips.
 
-**DONE:** the OT-native `conv` core — `StateDocumentID`, `EmptyState`, `ReadState`,
-`SetStateValue`, `DeleteStateValue`, size caps (`internal/conv/state.go` + tests). Chosen
-design (below): a `state` document, opaque-string values, lazy-create via the first set,
-≤256 keys / ≤4 KB per value. **REMAINING:** the agent-channel surface (set.state /
-delete.state intents, state.changed event, state in the wave.opened snapshot) — see
-"Implementation sketch" steps 2–4.
+**DONE & shipped:** (1) the OT-native `conv` core — `StateDocumentID`, `EmptyState`,
+`ReadState`, `SetStateValue`, `DeleteStateValue`, caps (`internal/conv/state.go`); (2) the
+agent **write** path — `set.state` / `delete.state` intents (lazy-creates the doc on first
+set) and (3) the **read-on-connect** path — the `state` map in the `wave.opened` snapshot.
+End-to-end tested (an agent writes state via intents; a fresh gateway's snapshot reports it
+back). Chosen design (below): a `state` document, opaque-string values, lazy-create, ≤256
+keys / ≤4 KB per value. **REMAINING:** the reactive **`state.changed` event** (so an agent
+sees OTHERS' live state writes without reconnecting) — see "Implementation sketch" step 2's
+event half. Lower priority: an agent reads its own writes (its replica) and re-reads on
+reconnect; the event only matters for live multi-writer state.
 
 This is a design to review/steer before implementing: the value model and the OT
 mapping have real forks. It does NOT change anything yet.

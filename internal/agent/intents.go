@@ -27,6 +27,11 @@ const (
 	IntentEditBlip IntentKind = "edit.blip"
 	// IntentAddParticipant adds a participant to the wavelet.
 	IntentAddParticipant IntentKind = "add.participant"
+	// IntentSetState sets a key→value entry in the wave's structured state document
+	// (the agent's shared key/value memory; lazily creates the doc on first set).
+	IntentSetState IntentKind = "set.state"
+	// IntentDeleteState removes a key from the structured state document.
+	IntentDeleteState IntentKind = "delete.state"
 )
 
 // Intent is one high-level action a harness requests. Fields are read per Kind.
@@ -37,6 +42,8 @@ type Intent struct {
 	Text        string // post.blip / edit.blip / reply.blip
 	Participant string // add.participant: the address to add
 	Inline      bool   // reply.blip: anchor the reply thread inline in the parent body
+	Key         string // set.state / delete.state: the state key
+	Value       string // set.state: the (opaque string) value
 }
 
 // blipContentOp boxes a content DocOp as an authored wavelet operation against
@@ -151,6 +158,49 @@ func Translate(
 		}
 		ctx := waveop.Context{Creator: author, Timestamp: ts, VersionIncrement: 1}
 		return []waveop.Operation{waveop.AddParticipant{Ctx: ctx, Participant: p}}, nil
+
+	case IntentSetState:
+		if intent.Key == "" {
+			return nil, fmt.Errorf("agent: set.state: empty key")
+		}
+		cur, exists := blip(conv.StateDocumentID)
+		var contentOp op.DocOp
+		if exists {
+			var err error
+			if contentOp, err = conv.SetStateValue(cur, intent.Key, intent.Value); err != nil {
+				return nil, fmt.Errorf("agent: set.state: %w", err)
+			}
+		} else {
+			// Fallback for a wave with no state document — DEFENSIVE only: SeedConversation
+			// now seeds an empty <state> in every wave (created once, atomically), so the
+			// common path is the `exists` branch above. This branch can therefore only run
+			// for a legacy wave seeded before state existed; there, two agents first-writing
+			// concurrently could each emit a competing <state> initialization (OT concatenates
+			// them into two roots). Acceptable as a bounded migration edge — new waves never
+			// reach here. The content op is the full initialization, like a new blip's content.
+			mut, err := conv.SetStateValue(conv.EmptyState(), intent.Key, intent.Value)
+			if err != nil {
+				return nil, fmt.Errorf("agent: set.state: %w", err)
+			}
+			if contentOp, err = op.Apply(conv.EmptyState(), mut); err != nil {
+				return nil, fmt.Errorf("agent: set.state: %w", err)
+			}
+		}
+		return []waveop.Operation{blipContentOp(author, ts, conv.StateDocumentID, contentOp)}, nil
+
+	case IntentDeleteState:
+		if intent.Key == "" {
+			return nil, fmt.Errorf("agent: delete.state: empty key")
+		}
+		cur, exists := blip(conv.StateDocumentID)
+		if !exists {
+			return nil, fmt.Errorf("agent: delete.state: no state document")
+		}
+		contentOp, err := conv.DeleteStateValue(cur, intent.Key)
+		if err != nil {
+			return nil, fmt.Errorf("agent: delete.state: %w", err)
+		}
+		return []waveop.Operation{blipContentOp(author, ts, conv.StateDocumentID, contentOp)}, nil
 
 	default:
 		return nil, fmt.Errorf("agent: unknown intent kind %q", intent.Kind)
