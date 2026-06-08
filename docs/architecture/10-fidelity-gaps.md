@@ -99,12 +99,18 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
 - **high / missing — undo/redo** (#2 above).
 - high / divergent — **links are render-only** (regex on bare URLs); can't link arbitrary
   text, no `link/*` annotation, doesn't round-trip. OG: `LinkAnnotationHandler` + toolbar.
-- high / missing — font color / highlight (`spanStyle()` would render them; only the
-  command+UI are missing).
-- high / missing — numbered lists + "Enter continues the list" (Enter always inserts a
-  plain `<line>`, breaking out of a list).
-- high / missing — **IME / composition input** (CJK + mobile dictation broken; the editor
-  preventDefaults all beforeinput with no composition handling). Correctness, not polish.
+- ✅ highlight — DONE (toolbar toggle, `style/backgroundColor`). Remaining: **font color**
+  (text color; like highlight but needs a color picker; `spanStyle()` already renders it).
+- high / missing — **links on arbitrary text** (only literal URLs auto-linkify at render
+  time via `INLINE_RE`; no way to attach a URL to selected text — needs a `link/manual`
+  annotation surfaced onto spans + a setLink command + a URL input).
+- ✅ "Enter continues the list" — DONE (continue/exit; widgets-only-item bug fixed).
+  Remaining: **numbered lists** (a `listyle` attribute + numbered rendering).
+- ✅ **IME / composition input — DONE** (CJK / dictation / autocorrect). The editor now
+  cooperates with composition: the browser owns the DOM during composition, re-renders are
+  suppressed, and compositionend reconciles the committed text into a model op (with a
+  forced .blip-doc rebuild on cancel/abort to scrub native nodes). Reviewed (2 rounds; the
+  cancel-divergence, stale-offset, widget-span, and double-insert paths all closed).
 - medium — font size/family; indent/outdent commands (model reads indent but can't set
   it); text alignment; rich/semantic paste (plain-text only today); spellcheck hard-off;
   H4; super/subscript; clear-formatting.
