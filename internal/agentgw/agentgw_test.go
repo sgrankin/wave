@@ -20,6 +20,7 @@ import (
 	"github.com/sgrankin/wave/internal/doc"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/op"
+	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
 	"github.com/sgrankin/wave/internal/transport"
@@ -333,4 +334,108 @@ func TestAgentGatewayRejectsBadToken(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
+}
+
+// TestAgentWaveManagement drives the agent wave-management API (create / list /
+// leave): an agent creates its own memory wave, finds it via discovery, and leaves it.
+func TestAgentWaveManagement(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+	bot := pid(t, "assistant@example.com")
+
+	h := agentgw.New(wm, agentgw.StaticAuth{"s3cret": bot},
+		transport.StrictMembershipChecker{WaveMap: wm}, clock.NewFixed(time.UnixMilli(3000)), nil).WithIndex(idx)
+	hs := httptest.NewServer(h.Routes())
+	defer hs.Close()
+
+	do := func(method, path, token string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, hs.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// Unauthorized without a token.
+	if resp := do("POST", "/agent/waves", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("create without token = %d, want 401", resp.StatusCode)
+	}
+
+	// Create: the agent makes a fresh wave and is its sole participant.
+	resp := do("POST", "/agent/waves", "s3cret")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create = %d, want 200", resp.StatusCode)
+	}
+	var created struct {
+		Wave string `json:"wave"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	name, err := id.ParseWaveletName(created.Wave)
+	if err != nil {
+		t.Fatalf("created wave name %q: %v", created.Wave, err)
+	}
+	c, err := wm.Container(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists, createdW := c.HasParticipant(bot); !createdW || !exists {
+		t.Fatalf("agent should be a participant of the wave it created (exists=%v created=%v)", exists, createdW)
+	}
+
+	// Discover: the created wave shows up in the agent's wave list.
+	resp = do("GET", "/agent/waves", "s3cret")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list = %d, want 200", resp.StatusCode)
+	}
+	var listed struct {
+		Waves []struct {
+			Wave string `json:"wave"`
+		} `json:"waves"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	found := false
+	for _, w := range listed.Waves {
+		if w.Wave == created.Wave {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("created wave %q not in discovery list %+v", created.Wave, listed.Waves)
+	}
+
+	// Leave: the agent removes itself; it is no longer a participant.
+	resp = do("POST", "/agent/leave?wave="+url.QueryEscape(created.Wave), "s3cret")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("leave = %d, want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if exists, _ := c.HasParticipant(bot); exists {
+		t.Fatal("agent should not be a participant after leaving")
+	}
+
+	// Leaving a wave the agent is not in is forbidden.
+	resp = do("POST", "/agent/leave?wave="+url.QueryEscape(created.Wave), "s3cret")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("leave-again = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
 }

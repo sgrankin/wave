@@ -631,8 +631,13 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 		// StrictMembershipChecker (no open-or-create): an agent token must not be
 		// able to read or instantiate arbitrary wave names it was never added to.
 		gh := agentgw.New(srv.WaveMap, agentAuth, transport.StrictMembershipChecker{WaveMap: srv.WaveMap}, clock.System{}, logger)
-		mux.Handle("/agent/socket", gh)
-		logger.Info("agent gateway enabled", "endpoint", "/agent/socket", "agents", len(agentAuth))
+		if idx != nil {
+			gh.WithIndex(idx) // GET /agent/waves discovery (when the index is maintained)
+		}
+		// The socket plus the wave-management API (create/list/leave) so an agent can
+		// own and discover its memory waves, not just join human-invited ones.
+		mux.Handle("/agent/", gh.Routes())
+		logger.Info("agent gateway enabled", "endpoint", "/agent/", "agents", len(agentAuth))
 	}
 	// Attachment blobs (upload/download/thumbnail), gated by wavelet membership.
 	// Both patterns are needed: "/attachments" matches the bare upload path and
