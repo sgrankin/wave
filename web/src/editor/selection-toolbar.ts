@@ -54,6 +54,7 @@ export class SelectionToolbar extends LitElement {
     underline: boolean;
     strike: boolean;
     highlight: boolean;
+    link: boolean;
     lineType: string | null;
   };
   declare private coarse: boolean; // touch layout (bottom-docked) vs. floating
@@ -79,7 +80,15 @@ export class SelectionToolbar extends LitElement {
   constructor() {
     super();
     this.visible = false;
-    this.states = { bold: false, italic: false, underline: false, strike: false, highlight: false, lineType: null };
+    this.states = {
+      bold: false,
+      italic: false,
+      underline: false,
+      strike: false,
+      highlight: false,
+      link: false,
+      lineType: null,
+    };
     this.coarse = false;
     this.collapsed = false;
   }
@@ -312,6 +321,7 @@ export class SelectionToolbar extends LitElement {
         ${btn("underline", "Underline", s.underline, html`<span style="text-decoration:underline">U</span>`, this.collapsed)}
         ${btn("strike", "Strikethrough", s.strike, html`<span style="text-decoration:line-through">S</span>`, this.collapsed)}
         ${btn("highlight", "Highlight", s.highlight, html`<span style="background:#fff3a0;padding:0 2px;border-radius:2px">H</span>`, this.collapsed)}
+        ${btn("link", "Link", s.link, html`<span aria-hidden="true">🔗</span>`, this.collapsed)}
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}

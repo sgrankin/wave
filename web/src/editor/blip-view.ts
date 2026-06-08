@@ -23,18 +23,22 @@ import { keyed } from "lit/directives/keyed.js";
 import { Attributes, DocOp, runeCount } from "../wave/types.ts";
 import type { Component } from "../wave/types.ts";
 import {
+  clearLink,
   clearStyleRange,
   deleteInlineElement,
   deleteLineMarker,
   lineAttributes,
   project,
+  rangeLink,
   rangeStyle,
   replaceText,
   setLineType,
+  setLink,
   setStyleRange,
   splitLineAt,
 } from "./blipdoc.ts";
 import type { BlipProjection, Paragraph, Span } from "./blipdoc.ts";
+import { normalizeUrl, safeHref } from "./url.ts";
 import type { RemoteCaret } from "./controller.ts";
 
 // A saved selection range (both endpoints as doc offsets).
@@ -462,12 +466,49 @@ export class BlipView extends LitElement {
     this.tryEdit(() => setLineType(this.content, para.lineOffset!, oldType, targetType), caretOffset);
   }
 
-  // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain) against
-  // the current selection. It is the public entry point for the floating
+  // toolbarSetLink prompts for a URL and links the current selection to it (or clears
+  // the link when the URL is emptied). A link needs a range, so it is a no-op for a
+  // collapsed caret. Offsets are captured BEFORE the prompt — which steals the
+  // focus/selection — so the edit applies to the saved range and the selection is
+  // restored afterward (emitWithSelection), letting the link stay selected.
+  private toolbarSetLink(): void {
+    const range = currentRange(this);
+    if (range === null || range.collapsed) return;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const cur = rangeLink(this.content, lo, hi);
+    const prefill = typeof cur === "string" ? cur : "";
+    const url = globalThis.prompt?.("Link URL (leave empty to remove):", prefill) ?? null;
+    if (url === null) return; // cancelled
+    const trimmed = url.trim();
+    let ops: Component[];
+    try {
+      if (trimmed === "") {
+        ops = clearLink(this.content, lo, hi);
+      } else {
+        const normalized = normalizeUrl(trimmed);
+        if (safeHref(normalized) === null) return; // refuse to author an unsafe (javascript:, …) link
+        ops = setLink(this.content, lo, hi, normalized);
+      }
+    } catch {
+      return;
+    }
+    if (ops.length === 0) return;
+    this.emitWithSelection(ops, lo, hi);
+  }
+
+  // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain/link)
+  // against the current selection. It is the public entry point for the floating
   // <selection-toolbar>: the toolbar preventDefaults its own pointerdown so focus
   // and the selection are still intact in this editor when this runs.
   applyCommand(cmd: string): void {
     switch (cmd) {
+      case "link":
+        this.toolbarSetLink();
+        break;
       case "bold":
         this.toolbarToggleStyle("fontWeight", "bold");
         break;
@@ -510,6 +551,7 @@ export class BlipView extends LitElement {
     underline: boolean;
     strike: boolean;
     highlight: boolean;
+    link: boolean;
     lineType: string | null;
   } {
     return {
@@ -518,8 +560,22 @@ export class BlipView extends LitElement {
       underline: this.activeCharStyle("underline") === "true",
       strike: this.activeCharStyle("strikethrough") === "true",
       highlight: this.activeCharStyle("backgroundColor") === HIGHLIGHT_COLOR,
+      link: this.activeCharLink(),
       lineType: this.caretLineType(),
     };
+  }
+
+  // activeCharLink reports whether the current selection is uniformly a manual link
+  // (so the toolbar's Link button shows pressed). A collapsed caret or a mixed/absent
+  // link reads false.
+  private activeCharLink(): boolean {
+    const range = currentRange(this);
+    if (range === null || range.collapsed) return false;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return false;
+    const v = rangeLink(this.content, Math.min(a, b), Math.max(a, b));
+    return typeof v === "string";
   }
 
   // --- focus tracking ---
@@ -1062,6 +1118,19 @@ function renderImage(attachment: string): TemplateResult {
 
 function renderSpan(s: Span, selfAddress: string): TemplateResult {
   const css = spanStyle(s.styles);
+  // A manual link wraps the whole run in an <a> to its href. Render the raw text (no
+  // inner auto-linkify/mention — that would nest anchors); any character styles apply
+  // to the anchor. The text stays in a single text node, so the caret/offset mapping
+  // (which walks text nodes by rune count) is unaffected — a link adds no doc items.
+  // An unsafe href (javascript:, etc.) renders as plain styled text, not a live link.
+  const href = s.link === undefined ? null : safeHref(s.link);
+  if (href !== null) {
+    return css === ""
+      ? html`<a class="wave-link" href=${href} target="_blank" rel="noopener noreferrer">${s.text}</a>`
+      : html`<a class="wave-link" href=${href} target="_blank" rel="noopener noreferrer" style=${css}
+          >${s.text}</a
+        >`;
+  }
   const inner = renderInline(s.text, selfAddress);
   return css === "" ? inner : html`<span style=${css}>${inner}</span>`;
 }

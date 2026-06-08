@@ -22,12 +22,20 @@ const REPLY = "reply"; // inline-reply anchor element (conv.tagReply)
 const IMAGE = "image"; // inline image/attachment element (conv.tagImage)
 const ATTACHMENT_ATTR = "attachment";
 const STYLE_PREFIX = "style/";
+// LINK_KEY is the annotation whose value is the URL a manual link points to (a link
+// on arbitrary text, distinct from render-time auto-linkification of literal URLs).
+// Modeled as a single annotation key carrying the href, like OG Wave's link/manual.
+const LINK_KEY = "link/manual";
 
 /** A contiguous run of text sharing the same active style annotations. */
 export interface Span {
   readonly text: string;
   /** CSS property → value, from style/<prop> annotations active over this run. */
   readonly styles: Readonly<Record<string, string>>;
+  /** The href of a manual link (link/manual annotation) active over this run, if any
+   *  (absent when there is no link). A link adds no doc items (a zero-width annotation),
+   *  so caret/offset mapping is unaffected; the renderer wraps the run in an <a>. */
+  readonly link?: string;
 }
 
 /**
@@ -154,7 +162,8 @@ export function project(content: DocOp): BlipProjection {
       case "characters": {
         const p = ensureParagraph();
         const styles = currentStyles(active);
-        appendTextItem(p, c.text, styles, pos); // record the run at its doc offset
+        const link = active.get(LINK_KEY); // the href active over this run, if any
+        appendTextItem(p, c.text, styles, link, pos); // record the run at its doc offset
         p.textLength += runeCount(c.text);
         pos += runeCount(c.text);
         break;
@@ -219,19 +228,37 @@ function currentStyles(active: Map<string, string>): Record<string, string> {
 }
 
 // appendTextItem appends a styled text run at doc offset `offset`, coalescing into the
-// previous item ONLY if it is also a text run with the same styles. A widget item
-// between two equal-style runs therefore breaks the run, preserving document order.
-function appendTextItem(p: MutParagraph, text: string, styles: Record<string, string>, offset: number): void {
+// previous item ONLY if it is also a text run with the same styles AND the same link
+// href. A widget item, a style change, or a link boundary between two runs therefore
+// breaks the run, preserving document order.
+function appendTextItem(
+  p: MutParagraph,
+  text: string,
+  styles: Record<string, string>,
+  link: string | undefined,
+  offset: number,
+): void {
   const last = p.items[p.items.length - 1];
-  if (last !== undefined && last.kind === "text" && sameStyles(last.span.styles, styles)) {
+  if (
+    last !== undefined &&
+    last.kind === "text" &&
+    last.span.link === link &&
+    sameStyles(last.span.styles, styles)
+  ) {
     p.items[p.items.length - 1] = {
       kind: "text",
-      span: { text: last.span.text + text, styles: last.span.styles },
+      span: mkSpan(last.span.text + text, last.span.styles, last.span.link),
       offset: last.offset, // keep the run's start offset
     };
   } else {
-    p.items.push({ kind: "text", span: { text, styles }, offset });
+    p.items.push({ kind: "text", span: mkSpan(text, styles, link), offset });
   }
+}
+
+// mkSpan builds a Span, omitting `link` entirely when there is none so a plain run is
+// exactly { text, styles } (keeps projections minimal and equality with non-link fixtures).
+function mkSpan(text: string, styles: Readonly<Record<string, string>>, link: string | undefined): Span {
+  return link === undefined ? { text, styles } : { text, styles, link };
 }
 
 function sameStyles(a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean {
@@ -429,7 +456,8 @@ function clamp(n: number, lo: number, hi: number): number {
  * of a single annotation key K, calling `cb` at each position where K's value
  * changes (including position 0 with the initial null). Returns the final active
  * value and the segments map: an array of {start, end, value} for each constant
- * K-value run. This is a helper for setStyleRange / clearStyleRange / rangeStyle.
+ * K-value run. The shared helper behind setAnnotationRange / rangeAnnotation (and so
+ * the style + link range builders/queries that wrap them).
  */
 interface KSegment {
   start: number; // doc item offset where this value begins
@@ -493,22 +521,29 @@ function valueAt(segments: KSegment[], pos: number): string | null {
 }
 
 /**
- * setStyleRange returns content-op components that set style/<prop> = value over
- * the text range [from, to). Annotation oldValues match the document's actual
- * values at each boundary, so compose() will accept the op without throwing.
+ * setAnnotationRange returns content-op components that set annotation key K to
+ * `value` (or remove it when `value` is null) over the text range [from, to).
+ * Annotation oldValues match the document's actual values at each boundary, so
+ * compose() accepts the op without throwing.
  *
  * For each interior segment of [from, to) where the document has a different
  * K-value, we emit a boundary that re-opens the key with the new value (with
- * the correct oldValue for that segment). At `to` we restore whatever value
- * the document had there.
+ * the correct oldValue for that segment). At `to` we restore whatever value the
+ * document had there. The generic core behind setStyleRange / clearStyleRange /
+ * setLink / clearLink — value=null reproduces the clear path exactly.
  */
-export function setStyleRange(content: DocOp, from: number, to: number, prop: string, value: string): Component[] {
+function setAnnotationRange(
+  content: DocOp,
+  from: number,
+  to: number,
+  K: string,
+  value: string | null,
+): Component[] {
   const len = content.documentLength();
   const a = clamp(from, 0, len);
   const b = clamp(to, a, len);
   if (a === b) return [...retain(len)];
 
-  const K = STYLE_PREFIX + prop;
   const segments = scanAnnotationKey(content, K);
 
   const out: Component[] = [];
@@ -572,66 +607,41 @@ export function setStyleRange(content: DocOp, from: number, to: number, prop: st
 }
 
 /**
+ * setStyleRange returns content-op components that set style/<prop> = value over the
+ * text range [from, to). A thin wrapper over setAnnotationRange on the style/<prop> key.
+ */
+export function setStyleRange(content: DocOp, from: number, to: number, prop: string, value: string): Component[] {
+  return setAnnotationRange(content, from, to, STYLE_PREFIX + prop, value);
+}
+
+/**
  * clearStyleRange returns content-op components that remove style/<prop> over
- * [from, to). Equivalent to setStyleRange with newValue=null for the interior,
- * with correct oldValues at each segment boundary.
+ * [from, to). Equivalent to setAnnotationRange on the style/<prop> key with value=null.
  */
 export function clearStyleRange(content: DocOp, from: number, to: number, prop: string): Component[] {
-  const len = content.documentLength();
-  const a = clamp(from, 0, len);
-  const b = clamp(to, a, len);
-  if (a === b) return [...retain(len)];
+  return setAnnotationRange(content, from, to, STYLE_PREFIX + prop, null);
+}
 
-  const K = STYLE_PREFIX + prop;
-  const segments = scanAnnotationKey(content, K);
+/**
+ * setLink returns content-op components that make [from, to) a manual link to `url`
+ * (a link/manual annotation carrying the href). The link adds no doc items, so the
+ * caret/offset mapping is unchanged; the renderer wraps the run in an <a>.
+ */
+export function setLink(content: DocOp, from: number, to: number, url: string): Component[] {
+  return setAnnotationRange(content, from, to, LINK_KEY, url);
+}
 
-  const out: Component[] = [];
+/** clearLink removes the manual link annotation over [from, to). */
+export function clearLink(content: DocOp, from: number, to: number): Component[] {
+  return setAnnotationRange(content, from, to, LINK_KEY, null);
+}
 
-  out.push(...retain(a));
-
-  // open at `a`: change K to null (endKey if already null, or change if set)
-  const vAtA = valueAt(segments, a);
-  if (vAtA !== null) {
-    out.push({
-      kind: "annotationBoundary",
-      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: vAtA, newValue: null }]),
-    });
-  }
-  // if vAtA is already null, no opening boundary needed
-
-  let prevPos = a;
-  for (const seg of segments) {
-    const p = seg.start;
-    if (p <= a) continue;
-    if (p >= b) break;
-    out.push(...retain(p - prevPos));
-    prevPos = p;
-    if (seg.value !== null) {
-      // Document has a non-null value here; clear it to null
-      out.push({
-        kind: "annotationBoundary",
-        boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: seg.value, newValue: null }]),
-      });
-    }
-    // if seg.value is null, key was already cleared in a previous boundary
-  }
-
-  out.push(...retain(b - prevPos));
-
-  // close at `b`: restore to document's K-value at `b`
-  const vAtB = valueAt(segments, b);
-  if (vAtB !== null) {
-    // document has a value at `b`; we were painting null → restore
-    out.push({
-      kind: "annotationBoundary",
-      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: null, newValue: vAtB }]),
-    });
-  }
-  // if vAtB is null, K is already null → no close boundary needed
-
-  out.push(...retain(len - b));
-
-  return out;
+/**
+ * rangeLink queries the active manual-link href over [from, to): the single href if
+ * the whole range carries the same one, "mixed" if it varies, or null if none.
+ */
+export function rangeLink(content: DocOp, from: number, to: number): string | null | "mixed" {
+  return rangeAnnotation(content, from, to, LINK_KEY);
 }
 
 /**
@@ -658,18 +668,17 @@ export function setLineType(
 }
 
 /**
- * rangeStyle queries the active value of style/<prop> over [from, to):
+ * rangeAnnotation queries the active value of annotation key K over [from, to):
  * - Returns the value if uniform (same non-null value throughout).
- * - Returns null if the style is absent throughout.
+ * - Returns null if the key is absent throughout.
  * - Returns "mixed" if the value varies within the range.
  * - For an empty range (from===to), returns the value active at that point.
  */
-export function rangeStyle(content: DocOp, from: number, to: number, prop: string): string | null | "mixed" {
+function rangeAnnotation(content: DocOp, from: number, to: number, K: string): string | null | "mixed" {
   const len = content.documentLength();
   const a = clamp(from, 0, len);
   const b = clamp(to, a, len);
 
-  const K = STYLE_PREFIX + prop;
   const segments = scanAnnotationKey(content, K);
 
   if (a === b) {
@@ -684,4 +693,9 @@ export function rangeStyle(content: DocOp, from: number, to: number, prop: strin
     if (seg.value !== first) return "mixed";
   }
   return first;
+}
+
+/** rangeStyle queries the active value of style/<prop> over [from, to). See rangeAnnotation. */
+export function rangeStyle(content: DocOp, from: number, to: number, prop: string): string | null | "mixed" {
+  return rangeAnnotation(content, from, to, STYLE_PREFIX + prop);
 }

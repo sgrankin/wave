@@ -6,6 +6,7 @@ import type { Component } from "../wave/types.ts";
 import { compose } from "../wave/compose.ts";
 import {
   caretToOffset,
+  clearLink,
   clearStyleRange,
   deleteInlineElement,
   deleteLineMarker,
@@ -13,9 +14,11 @@ import {
   insertText,
   paragraphText,
   project,
+  rangeLink,
   rangeStyle,
   replaceText,
   setLineType,
+  setLink,
   setStyleRange,
   splitLine,
   splitLineAt,
@@ -293,6 +296,59 @@ test("clearStyleRange: clears style over range that has mixed pre-existing value
   const p = proj.paragraphs[0]!;
   const anyBold = p.spans.some((s) => s.styles.fontWeight !== undefined);
   assert.equal(anyBold, false, "expected no fontWeight after clear");
+});
+
+// --- setLink / clearLink / rangeLink (manual links on arbitrary text) ---
+
+test("setLink: over a sub-range → that span carries the href, the rest does not", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart; // 3
+  // Link "hello" [base, base+5) to a URL.
+  const op = new DocOp(setLink(content, base, base + 5, "https://example.com/x"));
+  const next = compose(content, op); // must not throw
+  const p = project(next).paragraphs[0]!;
+  assert.equal(p.spans.length, 2, "the run splits at the link boundary");
+  assert.equal(p.spans[0]!.text, "hello");
+  assert.equal(p.spans[0]!.link, "https://example.com/x");
+  assert.equal(p.spans[1]!.text, " world");
+  assert.equal(p.spans[1]!.link, undefined, "text outside the range is not linked");
+});
+
+test("setLink: a link adds no doc items (length unchanged) so caret mapping is intact", () => {
+  const content = plainDoc();
+  const before = project(content).length;
+  const base = project(content).paragraphs[0]!.textStart;
+  const next = compose(content, new DocOp(setLink(content, base, base + 5, "https://e.co")));
+  assert.equal(project(next).length, before, "a zero-width annotation does not change document length");
+});
+
+test("setLink then clearLink restores the unlinked text", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  const linked = compose(content, new DocOp(setLink(content, base, base + 5, "https://e.co")));
+  assert.equal(rangeLink(linked, base, base + 5), "https://e.co", "range reports the uniform href");
+
+  const cleared = compose(linked, new DocOp(clearLink(linked, base, base + 5)));
+  const p = project(cleared).paragraphs[0]!;
+  assert.equal(p.spans.length, 1, "the run rejoins once the link is gone");
+  assert.equal(p.spans[0]!.text, "hello world");
+  assert.equal(p.spans[0]!.link, undefined);
+  assert.equal(rangeLink(cleared, base, base + 5), null);
+});
+
+test("rangeLink: reports null / a uniform href / mixed", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  assert.equal(rangeLink(content, base, base + 11), null, "no link → null");
+
+  // Link only "hello"; querying across "hello world" sees a value then null → mixed.
+  const doc1 = compose(content, new DocOp(setLink(content, base, base + 5, "https://a.co")));
+  assert.equal(rangeLink(doc1, base, base + 5), "https://a.co");
+  assert.equal(rangeLink(doc1, base, base + 11), "mixed", "linked then unlinked within the range → mixed");
+
+  // Two different hrefs in the range → mixed.
+  const doc2 = compose(doc1, new DocOp(setLink(doc1, base + 6, base + 11, "https://b.co")));
+  assert.equal(rangeLink(doc2, base, base + 11), "mixed", "two different hrefs → mixed");
 });
 
 test("setLineType: plain→h1 changes lineType in projection", () => {
