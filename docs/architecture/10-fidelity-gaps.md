@@ -11,18 +11,19 @@ divergent), and a one-line action. Ordered within each subsystem by severity.
 
 ## Top priorities (cross-subsystem)
 
-1. **[OT] No DocOp validator → silent document corruption** (the only gap that can
-   corrupt data). Apply = Compose, which cancels deletes by LENGTH only and never
-   checks deleted content / replaced attributes against the document. A length-correct
-   but content-wrong delta (buggy or malicious client) is applied, producing a corrupt
-   document + a hash that desyncs everyone. **Action: port a focused subset of Java
-   `DocOpValidator`/`DocOpAutomaton` and gate it on the server submit path before apply.**
-2. **[Editor] Undo/redo entirely absent** — a controlled contenteditable kills native
-   undo and nothing replaces it (OG had `EditorUndoManagerImpl`; the TS `invert()` op
-   primitive exists but is unused). The most jarring everyday regression. (Task #42.)
-3. **[Conversation] Read state is wavelet-granular, not per-blip** — can't tell *which*
-   blips are unread, only that the wave changed. Degrades Wave's core reading affordance.
-4. **[Server] A removed participant keeps receiving the live stream** until they
+Status key: ✅ shipped 2026-06-08.
+
+1. ✅ **[OT] No DocOp validator → silent document corruption** — DONE. `op.Validate` +
+   `wavelet.ValidateDelta` gate the submit path; reviewed (no bypass/false-positive).
+2. ✅ **[Editor] Undo/redo entirely absent** — DONE. Transform-based per-blip undo
+   (`web/src/wave/undo.ts` + clientcc), Cmd-Z/Cmd-Shift-Z; reviewed (OT-correct, 80k
+   fuzz). (Task #42.)
+3. **[Conversation] Read state is wavelet-granular, not per-blip** — NEXT. Can't tell
+   *which* blips are unread, only that the wave changed. (Note: blip/thread DELETE
+   authoring — also a conversation gap — is now ✅ DONE via `conv.SetBlipDeleted` +
+   the delete UI: a logically-deleted tombstone that keeps reply threads.)
+4. ✅ **[Server] A removed participant keeps receiving the live stream** — DONE (cut at
+   the removal boundary; reviewed). Original text: until they
    disconnect (membership enforced only at Open/Resync) — an access-control leak.
 5. **[Agent] One wave per socket, no create/discovery** — blocks the flagship "wave as
    shareable agent memory" use case (task #34); no structured-state primitive either.
