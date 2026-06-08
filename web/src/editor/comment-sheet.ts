@@ -43,11 +43,14 @@ export class CommentSheet extends LitElement {
   // onClose is set by the parent to dismiss the sheet (clears the open thread).
   onClose: (() => void) | null = null;
 
-  // Whether we've already auto-focused this open. The parent re-supplies a fresh
-  // `thread` object every conversation re-render, so we must NOT key auto-focus off
-  // "thread changed" — that would re-grab focus on every keystroke while the user
-  // types a comment. The sheet remounts per open, so this instance flag focuses once.
-  private didAutoFocus = false;
+  // Auto-focus discipline. We focus the reply input ONCE per open. We must NOT key
+  // this off "thread changed": the parent re-supplies a fresh `thread` object every
+  // conversation re-render, so that would re-grab focus on every keystroke. The sheet
+  // remounts per open, so these instance flags reset correctly each time.
+  private didAutoFocus = false; // already focused (true ⇒ never focus again this open)
+  private focusPending = false; // a focus-retry loop is in flight
+  private focusRaf = 0; // the pending retry frame (cancelled on disconnect)
+  private focusTries = 0;
 
   constructor() {
     super();
@@ -76,6 +79,7 @@ export class CommentSheet extends LitElement {
     document.removeEventListener("keydown", this.onKeydown);
     window.visualViewport?.removeEventListener("resize", this.onViewportChange);
     window.visualViewport?.removeEventListener("scroll", this.onViewportChange);
+    if (this.focusRaf !== 0) cancelAnimationFrame(this.focusRaf);
   }
 
   private onKeydown = (e: KeyboardEvent): void => {
@@ -100,14 +104,38 @@ export class CommentSheet extends LitElement {
   };
 
   protected override updated(): void {
-    // On open of a freshly-created comment, focus the reply input ONCE so the user can
-    // type (which raises the keyboard → measureKeyboard lifts the panel above it). Gated
-    // on didAutoFocus, not "thread changed": the parent re-supplies a new thread object
-    // each re-render, so keying off the change would re-focus on every keystroke.
-    if (!this.didAutoFocus && this.autoFocus && this.thread !== null) {
+    // On open of a freshly-created comment, focus the reply input so the user can type
+    // (which raises the keyboard → measureKeyboard lifts the panel above it). Start the
+    // retry loop once; it focuses exactly once (didAutoFocus) and stops.
+    if (!this.didAutoFocus && !this.focusPending && this.autoFocus && this.thread !== null) {
+      this.focusPending = true;
+      this.focusTries = 0;
+      this.tryAutoFocus();
+    }
+  }
+
+  // tryAutoFocus focuses the reply input (the last .blip-doc in the sheet). The nested
+  // wave-thread → wave-blip → blip-view chain renders in LATER microtasks/frames, so
+  // the input may not exist on the sheet's first updated() — retry across a few frames
+  // until it appears (then focus once and stop).
+  private tryAutoFocus(): void {
+    this.focusRaf = 0;
+    if (this.didAutoFocus || !this.isConnected) {
+      this.focusPending = false;
+      return;
+    }
+    const docs = this.querySelectorAll<HTMLElement>(".blip-doc");
+    const target = docs[docs.length - 1]; // the new (empty) comment blip is last
+    if (target !== undefined) {
       this.didAutoFocus = true;
-      const docs = this.querySelectorAll<HTMLElement>(".blip-doc");
-      docs[docs.length - 1]?.focus(); // the new (empty) comment blip is last
+      this.focusPending = false;
+      target.focus();
+      return;
+    }
+    if (this.focusTries++ < 15) {
+      this.focusRaf = requestAnimationFrame(() => this.tryAutoFocus());
+    } else {
+      this.focusPending = false; // give up rather than spin forever
     }
   }
 
