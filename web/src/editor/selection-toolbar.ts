@@ -333,7 +333,9 @@ const STYLES = html`
       position: fixed;
       top: 0;
       left: 0;
-      z-index: 1000;
+      /* Above the comment sheet (z 1100) so you can format text inside a comment — the
+         sheet's backdrop must not cover the formatting bar. */
+      z-index: 1200;
       /* The bar can float over the editor (it shows for a bare caret now), so it must
          NOT intercept clicks meant for the text — only its buttons are interactive.
          pointer-events: none here + auto on the buttons lets a click on the bar's
