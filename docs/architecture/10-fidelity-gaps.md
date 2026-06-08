@@ -92,11 +92,17 @@ Server transform-to-head, version/hash validation, dup-elimination, hash chain,
 snapshot+tail load, and fan-out faithfully reproduce OG; the client CC even tolerates
 the ack/delta race OG assumes away. The idle-eviction + digest-projection additions
 were sanity-checked: **no CC-invariant violation**. Gaps:
-- high / partial — **single-signature reconnect**: resync sends only the latest
-  confirmed version; OG carries a ladder (`getReconnectionVersions`/`reopen`) and can
-  recover from an older acked point. Port falls back to a full reset (losing unacked
-  edits) when the one point is gone. Small blast radius (synchronous commit, no log
-  truncation except snapshot pruning).
+- NOT a fidelity gap (verified) — **single-signature reconnect**: resync sends only the
+  latest confirmed version, and on a miss the port full-resets. This MATCHES OG: the
+  frozen box server also always full-reset — `ClientFrontendImpl` rejects a client's
+  known-version ladder with `"Known wavelets not supported"` and carries two
+  never-implemented TODOs ("calculate where to start sending deltas from" / "calculate
+  resync point") present since the initial import. The client-side ladder
+  (`getReconnectionVersions`/`OperationChannelMultiplexerImpl`) was prepared but the OG
+  server never honored it. So a server-side ladder-resume (recover unacked edits from an
+  older acked point instead of resetting) would be a **beyond-OG improvement**, not a
+  parity fix — low priority, ~300 LOC across the wire/CC/resync path (server history is
+  sufficient today; no storage change). Deferred as out-of-scope for a fidelity effort.
 - medium / divergent — **removed participant keeps streaming** (#4 above). Cut the
   subscription when a delta removes the subscriber, after delivering that delta.
 - medium / divergent — with snapshots on, a submit/resync targeting a pre-snapshot
