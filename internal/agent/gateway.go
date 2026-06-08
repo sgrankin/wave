@@ -94,6 +94,13 @@ func (g *Gateway) log() *slog.Logger {
 // streams live events to eventsOut and submits intents read from intentsIn, both as
 // newline-delimited JSON. It returns when ctx is cancelled, the wavelet
 // subscription closes, or the intent reader reaches EOF — whichever comes first.
+//
+// CONTRACT: when Run returns via ctx cancellation or the subscription closing, the
+// intent-reading goroutine is still parked in a blocking read on intentsIn — Run
+// does not own intentsIn and cannot interrupt an arbitrary io.Reader. The caller
+// MUST make intentsIn unblock when ctx is done (the production agentgw caller binds
+// it to a ctx-scoped net.Conn whose deferred cancel closes the read), else that
+// goroutine leaks. EOF on intentsIn always returns cleanly.
 func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Reader) error {
 	enc := json.NewEncoder(eventsOut)
 	// The snapshot reflects state at some version V; the live subscription started

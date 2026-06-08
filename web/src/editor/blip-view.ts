@@ -157,7 +157,10 @@ export class BlipView extends LitElement {
         // line, as in every editor. Enter on an EMPTY list item exits the list.
         const para = this.paragraphAtOffset(lo);
         if (para !== null && para.lineType === "li" && para.lineOffset !== null) {
-          if (range.collapsed && para.textLength === 0) {
+          // Exit the list only on a TRULY empty item — no text AND no widgets.
+          // textLength counts text runes only, so an item holding just an inline
+          // image/reply (widgetCount>0, textLength==0) must still SPLIT, not exit.
+          if (range.collapsed && para.items.length === 0) {
             this.tryEdit(() => setLineType(this.content, para.lineOffset!, "li", null), para.lineOffset);
             break;
           }
