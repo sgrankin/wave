@@ -23,6 +23,9 @@ type gwEvent struct {
 	Target       string `json:"target"`
 	Participants []string
 	Blips        []struct{ ID, Author, Text string }
+	Intent       string `json:"intent"`
+	ID           string `json:"id"`
+	Error        string `json:"error"`
 }
 
 // TestGatewayBridgesEventsAndIntents drives the out-of-process bridge end-to-end
@@ -261,4 +264,65 @@ func TestGatewayReplyIntent(t *testing.T) {
 	_ = eventsR.Close()
 	_ = intentsW.Close()
 	<-done
+}
+
+// TestGatewayReportsIntentError: a failed intent (here a reply to a nonexistent
+// blip) is reported back as an operation.error event carrying the failed intent's
+// kind, its echoed id, and the reason — so an LLM harness has an in-band failure
+// signal to retry or correct, rather than fire-and-forget.
+func TestGatewayReportsIntentError(t *testing.T) {
+	c, _ := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(3000)), func() string { return "b+gw" })
+	lc.Open()
+	defer lc.Close()
+
+	eventsR, eventsW := io.Pipe()
+	intentsR, intentsW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.NewGateway(lc, bot, nil).Run(ctx, eventsW, intentsR) }()
+
+	dec := json.NewDecoder(eventsR)
+	var snap gwEvent
+	if err := dec.Decode(&snap); err != nil { // the connect-time snapshot
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	// Reply to a blip that does not exist → the intent fails.
+	line := `{"type":"intent","kind":"reply.blip","id":"req-7","blipId":"b+nope","text":"hi"}` + "\n"
+	if _, err := intentsW.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+
+	var errEv gwEvent
+	for i := 0; i < 6; i++ {
+		var ev gwEvent
+		if err := dec.Decode(&ev); err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		if ev.Kind == agent.KindOperationError {
+			errEv = ev
+			break
+		}
+	}
+	if errEv.Kind != agent.KindOperationError {
+		t.Fatal("never received an operation.error event for the failed intent")
+	}
+	if errEv.Intent != "reply.blip" {
+		t.Errorf("operation.error intent = %q, want reply.blip", errEv.Intent)
+	}
+	if errEv.ID != "req-7" {
+		t.Errorf("operation.error id = %q, want the echoed req-7", errEv.ID)
+	}
+	if errEv.Error == "" {
+		t.Error("operation.error missing the failure reason")
+	}
 }

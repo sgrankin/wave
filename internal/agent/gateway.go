@@ -42,12 +42,18 @@ type wireEvent struct {
 	Target       string     `json:"target,omitempty"`
 	Participants []string   `json:"participants,omitempty"` // wave.opened
 	Blips        []wireBlip `json:"blips,omitempty"`        // wave.opened
+	Intent       string     `json:"intent,omitempty"`       // operation.error: the failed intent's kind
+	ID           string     `json:"id,omitempty"`           // operation.error: the failed intent's echoed id
+	Error        string     `json:"error,omitempty"`        // operation.error: the failure reason
 }
 
-// wireIntent is an intent received from the harness (type:"intent").
+// wireIntent is an intent received from the harness (type:"intent"). An optional id
+// is echoed back on an operation.error so the harness can correlate a failure with
+// the intent that caused it (and retry).
 type wireIntent struct {
 	Type        string `json:"type"` // expected "intent"
 	Kind        string `json:"kind"`
+	ID          string `json:"id,omitempty"`
 	ThreadID    string `json:"threadId,omitempty"`
 	BlipID      string `json:"blipId,omitempty"`
 	Text        string `json:"text,omitempty"`
@@ -58,6 +64,11 @@ type wireIntent struct {
 // KindWaveOpened is the wire-only event kind for the connect-time snapshot (it has
 // no Go Event counterpart — it is assembled from the current wavelet state).
 const KindWaveOpened = "wave.opened"
+
+// KindOperationError is the wire-only event kind reporting that a submitted intent
+// failed (invalid target, rate-limited, lost an OT race). Without it a failed intent
+// is fire-and-forget — an LLM harness has no in-band signal to retry or correct.
+const KindOperationError = "operation.error"
 
 // Gateway runs the bridge for one opened LocalClient.
 type Gateway struct {
@@ -94,8 +105,11 @@ func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Rea
 		return fmt.Errorf("agent gateway: write snapshot: %w", err)
 	}
 
-	// Intents in: each line is one intent; submit it. EOF ends this direction.
+	// Intents in: each line is one intent; submit it. EOF ends this direction. A
+	// failed intent is reported back as an operation.error event (sent on opEvents,
+	// encoded by the main loop so all writes to eventsOut stay serialized).
 	intentErr := make(chan error, 1)
+	opEvents := make(chan wireEvent, 8)
 	go func() {
 		sc := bufio.NewScanner(intentsIn)
 		sc.Buffer(make([]byte, 0, 64<<10), 1<<20) // allow long lines, bound them
@@ -111,6 +125,12 @@ func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Rea
 			}
 			if err := g.client.SubmitIntent(intentOf(wi)); err != nil {
 				g.log().Warn("agent gateway: submit intent", "kind", wi.Kind, "err", err)
+				ev := wireEvent{Type: "event", Kind: KindOperationError, Intent: wi.Kind, ID: wi.ID, Error: err.Error()}
+				select {
+				case opEvents <- ev:
+				default:
+					g.log().Warn("agent gateway: dropped operation.error (harness too slow)", "kind", wi.Kind)
+				}
 			}
 		}
 		intentErr <- sc.Err()
@@ -124,6 +144,10 @@ func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Rea
 			return ctx.Err()
 		case err := <-intentErr:
 			return err // the harness closed its intent stream
+		case ev := <-opEvents:
+			if err := enc.Encode(ev); err != nil {
+				return fmt.Errorf("agent gateway: write operation.error: %w", err)
+			}
 		case u, ok := <-updates:
 			if !ok {
 				return nil // subscription ended
