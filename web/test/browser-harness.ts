@@ -120,6 +120,18 @@ export async function client(user: string, waveLocal: string): Promise<Page> {
   return page;
 }
 
+/** Open a connected editor page in a TOUCH context (hasTouch + isMobile → coarse
+ *  pointer + maxTouchPoints>0 + a phone viewport), so coarse-pointer behavior — the
+ *  bottom toolbar, the full-height comment sheet — actually engages in the harness. */
+export async function touchClient(user: string, waveLocal: string, width = 390, height = 844): Promise<Page> {
+  if (browser === undefined) throw new Error("browser-harness: startServer() not called");
+  const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width, height } });
+  const page = await ctx.newPage();
+  await page.goto(pageURL(user, waveLocal));
+  await page.locator(".blip-doc").first().waitFor({ state: "attached", timeout: 10_000 });
+  return page;
+}
+
 /** Open the app shell for `user` at the root (inbox, no wave selected); waits
  *  until the shell (the New-wave button) has rendered. */
 export async function openApp(user: string): Promise<Page> {
