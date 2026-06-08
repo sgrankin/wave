@@ -63,8 +63,12 @@ per-user **supplement** is the systematic hole (spec §6 documents it fully):
 - high / missing — blip / thread **deletion authoring** (the read path parses
   `deleted="true"` but nothing writes it; no tombstone-vs-remove logic). Users can't
   delete a blip.
-- high / missing — archive / mute / "move to inbox" (inbox is just "all waves you're
-  in"; no way to archive a wave out of it). Possibly a conscious scope cut — decide.
+- ✅ **archive — DONE** (shipped+reviewed): per-participant `inbox_archive` store +
+  `POST /api/archive` + `/api/inbox?archived=1` view; wave-list Archive/Restore button
+  + Inbox/Archived toggle. Archiving is a private inbox preference (not a membership
+  change); search intentionally spans archived (Gmail model). Reviewed SHIP (no authz
+  hole, filter correct). Remaining: mute / folders (lower value); `?archived=1`+limit
+  windowing is a noted follow-up (push the filter into the index query).
 - medium / missing — folders; seen-version (distinct from read); thread collapse/expand
   persistence; pending-notification/notified-version (notif dedup is per-browser today).
 - medium / partial — orphaned inline-reply threads (anchor text deleted) aren't
