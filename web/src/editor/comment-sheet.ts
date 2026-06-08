@@ -224,17 +224,18 @@ const STYLES = html`
         opacity: 1;
       }
     }
-    /* Desktop: a centered bottom card. */
-    @media (min-width: 640px) {
-      comment-sheet .cs-backdrop:not(.coarse) {
-        align-items: center;
-      }
-      comment-sheet .cs-backdrop:not(.coarse) .cs-panel {
-        width: 560px;
-        max-width: calc(100vw - 32px);
-        border-radius: 14px;
-        margin-bottom: 24px;
-      }
+    /* Fine pointer (mouse): a centered card, consistent at all widths. The layout is
+       driven purely by the coarse signal — touch -> full-height sheet (above), mouse ->
+       this card — NOT a width breakpoint, so it never disagrees with the app's
+       master-detail breakpoint. */
+    comment-sheet .cs-backdrop:not(.coarse) {
+      align-items: center;
+    }
+    comment-sheet .cs-backdrop:not(.coarse) .cs-panel {
+      width: 560px;
+      max-width: calc(100vw - 32px);
+      border-radius: 14px;
+      margin-bottom: 24px;
     }
     /* TOUCH: a full-height sheet covering the visual viewport (height + translateY set in
        JS). No exposed backdrop → no scroll leak; no gap to the keyboard → no jitter. */

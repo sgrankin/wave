@@ -179,6 +179,22 @@ const STYLES = html`
       max-width: 360px;
       accent-color: #4060c0;
     }
+    /* On a phone the slider + version + author/date don't fit one line: wrap, and give
+       the slider its own full-width row above the labels (and a taller coarse target). */
+    @media (max-width: 560px) {
+      wave-playback .pb-bar {
+        flex-wrap: wrap;
+      }
+      wave-playback .pb-slider {
+        flex-basis: 100%;
+        max-width: none;
+      }
+    }
+    @media (pointer: coarse) {
+      wave-playback .pb-slider {
+        min-height: 28px;
+      }
+    }
     wave-playback .pb-slider:focus-visible {
       outline: 2px solid #4060c0;
       outline-offset: 4px;

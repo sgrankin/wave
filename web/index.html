@@ -19,6 +19,12 @@
          mobile browser's collapsing address bar. */
       html, body { margin: 0; height: 100%; }
       body { font-family: system-ui, sans-serif; }
+      /* iOS Safari zooms the viewport when a focused input/contenteditable has a
+         sub-16px font (and never zooms back). Force >=16px on every text-entry surface
+         on touch devices so focusing a blip or a field doesn't shift the layout. */
+      @media (pointer: coarse) {
+        input, textarea, [contenteditable="true"] { font-size: 16px !important; }
+      }
     </style>
   </head>
   <body>

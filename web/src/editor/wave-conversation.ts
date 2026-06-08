@@ -386,7 +386,7 @@ export class WaveConversation extends LitElement {
           }
         }
       } catch (e) {
-        body = html`<p class="conv-error">malformed manifest: ${String(e)}</p>`;
+        body = html`<p class="conv-error" role="alert">malformed manifest: ${String(e)}</p>`;
       }
     }
 
@@ -394,7 +394,7 @@ export class WaveConversation extends LitElement {
 
     return html`
       ${STYLES}
-      <div class=${"conv-bar" + connBarClass(this.status)}>${this.status}</div>
+      <div class=${"conv-bar" + connBarClass(this.status)} role="status" aria-live="polite">${this.status}</div>
       ${roster}
       ${this._renderPresence()}
       ${body}
@@ -413,7 +413,7 @@ export class WaveConversation extends LitElement {
       .filter((p) => p.typing)
       .map((p) => displayNameFor(p.participant, profiles.get(p.participant)));
     return html`
-      <div class="conv-presence" title="Who else is here">
+      <div class="conv-presence" title="Who else is here" role="status" aria-live="polite">
         ${peers.map(
           (p) =>
             html`<span class="presence-peer ${p.typing ? "typing" : ""}" title=${p.participant}
@@ -633,6 +633,12 @@ const STYLES = html`
       padding: 8px 10px;
       background: #fff;
     }
+    /* The contenteditable sets outline:none, so light the whole card when focus is
+       inside it — otherwise an edited blip has no focus indication. */
+    wave-conversation blip-view:focus-within {
+      border-color: #4060c0;
+      box-shadow: 0 0 0 2px rgba(64, 96, 192, 0.15);
+    }
     wave-conversation .blip-actions {
       margin: 2px 0 0;
     }
@@ -814,6 +820,13 @@ const STYLES = html`
       }
       wave-conversation .add-participant-input {
         padding: 7px 8px;
+      }
+      /* The roster × is a small glyph; enlarge its HIT AREA (transparent padding) to a
+         comfortable touch target without bloating the chip. */
+      wave-conversation .roster-remove {
+        min-width: 44px;
+        min-height: 36px;
+        margin-left: 0;
       }
     }
   </style>

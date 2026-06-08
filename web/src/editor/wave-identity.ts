@@ -112,7 +112,7 @@ export class WaveIdentity extends LitElement {
           />
           <button type="submit" class="identity-save">Save</button>
           <button type="button" class="identity-cancel" @click=${this.cancel}>Cancel</button>
-          ${this.saveError ? html`<span class="identity-error">couldn't save</span>` : html``}
+          ${this.saveError ? html`<span class="identity-error" role="alert">couldn't save</span>` : html``}
         </form>
       `;
     }
@@ -217,6 +217,17 @@ const STYLES = html`
     wave-identity .identity-error {
       color: #c62828;
       font: 11px system-ui, sans-serif;
+    }
+    /* Comfortable, non-adjacent touch targets — sign out is destructive and was ~14px
+       tall right next to edit. */
+    @media (pointer: coarse) {
+      wave-identity .identity-edit,
+      wave-identity .identity-save,
+      wave-identity .identity-cancel,
+      wave-identity .identity-logout {
+        min-height: 40px;
+        padding: 8px 12px;
+      }
     }
   </style>
 `;

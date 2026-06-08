@@ -467,5 +467,15 @@ const STYLES = html`
         padding: 8px 14px;
       }
     }
+    /* Comfortable touch targets on a coarse pointer (iOS HIG ~44px). */
+    @media (pointer: coarse) {
+      wave-app .mode-btn {
+        min-height: 44px;
+        padding: 8px 14px;
+      }
+      wave-app .nav-toggle {
+        min-height: 44px;
+      }
+    }
   </style>
 `;
