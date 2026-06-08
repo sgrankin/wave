@@ -75,14 +75,15 @@ export class WaveBlip extends LitElement {
     );
   }
 
-  // anchorOffset returns the doc offset (line boundary) where an inline element
-  // should attach — the caret's line, or the end of the blip if the caret is
-  // elsewhere.
+  // anchorOffset returns the doc offset where an inline element should attach — the
+  // EXACT caret offset (the selection's low end), or the end of the blip if the caret
+  // is elsewhere. The caret mapping counts inline elements as their doc items, so a
+  // mid-text anchor is caret-safe.
   private anchorOffset(): number {
     const view = this.querySelector("blip-view") as
-      | (HTMLElement & { caretLineEndOffset(): number | null })
+      | (HTMLElement & { caretAnchorOffset(): number | null })
       | null;
-    const off = view?.caretLineEndOffset() ?? null;
+    const off = view?.caretAnchorOffset() ?? null;
     if (off !== null) return off;
     const len = this.controller.blipContent(this.blip.id).documentLength();
     return Math.max(0, len - 1); // before </body>

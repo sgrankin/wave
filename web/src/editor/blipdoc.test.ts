@@ -419,3 +419,50 @@ test("project surfaces an inline image without disturbing the caret math", () =>
   assert.equal(caretToOffset(proj, 0, 2), p.textStart + 2, "caret at line end is before the image");
   assert.equal(proj.length, 8, "8 doc items (body, line/, h, i, image/, body)");
 });
+
+// --- mid-text inline elements (the exact-offset anchoring model) ---
+
+test("project records a mid-text reply anchor at its exact offset", () => {
+  // <body><line/>ab<reply id="b+r"/>cd</body>
+  const content = new DocOp([es("body"), es("line"), ee, ch("ab"), es("reply", { id: "b+r" }), ee, ch("cd"), ee]);
+  const proj = project(content);
+  const p = proj.paragraphs[0]!;
+  assert.deepEqual(p.items.map((i) => i.kind), ["text", "reply", "text"], "ordered: text, widget, text");
+  assert.deepEqual(p.items.map((i) => i.offset), [3, 5, 7], "each item at its exact doc offset");
+  assert.equal(p.textLength, 4, "the widget is not counted in textLength");
+  assert.equal(p.paragraphEnd, 9, "paragraphEnd = textStart(3) + textLength(4) + 2*1 widget");
+  assert.deepEqual(p.anchors, ["b+r"], "derived anchors view still works");
+  assert.equal(paragraphText(p), "abcd", "text excludes the widget");
+  assert.equal(proj.length, content.documentLength(), "projection length == document length");
+});
+
+test("project records a reply at the very start of a paragraph", () => {
+  // <body><line/><reply id="r"/>hi</body>
+  const content = new DocOp([es("body"), es("line"), ee, es("reply", { id: "r" }), ee, ch("hi"), ee]);
+  const p = project(content).paragraphs[0]!;
+  assert.deepEqual(p.items.map((i) => i.kind), ["reply", "text"]);
+  assert.deepEqual(p.items.map((i) => i.offset), [3, 5], "reply at textStart(3); text after at 5");
+  assert.equal(paragraphText(p), "hi");
+});
+
+test("project records two adjacent inline images at increasing offsets", () => {
+  // <body><line/>x<image attachment="a"/><image attachment="b"/></body>
+  const content = new DocOp([
+    es("body"), es("line"), ee, ch("x"),
+    es("image", { attachment: "a" }), ee,
+    es("image", { attachment: "b" }), ee, ee,
+  ]);
+  const p = project(content).paragraphs[0]!;
+  assert.deepEqual(p.items.map((i) => i.kind), ["text", "image", "image"]);
+  assert.deepEqual(p.items.map((i) => i.offset), [3, 4, 6], "image A at 4, image B at 6 (each 2 items)");
+  assert.deepEqual(p.images, ["a", "b"]);
+  assert.equal(p.paragraphEnd, 8, "textStart(3) + textLength(1) + 2*2 widgets");
+});
+
+test("a widget breaks text-run coalescing (preserves document order)", () => {
+  // Two same-(no-)style runs separated by a widget must NOT merge into one item.
+  const content = new DocOp([es("body"), es("line"), ee, ch("ab"), es("reply", { id: "r" }), ee, ch("cd"), ee]);
+  const p = project(content).paragraphs[0]!;
+  const texts = p.items.filter((i) => i.kind === "text");
+  assert.equal(texts.length, 2, "the widget keeps the two equal-style runs as separate ordered items");
+});

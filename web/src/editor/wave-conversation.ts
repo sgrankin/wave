@@ -293,7 +293,7 @@ export class WaveConversation extends LitElement {
             blipContentOp(author, id, initialBlipContent()),
           ];
           // For an inline reply, also anchor it in the parent blip body at the
-          // requested line boundary (clamped to the current content length, since
+          // requested caret offset (clamped to the current content length, since
           // submitWith re-reads the live blip at submit time).
           if (inline && anchorOffset !== undefined) {
             const parentBody = blip(parentId);
@@ -341,7 +341,7 @@ export class WaveConversation extends LitElement {
           } catch {
             return; // best-effort
           }
-          // Insert the inline image at the requested line boundary, clamped to
+          // Insert the inline image at the requested caret offset, clamped to
           // before the final </body> (submitWith re-reads the live blip).
           void client.submitWith((blip) => {
             const content = blip(blipId);

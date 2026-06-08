@@ -190,3 +190,77 @@ function firstText(el: Element): Text | null {
   }
   return null;
 }
+
+// --- inline elements occupy their offset units (exact-offset anchoring) ---
+
+// The mapping internals (offsetToDom/domToOffset) are private; TS `private` is erased
+// at runtime, so a white-box mapping test reaches them via a typed cast. This is the
+// load-bearing bijection the whole exact-offset design rests on.
+interface MappingInternals {
+  offsetToDom(offset: number): { node: Node; offset: number } | null;
+  domToOffset(node: Node, domOffset: number): number | null;
+}
+function mapping(el: HTMLElement): MappingInternals {
+  return el as unknown as MappingInternals;
+}
+
+// Build <body><line/>ab<reply id=r/>cd<image attachment=x/>ef</body>:
+//   body0 line1 /line2 a3 b4 reply5 /reply6 c7 d8 image9 /image10 e11 f12 /body13
+// Paragraph: textStart 3, textLength 6, 2 widgets → paragraphEnd 13. Valid caret
+// offsets (a caret cannot sit inside a 2-item widget) are 3,4,5,7,8,9,11,12,13.
+function bodyWithMidTextWidgets(): DocOp {
+  return new DocOp([
+    { kind: "elementStart", type: "body", attributes: Attributes.empty() },
+    { kind: "elementStart", type: "line", attributes: Attributes.empty() },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "ab" },
+    { kind: "elementStart", type: "reply", attributes: Attributes.of({ id: "r" }) },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "cd" },
+    { kind: "elementStart", type: "image", attributes: Attributes.of({ attachment: "x" }) },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "ef" },
+    { kind: "elementEnd" },
+  ]);
+}
+
+// THE bijection guard: for every valid caret offset across a paragraph that mixes text
+// + a reply + text + an image + text, offsetToDom then domToOffset returns the same
+// offset. An off-by-the-widget's-2-items error here would corrupt OT convergence.
+export async function testInlineWidgetOffsetRoundTrip(t: T): Promise<void> {
+  const el = await renderBlip(bodyWithMidTextWidgets());
+  const m = mapping(el);
+  for (const o of [3, 4, 5, 7, 8, 9, 11, 12, 13]) {
+    const pos = m.offsetToDom(o);
+    eq(pos !== null, true, `offsetToDom(${o}) resolves to a DOM position`);
+    if (pos === null) continue;
+    eq(m.domToOffset(pos.node, pos.offset), o, `round-trip offset ${o} (text+reply+text+image+text)`);
+  }
+  // An interior offset (inside the 2-item reply at 5..7) is not a valid caret; it
+  // clamps to BEFORE the widget (offset 5), never into the widget.
+  const interior = m.offsetToDom(6);
+  eq(interior !== null, true, "interior offset still resolves");
+  if (interior !== null) eq(m.domToOffset(interior.node, interior.offset), 5, "interior clamps to before the widget");
+}
+
+// Typing immediately before a mid-text widget inserts at the widget's elementStart;
+// immediately after inserts past its 2 items — NOT snapped to the line end.
+export async function testTypingAroundMidTextWidget(t: T): Promise<void> {
+  const el = await renderBlip(bodyWithMidTextWidgets());
+  const m = mapping(el);
+
+  const before = m.offsetToDom(5); // before the reply (after "ab")
+  if (before === null) throw new Error("no DOM position before the reply");
+  setCaret(before.node, before.offset);
+  eq(insertOffsetAfterTyping(el, "Z"), 5, "typing before the reply inserts at its elementStart (offset 5)");
+
+  const after = m.offsetToDom(7); // after the reply (before "cd")
+  if (after === null) throw new Error("no DOM position after the reply");
+  setCaret(after.node, after.offset);
+  eq(insertOffsetAfterTyping(el, "Z"), 7, "typing after the reply inserts past its 2 items (offset 7)");
+
+  const afterImg = m.offsetToDom(11); // after the image (before "ef")
+  if (afterImg === null) throw new Error("no DOM position after the image");
+  setCaret(afterImg.node, afterImg.offset);
+  eq(insertOffsetAfterTyping(el, "Z"), 11, "typing after the image inserts at offset 11, not the line end");
+}

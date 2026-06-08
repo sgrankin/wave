@@ -43,8 +43,8 @@ export interface ConvController {
   continueThread(threadId: string): void;
   // Create a new reply thread under a blip (and its first blip), in one delta.
   // When inline and anchorOffset is given, also place a <reply> anchor in the
-  // parent blip body at that offset (a line boundary) so the reply is anchored
-  // within the text. Returns the new thread's id (== its first blip's id) so the
+  // parent blip body at that offset (the exact caret offset) so the reply is
+  // anchored at the selection within the text. Returns the new thread's id (== its first blip's id) so the
   // caller can open it (e.g. the inline-comment sheet auto-opens on creation).
   replyToBlip(parentBlipId: string, inline: boolean, anchorOffset?: number): string;
   // The current optimistic participant roster (may change on each re-render).
@@ -54,7 +54,7 @@ export interface ConvController {
   // Submit a removeParticipant op for addr (removing yourself = leaving the wave).
   removeParticipant(addr: string): void;
   // Upload file as an attachment and insert an inline <image> referencing it into
-  // blipId at the given doc offset (a line boundary). Best-effort (no-op on failure).
+  // blipId at the given doc offset (the caret offset). Best-effort (no-op on failure).
   attachImage(blipId: string, file: File, offset: number): void;
   // Publish our caret/selection (rune offsets) in blipId to the presence channel so
   // peers can render it. Optional — a fake/headless controller may omit it.

@@ -354,26 +354,28 @@ export class BlipView extends LitElement {
     return null;
   }
 
-  // paragraphAtOffset returns the paragraph whose text range contains `offset`.
+  // paragraphAtOffset returns the paragraph whose content range contains `offset`.
+  // Uses paragraphEnd (textStart + textLength + 2*widgetCount), NOT textStart+textLength,
+  // so a caret after a mid-text/trailing widget resolves to the right paragraph.
   private paragraphAtOffset(offset: number): Paragraph | null {
     for (const p of this.proj.paragraphs) {
-      if (offset >= p.textStart && offset <= p.textStart + p.textLength) return p;
+      if (offset >= p.textStart && offset <= p.paragraphEnd) return p;
     }
     return this.proj.paragraphs[this.proj.paragraphs.length - 1] ?? null;
   }
 
-  // caretLineEndOffset returns the doc offset at the end of the paragraph that
-  // contains the caret — the line boundary where an inline-reply anchor attaches —
-  // or null if there is no caret in this view. Anchoring at a line boundary (not
-  // mid-text) keeps the caret/offset mapping unaffected by the inserted anchor.
-  caretLineEndOffset(): number | null {
+  // caretAnchorOffset returns the EXACT doc offset of the caret (the selection's low
+  // end), so an inline-reply anchor / image attaches right at the caret, not at the line
+  // end. The mapping now counts inline elements as their doc items, so a mid-text anchor
+  // is caret-safe. Returns null if there is no caret in this view.
+  caretAnchorOffset(): number | null {
     const range = currentRange(this);
     if (range === null) return null;
-    const off = this.domToOffset(range.startContainer, range.startOffset);
-    if (off === null) return null;
-    const para = this.paragraphAtOffset(off);
-    if (para === null) return null;
-    return para.textStart + para.textLength;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    if (a === null) return null;
+    if (range.collapsed) return a;
+    const b = this.domToOffset(range.endContainer, range.endOffset);
+    return b === null ? a : Math.min(a, b); // low end of the selection
   }
 
   // --- DOM <-> doc offset mapping ---
@@ -393,7 +395,7 @@ export class BlipView extends LitElement {
       const idx = paras.indexOf(el);
       const para = this.proj.paragraphs[idx];
       if (para === undefined) return null;
-      return para.textStart + runeOffsetWithin(el, node, domOffset);
+      return para.textStart + docItemsBefore(el, node, domOffset);
     }
 
     // The caret is NOT inside any paragraph: the browser parked it on the editable
@@ -417,7 +419,7 @@ export class BlipView extends LitElement {
     const ps = this.proj.paragraphs;
     const lastEnd = (): number | null => {
       const last = ps[ps.length - 1];
-      return last === undefined ? null : last.textStart + last.textLength;
+      return last === undefined ? null : last.paragraphEnd;
     };
     if (ref === null) return lastEnd();
     for (let i = 0; i < paras.length; i++) {
@@ -440,18 +442,18 @@ export class BlipView extends LitElement {
     if (paras.length === 0) return null;
 
     let idx = this.proj.paragraphs.length - 1;
-    let runeOff = 0;
+    let itemOff = 0;
     for (let i = 0; i < this.proj.paragraphs.length; i++) {
       const p = this.proj.paragraphs[i]!;
-      if (offset <= p.textStart + p.textLength) {
+      if (offset <= p.paragraphEnd) {
         idx = i;
-        runeOff = Math.max(0, offset - p.textStart);
+        itemOff = Math.max(0, offset - p.textStart); // a doc-ITEM offset within the paragraph
         break;
       }
     }
     const paraEl = paras[Math.min(idx, paras.length - 1)];
     if (paraEl === undefined) return null;
-    return domAtRuneOffset(paraEl, runeOff);
+    return domAtDocOffset(paraEl, itemOff);
   }
 
   // --- toolbar state queries ---
@@ -652,7 +654,9 @@ export class BlipView extends LitElement {
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
         .blip-doc .reply-anchor { user-select: none; cursor: pointer; }
         .blip-doc .reply-anchor::after { content: "💬"; font-size: 0.8em; opacity: 0.55; margin-left: 1px; }
-        .blip-doc .wave-image { display: block; margin: 4px 0; user-select: none; }
+        /* inline-block (not block): a mid-text image stays on its line so the caret
+           positions around it correctly; block would split the sentence onto its own line. */
+        .blip-doc .wave-image { display: inline-block; margin: 0 2px; vertical-align: bottom; user-select: none; }
         .blip-doc .wave-image img { max-width: 100%; max-height: 320px; border-radius: 6px; vertical-align: bottom; }
         /* Remote-caret overlay: an absolutely-positioned, non-interactive layer over
            the text. It sits OUTSIDE .blip-doc (a stray element inside the contenteditable
@@ -755,6 +759,8 @@ const EMPTY_PARAGRAPH: Paragraph = {
   lineOffset: null,
   textStart: 0,
   textLength: 0,
+  paragraphEnd: 0,
+  items: [],
   spans: [],
   anchors: [],
   images: [],
@@ -762,41 +768,53 @@ const EMPTY_PARAGRAPH: Paragraph = {
 
 function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
   const style = paragraphStyle(p);
-  const body = p.spans.length === 0 ? html`<br />` : p.spans.map((s) => renderSpan(s, selfAddress));
-  // Inline-reply anchors render as a non-editable marker (glyph via CSS ::after, no
-  // text node) after the paragraph's text, so they do not affect the caret mapping.
-  const markers = p.anchors.map(
-    (id) => html`<span
-      class="reply-anchor"
-      data-thread-id=${id}
-      contenteditable="false"
-      title="Go to inline reply"
-      @mousedown=${(e: MouseEvent) => {
-        // preventDefault so clicking the glyph doesn't move the editor caret; dispatch
-        // a bubbling event <wave-conversation> turns into opening the comment sheet for
-        // this thread. focus:false — tapping to READ should not steal focus / raise the
-        // keyboard (comment CREATION sets focus:true).
-        e.preventDefault();
-        (e.currentTarget as HTMLElement).dispatchEvent(
-          new CustomEvent<{ id: string; focus: boolean }>("anchor-activate", {
-            detail: { id, focus: false },
-            bubbles: true,
-            composed: true,
-          }),
-        );
-      }}
-    ></span>`,
-  );
-  // Inline images render as a non-editable <img> after the text — same caret-safe
-  // pattern (the wrapper carries no text node, so rune-count caret mapping is
-  // unaffected). The src is the attachment download URL.
-  const images = p.images.map(
-    (att) =>
-      html`<span class="wave-image" contenteditable="false"
-        ><img src=${"/attachments/" + att} alt="attachment"
-      /></span>`,
-  );
-  return html`<div class="para" style=${style}>${body}${markers}${images}</div>`;
+  // Render the paragraph's inline content (text runs + reply/image widgets) in DOCUMENT
+  // ORDER, so a widget sits at its true position rather than being appended at the end.
+  // An empty paragraph still needs a <br/> so the line has height + a caret target.
+  if (p.items.length === 0) return html`<div class="para" style=${style}><br /></div>`;
+  const parts = p.items.map((it) => {
+    if (it.kind === "text") return renderSpan(it.span, selfAddress);
+    if (it.kind === "reply") return renderReplyAnchor(it.id);
+    return renderImage(it.attachment);
+  });
+  return html`<div class="para" style=${style}>${parts}</div>`;
+}
+
+// renderReplyAnchor renders the inline-reply 💬 marker: a non-editable span carrying
+// NO text node (the glyph is CSS ::after), so it adds zero document text. It declares
+// its document weight via data-doc-items="2" (elementStart + elementEnd) — the single
+// contract the DOM↔doc caret walk uses to count it, so a mid-text anchor keeps the
+// caret↔offset mapping exact. Clicking it opens the comment sheet for its thread.
+function renderReplyAnchor(id: string): TemplateResult {
+  return html`<span
+    class="reply-anchor"
+    data-thread-id=${id}
+    data-doc-items="2"
+    contenteditable="false"
+    title="Go to inline reply"
+    @mousedown=${(e: MouseEvent) => {
+      // preventDefault so clicking the glyph doesn't move the editor caret; dispatch a
+      // bubbling event <wave-conversation> turns into opening the comment sheet for this
+      // thread. focus:false — tapping to READ should not steal focus / raise the keyboard.
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).dispatchEvent(
+        new CustomEvent<{ id: string; focus: boolean }>("anchor-activate", {
+          detail: { id, focus: false },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+    }}
+  ></span>`;
+}
+
+// renderImage renders an inline image: a non-editable span (NO text node) wrapping an
+// <img> from the attachment URL. Same caret-safety + data-doc-items="2" contract as the
+// reply anchor, so it occupies its 2 doc items at its true mid-text position.
+function renderImage(attachment: string): TemplateResult {
+  return html`<span class="wave-image" data-doc-items="2" contenteditable="false"
+    ><img src=${"/attachments/" + attachment} alt="attachment"
+  /></span>`;
 }
 
 function renderSpan(s: Span, selfAddress: string): TemplateResult {
@@ -880,30 +898,71 @@ function currentRange(host: HTMLElement): Range | null {
   return r;
 }
 
-// runeOffsetWithin computes the rune offset of (node, offset) within a paragraph
-// element, summing the text content that precedes the point in document order.
-function runeOffsetWithin(para: HTMLElement, node: Node, domOffset: number): number {
-  let runes = 0;
+// isWidget reports whether a node is an inline-element widget (reply/image) — an
+// element that declares its document weight via data-doc-items. Such a widget is
+// ATOMIC: the caret walk counts it as its declared item count and never descends into
+// it (it carries no document text of its own).
+function isWidget(n: Node): n is HTMLElement {
+  return n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).dataset["docItems"] !== undefined;
+}
+
+// docItemCount is the number of DOC ITEMS a DOM node contributes: a text node → its
+// rune count; a widget element → its declared data-doc-items (e.g. 2 = elementStart +
+// elementEnd); a decoration element (styled span / wave-link / wave-mention, no
+// data-doc-items) → the rune count of the text it wraps; comments (Lit markers) and
+// everything else → 0. (Counting a Lit marker comment as text once misplaced the caret.)
+function docItemCount(n: Node): number {
+  if (n.nodeType === Node.TEXT_NODE) return runeCount(n.textContent ?? "");
+  if (n.nodeType === Node.ELEMENT_NODE) {
+    const el = n as HTMLElement;
+    const declared = el.dataset["docItems"];
+    if (declared !== undefined) return Number.parseInt(declared, 10) || 0;
+    return runeCount(el.textContent ?? "");
+  }
+  return 0;
+}
+
+// docItemsBefore computes the doc-item offset of (node, domOffset) WITHIN a paragraph
+// element: the sum of doc items (text runes + widget item-counts) that precede the
+// point in document order. This is the item-aware successor to a pure rune count — it
+// is what lets a mid-text widget shift the caret↔offset mapping by its 2 items.
+function docItemsBefore(para: HTMLElement, node: Node, domOffset: number): number {
+  let items = 0;
   let done = false;
 
   const countBeforeChildIndex = (el: Node, n: number): void => {
     const kids = Array.from(el.childNodes);
-    for (let i = 0; i < n && i < kids.length; i++) runes += textRuneCount(kids[i]!);
+    for (let i = 0; i < n && i < kids.length; i++) items += docItemCount(kids[i]!);
   };
 
   const walk = (n: Node): void => {
     if (done) return;
     if (n === node) {
       if (n.nodeType === Node.TEXT_NODE) {
-        runes += runeCount((n.textContent ?? "").slice(0, domOffset));
+        items += runeCount((n.textContent ?? "").slice(0, domOffset));
+      } else if (isWidget(n)) {
+        // Caret on the widget element itself: domOffset 0 ⇒ before it (add nothing);
+        // >0 ⇒ after it (add its items).
+        if (domOffset > 0) items += docItemCount(n);
       } else {
         countBeforeChildIndex(n, domOffset);
       }
       done = true;
       return;
     }
+    if (isWidget(n)) {
+      // A widget is atomic. If the caret is parked INSIDE it (some browsers do this for
+      // a contenteditable=false node), resolve to before the widget (add nothing) and
+      // stop — never descend. Otherwise we are passing it: add its declared items.
+      if (n.contains(node)) {
+        done = true;
+        return;
+      }
+      items += docItemCount(n);
+      return;
+    }
     if (n.nodeType === Node.TEXT_NODE) {
-      runes += runeCount(n.textContent ?? "");
+      items += runeCount(n.textContent ?? "");
       return;
     }
     for (const c of Array.from(n.childNodes)) {
@@ -914,30 +973,57 @@ function runeOffsetWithin(para: HTMLElement, node: Node, domOffset: number): num
 
   if (node === para) {
     countBeforeChildIndex(para, domOffset);
-    return runes;
+    return items;
   }
   for (const c of Array.from(para.childNodes)) {
     walk(c);
     if (done) break;
   }
-  return runes;
+  return items;
 }
 
-// domAtRuneOffset finds the DOM (node, offset) at a given rune offset within a
-// paragraph element (the inverse of runeOffsetWithin).
-function domAtRuneOffset(para: HTMLElement, runeOff: number): { node: Node; offset: number } {
+// domAtDocOffset finds the DOM (node, offset) at a doc-item offset within a paragraph
+// element (the inverse of docItemsBefore). It walks the paragraph's direct children in
+// order, accounting for widget items: a target landing before a widget resolves to the
+// caret position just before it (on the paragraph, at the widget's child index); after
+// it, to the next position; an interior offset (only from a stale remote offset) clamps
+// to before. Decoration elements are descended into to reach the exact text node.
+function domAtDocOffset(para: HTMLElement, itemOff: number): { node: Node; offset: number } {
+  let acc = 0;
+  const children = Array.from(para.childNodes);
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i]!;
+    if (child.nodeType === Node.TEXT_NODE) {
+      const r = runeCount(child.textContent ?? "");
+      if (itemOff <= acc + r) return { node: child, offset: utf16Index(child.textContent ?? "", itemOff - acc) };
+      acc += r;
+    } else if (isWidget(child)) {
+      const n = docItemCount(child);
+      if (itemOff < acc + n) return { node: para, offset: i }; // before (or interior → clamp before)
+      acc += n;
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const r = runeCount((child as Element).textContent ?? ""); // decoration: its wrapped text
+      if (itemOff <= acc + r) return domAtTextOffset(child, itemOff - acc);
+      acc += r;
+    }
+    // comments / other: 0 items
+  }
+  return { node: para, offset: children.length }; // exhausted → end of paragraph
+}
+
+// domAtTextOffset finds the DOM (text node, utf16 offset) at a rune offset within a
+// subtree known to contain only text (no widgets) — used to descend into a decoration
+// element. Falls back to the subtree root start if there is no text.
+function domAtTextOffset(root: Node, runeOff: number): { node: Node; offset: number } {
   let remaining = runeOff;
   const texts: Text[] = [];
-  collectTextNodes(para, texts);
+  collectTextNodes(root, texts);
   for (const t of texts) {
     const len = runeCount(t.data);
-    if (remaining <= len) {
-      return { node: t, offset: utf16Index(t.data, remaining) };
-    }
+    if (remaining <= len) return { node: t, offset: utf16Index(t.data, remaining) };
     remaining -= len;
   }
-  // No text node (empty paragraph, just a <br>): caret at the start of the para.
-  return { node: para, offset: 0 };
+  return { node: root, offset: 0 };
 }
 
 function collectTextNodes(n: Node, out: Text[]): void {
@@ -945,16 +1031,6 @@ function collectTextNodes(n: Node, out: Text[]): void {
     if (c.nodeType === Node.TEXT_NODE) out.push(c as Text);
     else collectTextNodes(c, out);
   }
-}
-
-// textRuneCount counts the document text a node contributes: text nodes by their
-// data, elements by their (comment-excluding) textContent, and everything else —
-// crucially COMMENT nodes, which Lit uses as template markers — as zero. Counting
-// a Lit marker comment's data as text was the bug that misplaced the caret.
-function textRuneCount(n: Node): number {
-  if (n.nodeType === Node.TEXT_NODE) return runeCount(n.textContent ?? "");
-  if (n.nodeType === Node.ELEMENT_NODE) return runeCount((n as Element).textContent ?? "");
-  return 0;
 }
 
 // utf16Index returns the UTF-16 offset corresponding to a rune offset into s.

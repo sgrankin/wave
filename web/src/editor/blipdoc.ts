@@ -30,6 +30,21 @@ export interface Span {
   readonly styles: Readonly<Record<string, string>>;
 }
 
+/**
+ * An inline item within a paragraph, in document order: a styled text run, or an
+ * inline element (reply anchor / image). `offset` is the doc offset of the item's
+ * FIRST doc item (a text run: its first rune; a widget: its elementStart). An empty
+ * widget element (`<reply></reply>`, `<image></image>`) occupies exactly 2 doc items
+ * (elementStart + elementEnd) — this is what lets a widget sit MID-text and keep the
+ * caret↔offset mapping exact (the renderer interleaves it, the DOM walk counts it as
+ * 2 items). The widget item-count is declared to the DOM walk via a data-doc-items
+ * attribute, so it never has to recount.
+ */
+export type InlineItem =
+  | { readonly kind: "text"; readonly span: Span; readonly offset: number }
+  | { readonly kind: "reply"; readonly id: string; readonly offset: number }
+  | { readonly kind: "image"; readonly attachment: string; readonly offset: number };
+
 /** A paragraph: a <line> marker (its type/indent) and the text that follows it. */
 export interface Paragraph {
   /** The <line t="..."> value (e.g. "h1", "li"), or null for a plain line. */
@@ -40,15 +55,22 @@ export interface Paragraph {
   readonly lineOffset: number | null;
   /** Doc offset where this paragraph's text begins (just after the <line> marker). */
   readonly textStart: number;
-  /** Text length of the paragraph in runes (sum of span lengths). */
+  /** Text length of the paragraph in runes (text items only; widgets are NOT counted
+   *  here — they are accounted for via their doc offsets and `paragraphEnd`). */
   readonly textLength: number;
+  /** Doc offset just past the LAST item of this paragraph: textStart + textLength +
+   *  2*widgetCount (each inline widget = 2 items). Use this — NOT textStart+textLength —
+   *  as the paragraph's end when a paragraph can contain mid-text/trailing widgets. */
+  readonly paragraphEnd: number;
+  /** The paragraph's inline content (text runs + reply/image widgets) in document
+   *  order. THE source of truth; spans/anchors/images below are derived views. */
+  readonly items: readonly InlineItem[];
+  /** Derived: the text runs (kind:"text"), in order. */
   readonly spans: readonly Span[];
-  /** Inline-reply thread ids anchored within this paragraph (the <reply id> markers
-   *  that fall in its range), in document order. Rendered as a marker after the
-   *  text; the inline reply thread itself attaches to this paragraph. */
+  /** Derived: inline-reply thread ids anchored within this paragraph, in document
+   *  order (the <reply id> markers). */
   readonly anchors: readonly string[];
-  /** Inline image attachment ids (<image attachment=...>) in this paragraph, in
-   *  document order. Rendered as an <img> after the text, like reply anchors. */
+  /** Derived: inline image attachment ids (<image attachment=...>), in order. */
   readonly images: readonly string[];
 }
 
@@ -65,9 +87,8 @@ interface MutParagraph {
   lineOffset: number | null;
   textStart: number;
   textLength: number;
-  spans: Span[];
-  anchors: string[];
-  images: string[];
+  widgetCount: number; // inline widgets (reply/image) in this paragraph; each = 2 doc items
+  items: InlineItem[]; // ordered inline content (text runs + widgets); source of truth
 }
 
 /**
@@ -87,7 +108,7 @@ export function project(content: DocOp): BlipProjection {
   const ensureParagraph = (): MutParagraph => {
     if (cur === null) {
       // Text before any <line> (flat blip, or leading text): implicit plain paragraph.
-      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, spans: [], anchors: [], images: [] };
+      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, widgetCount: 0, items: [] };
       paras.push(cur);
     }
     return cur;
@@ -103,20 +124,22 @@ export function project(content: DocOp): BlipProjection {
             lineOffset: pos,
             textStart: pos + 1, // text begins after the (empty) <line> marker's start+end
             textLength: 0,
-            spans: [],
-            anchors: [],
-            images: [],
+            widgetCount: 0,
+            items: [],
           };
           paras.push(cur);
         } else if (c.type === REPLY) {
-          // An inline-reply anchor: record it on the current paragraph. It is placed
-          // at a line boundary (after the paragraph's text), so it does NOT shift any
-          // intra-paragraph caret offset — the caret mapping needs no adjustment.
-          ensureParagraph().anchors.push(c.attributes.get("id") ?? "");
+          // An inline-reply anchor: record it on the current paragraph at its doc
+          // offset (pos, the elementStart). It occupies 2 doc items (start+end), so
+          // the DOM caret mapping counts it; text after it stays in this paragraph.
+          const p = ensureParagraph();
+          p.items.push({ kind: "reply", id: c.attributes.get("id") ?? "", offset: pos });
+          p.widgetCount += 1;
         } else if (c.type === IMAGE) {
-          // An inline image, same line-boundary + caret-safe treatment as a reply
-          // anchor: recorded on the paragraph, rendered as an <img> after the text.
-          ensureParagraph().images.push(c.attributes.get(ATTACHMENT_ATTR) ?? "");
+          // An inline image: same 2-item, exact-offset treatment as a reply anchor.
+          const p = ensureParagraph();
+          p.items.push({ kind: "image", attachment: c.attributes.get(ATTACHMENT_ATTR) ?? "", offset: pos });
+          p.widgetCount += 1;
         }
         stack.push(c.type);
         pos += 1;
@@ -131,7 +154,7 @@ export function project(content: DocOp): BlipProjection {
       case "characters": {
         const p = ensureParagraph();
         const styles = currentStyles(active);
-        appendSpan(p, c.text, styles);
+        appendTextItem(p, c.text, styles, pos); // record the run at its doc offset
         p.textLength += runeCount(c.text);
         pos += runeCount(c.text);
         break;
@@ -151,7 +174,33 @@ export function project(content: DocOp): BlipProjection {
     }
   }
   void BODY; // body element is just a container; tracked via the stack
-  return { paragraphs: paras, length: pos };
+  return { paragraphs: paras.map(finalizeParagraph), length: pos };
+}
+
+// finalizeParagraph converts the mutable build paragraph into the public Paragraph,
+// deriving the spans/anchors/images convenience views from the ordered items[] (the
+// source of truth) and computing paragraphEnd. Each widget contributes 2 doc items.
+function finalizeParagraph(m: MutParagraph): Paragraph {
+  const spans: Span[] = [];
+  const anchors: string[] = [];
+  const images: string[] = [];
+  for (const it of m.items) {
+    if (it.kind === "text") spans.push(it.span);
+    else if (it.kind === "reply") anchors.push(it.id);
+    else images.push(it.attachment);
+  }
+  return {
+    lineType: m.lineType,
+    indent: m.indent,
+    lineOffset: m.lineOffset,
+    textStart: m.textStart,
+    textLength: m.textLength,
+    paragraphEnd: m.textStart + m.textLength + 2 * m.widgetCount,
+    items: m.items,
+    spans,
+    anchors,
+    images,
+  };
 }
 
 function parseIndent(attrs: Attributes): number {
@@ -169,12 +218,19 @@ function currentStyles(active: Map<string, string>): Record<string, string> {
   return styles;
 }
 
-function appendSpan(p: MutParagraph, text: string, styles: Record<string, string>): void {
-  const last = p.spans[p.spans.length - 1];
-  if (last !== undefined && sameStyles(last.styles, styles)) {
-    p.spans[p.spans.length - 1] = { text: last.text + text, styles: last.styles };
+// appendTextItem appends a styled text run at doc offset `offset`, coalescing into the
+// previous item ONLY if it is also a text run with the same styles. A widget item
+// between two equal-style runs therefore breaks the run, preserving document order.
+function appendTextItem(p: MutParagraph, text: string, styles: Record<string, string>, offset: number): void {
+  const last = p.items[p.items.length - 1];
+  if (last !== undefined && last.kind === "text" && sameStyles(last.span.styles, styles)) {
+    p.items[p.items.length - 1] = {
+      kind: "text",
+      span: { text: last.span.text + text, styles: last.span.styles },
+      offset: last.offset, // keep the run's start offset
+    };
   } else {
-    p.spans.push({ text, styles });
+    p.items.push({ kind: "text", span: { text, styles }, offset });
   }
 }
 
@@ -195,10 +251,10 @@ export function caretToOffset(proj: BlipProjection, para: number, textOffset: nu
   return p.textStart + Math.max(0, Math.min(textOffset, p.textLength));
 }
 
-/** paragraphText returns the concatenated text of a paragraph. */
+/** paragraphText returns the concatenated text of a paragraph (text items in order). */
 export function paragraphText(p: Paragraph): string {
   let s = "";
-  for (const sp of p.spans) s += sp.text;
+  for (const it of p.items) if (it.kind === "text") s += it.span.text;
   return s;
 }
 

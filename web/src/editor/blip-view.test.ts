@@ -363,3 +363,33 @@ export async function testInlineImageRenders(t: T): Promise<void> {
   // The image marker carries no editable text, so the paragraph text is unchanged.
   eq(doc.querySelector<HTMLElement>(".para")?.textContent, "see", "image adds no editable text");
 }
+
+// An inline element renders AT ITS POSITION (interleaved), not appended at the line
+// end: text before AND after the image appear with the image BETWEEN them in DOM order,
+// and the widget declares data-doc-items="2" (the caret-mapping contract).
+export async function testInlineImageInterleaved(t: T): Promise<void> {
+  const content = new DocOp([
+    { kind: "elementStart", type: "body", attributes: Attributes.empty() },
+    { kind: "elementStart", type: "line", attributes: Attributes.empty() },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "see" },
+    { kind: "elementStart", type: "image", attributes: Attributes.of({ attachment: "att-xyz" }) },
+    { kind: "elementEnd" },
+    { kind: "characters", text: "more" },
+    { kind: "elementEnd" },
+  ]);
+  const el = await render(html`<blip-view .content=${content}></blip-view>`);
+  await waitForUpdate(el);
+  const para = findDoc(el).querySelector<HTMLElement>(".para");
+  if (para === null) throw new Error("no .para");
+
+  // DOM order: "see", then the image widget, then "more".
+  const kids = Array.from(para.childNodes).filter(
+    (n) => n.nodeType === Node.TEXT_NODE || (n as HTMLElement).classList?.contains?.("wave-image"),
+  );
+  const widgetIdx = kids.findIndex((n) => (n as HTMLElement).classList?.contains?.("wave-image"));
+  eq(widgetIdx > 0 && widgetIdx < kids.length - 1, true, "image sits BETWEEN text, not at the end");
+  eq(para.textContent, "seemore", "the widget adds no document text");
+  const widget = para.querySelector<HTMLElement>(".wave-image");
+  eq(widget?.getAttribute("data-doc-items"), "2", "widget declares its 2 doc items to the caret walk");
+}
