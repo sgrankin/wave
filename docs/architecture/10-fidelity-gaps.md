@@ -30,8 +30,12 @@ Status key: ✅ shipped 2026-06-08.
 4. ✅ **[Server] A removed participant keeps receiving the live stream** — DONE (cut at
    the removal boundary; reviewed). Original text: until they
    disconnect (membership enforced only at Open/Resync) — an access-control leak.
-5. **[Agent] One wave per socket, no create/discovery** — blocks the flagship "wave as
-   shareable agent memory" use case (task #34); no structured-state primitive either.
+5. **[Agent] wave memory primitives** (task #34 flagship) — PARTIAL. ✅ lifecycle &
+   discovery DONE: `POST/GET /agent/waves` (create + list) + `POST /agent/leave` REST
+   endpoints (agentgw, bearer-auth, reviewed SHIP) — an agent can now own/find/abandon
+   its own waves, not just human-invited ones. REMAINING: the **structured-state
+   primitive** (key-value memory; gadget-state/datadoc dropped) — the architecturally
+   deep part, needs a design pass on modeling state in the conv doc model.
 
 ## OT core (internal/op, internal/doc, web/src/wave) — overall fidelity HIGH
 Transform (all 4 sub-transforms), Compose, Invert, the asymmetric annotation algebra,
@@ -133,11 +137,14 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
 ## Agent / programmatic surface (internal/agent, agentgw) — clean push model, memory primitives missing
 The gateway is architecturally cleaner than OG's HTTP-poll robots (event push + OT
 intents). Gaps, ranked for the agent-first goal:
-- high / missing — **lifecycle & discovery**: one wave per socket; no create-wave,
-  list/search-my-waves, or leave-wave intent. Blocks "wave as memory" bootstrap (#34, #5).
+- ✅ **lifecycle & discovery — DONE** (reviewed SHIP): `POST /agent/waves` (create),
+  `GET /agent/waves` (list/discover), `POST /agent/leave` — REST endpoints behind the
+  agent bearer auth (agentgw.Routes + WithIndex). An agent can own/find/abandon its own
+  waves. (The socket is still one-wave; these manage the set of waves around it.)
 - high / missing — **structured state**: no gadget-state revival and no datadoc — the
   agent has *no* per-wave key/value or private store, only prose blips. Best revived in
-  reduced form (a state doc + `state.changed` event + `set.state` intent).
+  reduced form (a state doc + `state.changed` event + `set.state` intent). THIS is the
+  remaining architecturally-deep part of #34 — needs a design pass before implementing.
 - medium / missing — annotation ops/events (agent reads/writes flat text only, though the
   OT layer supports annotations); title/tag ops + change events (snapshot lacks both).
 - medium / partial — `blip.edited` fires per delta with no debounce/coalesce → floods an
