@@ -109,21 +109,49 @@ func sanitizeRedirect(s string) string {
 
 var devLoginTmpl = template.Must(template.New("devlogin").Parse(`<!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Wave — dev login</title>
+<meta name="theme-color" content="#4060c0">
 <style>
-  body { font: 15px system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.1rem; }
-  .hint { color: #777; font-size: 0.85rem; }
-  input { font: inherit; padding: 0.4rem 0.5rem; width: 100%; box-sizing: border-box; margin: 0.5rem 0; }
-  button { font: inherit; padding: 0.4rem 1rem; cursor: pointer; }
+  :root { color-scheme: light; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font: 16px/1.5 system-ui, sans-serif; color: #222; background: #fff;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; box-sizing: border-box;
+  }
+  .card { width: 100%; max-width: 22rem; }
+  h1 { font-size: 1.7rem; color: #4060c0; margin: 0 0 0.15rem; }
+  .sub { color: #555; margin: 0 0 1.25rem; font-size: 0.95rem; }
+  label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 5px; }
+  input[type=text] {
+    /* font-size >= 16px so iOS Safari does not zoom in on focus. */
+    font: inherit; font-size: 16px; width: 100%; box-sizing: border-box;
+    padding: 12px; border: 1px solid #ccc; border-radius: 8px; -webkit-appearance: none;
+  }
+  input[type=text]:focus {
+    outline: none; border-color: #4060c0; box-shadow: 0 0 0 2px rgba(64, 96, 192, 0.18);
+  }
+  button {
+    font: inherit; font-size: 16px; font-weight: 600; width: 100%; margin-top: 14px;
+    padding: 12px 16px; border: none; border-radius: 8px; background: #4060c0; color: #fff; cursor: pointer;
+  }
+  button:hover { background: #36509c; }
+  button:active { background: #2f4789; }
+  .hint { color: #888; font-size: 0.8rem; margin-top: 1.1rem; }
 </style>
-<h1>Sign in (dev)</h1>
-<form method="get" action="/login">
-  <input type="hidden" name="redirect" value="{{.Redirect}}">
-  <input type="text" name="user" placeholder="you@example.com" autofocus autocomplete="off">
-  <button type="submit">Continue</button>
-</form>
-<p class="hint">Development sign-in: any address is accepted, no password.</p>
+<div class="card">
+  <h1>Wave</h1>
+  <p class="sub">Sign in (dev)</p>
+  <form method="get" action="/login">
+    <input type="hidden" name="redirect" value="{{.Redirect}}">
+    <label for="user">Address</label>
+    <input id="user" type="text" name="user" placeholder="you@example.com"
+      autofocus autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="email">
+    <button type="submit">Continue</button>
+  </form>
+  <p class="hint">Development sign-in: any address is accepted, no password.</p>
+</div>
 `))
 
 func renderDevLoginForm(w http.ResponseWriter, redirect string) {
