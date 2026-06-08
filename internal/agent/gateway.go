@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"time"
 
 	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/doc"
@@ -146,30 +147,101 @@ func (g *Gateway) Run(ctx context.Context, eventsOut io.Writer, intentsIn io.Rea
 		intentErr <- sc.Err()
 	}()
 
+	// blip.edited debounce: a burst of per-delta edits to the same blip collapses
+	// into one event carrying the latest text (see coalesce.go). The coalescer is
+	// Run-LOCAL — every eventsOut write and every coalescer touch happens in this
+	// goroutine, so it needs no lock. A single reusable timer is rearmed from the
+	// coalescer's next deadline after every state change.
+	//
+	// Time base is real wall time (time.Now), NOT the injectable clock: the
+	// debounce is a pure emission-timing concern over a real external harness, and
+	// the timer fires on wall time, so the deadline stamps it is compared against
+	// MUST also be wall time. Routing through g.client.clk would mix two clocks
+	// (the deadline math on the injected clock, the fire on wall time) and break
+	// the quiescence flush under any non-System clock (e.g. clock.Fixed: Now never
+	// advances, so flushDue's now == the firstSeen stamp and nothing is ever due).
+	co := newCoalescer(coalesceWindow, coalesceMaxAge)
+	timer := time.NewTimer(0)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+
+	emit := func(evs []Event) error {
+		for _, ev := range evs {
+			if err := enc.Encode(wireEventFrom(ev)); err != nil {
+				return fmt.Errorf("agent gateway: write event: %w", err)
+			}
+		}
+		return nil
+	}
+	// rearm re-times the single timer from the coalescer's next deadline. now is
+	// passed in (not re-sampled) so the timer branch reuses the SAME wall-clock
+	// instant it flushed with: otherwise time.Now() could advance between the
+	// flushDue compare and this Sub, leaving a just-missed entry to Reset(0) and
+	// fire again immediately — a bounded but pointless extra wakeup.
+	rearm := func(now time.Time) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		if dl, ok := co.nextDeadline(); ok {
+			d := dl.Sub(now)
+			if d < 0 {
+				d = 0
+			}
+			timer.Reset(d)
+		}
+	}
+
 	// Events out: stream applied deltas as events until the subscription closes.
 	updates := g.client.Updates()
 	for {
 		select {
 		case <-ctx.Done():
+			// Best-effort flush of pending edits: the same cancel may have already torn
+			// the pipe down, so ignore the encode error and never mask ctx.Err().
+			_ = emit(co.flushAll())
 			return ctx.Err()
 		case err := <-intentErr:
+			// EOF on the intent direction does not close eventsOut; the harness still
+			// reads events, so this flush is guaranteed-deliverable.
+			if e := emit(co.flushAll()); e != nil && err == nil {
+				err = e
+			}
 			return err // the harness closed its intent stream
 		case ev := <-opEvents:
+			// operation.error is an immediate kind: flush pending edits ahead of it.
+			if err := emit(co.flushAll()); err != nil {
+				return err
+			}
 			if err := enc.Encode(ev); err != nil {
 				return fmt.Errorf("agent gateway: write operation.error: %w", err)
 			}
+			rearm(time.Now())
+		case <-timer.C:
+			now := time.Now()
+			if err := emit(co.flushDue(now)); err != nil {
+				return err
+			}
+			rearm(now)
 		case u, ok := <-updates:
 			if !ok {
+				if e := emit(co.flushAll()); e != nil {
+					return e
+				}
 				return nil // subscription ended
 			}
 			if u.ResultingVersion.Version() <= snapVersion {
 				continue // already reflected in the connect-time snapshot
 			}
-			for _, ev := range g.client.Events(g.self, u) {
-				if err := enc.Encode(wireEventFrom(ev)); err != nil {
-					return fmt.Errorf("agent gateway: write event: %w", err)
-				}
+			now := time.Now()
+			if err := emit(co.add(now, g.client.Events(g.self, u))); err != nil {
+				return err
 			}
+			rearm(now)
 		}
 	}
 }
