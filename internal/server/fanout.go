@@ -97,6 +97,17 @@ func (c *WaveletContainer) OpenAt(knownVersion uint64, knownHash []byte) (tail [
 	return tail, c.subscribeLocked(), true
 }
 
+// subscriberCount reports the number of live subscriptions. The WaveMap reads it
+// (under its own lock) to decide whether a container is safe to evict: a container
+// with any subscriber has a live editing/viewing session that may still submit, so
+// it must not be dropped from the cache (a second instance loaded for the same
+// wavelet would split-brain the submit pipeline).
+func (c *WaveletContainer) subscriberCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.subs)
+}
+
 // removeSub closes and deregisters a subscription if still present (idempotent).
 func (c *WaveletContainer) removeSub(s *Subscription) {
 	c.mu.Lock()

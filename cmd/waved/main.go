@@ -79,14 +79,15 @@ type config struct {
 	oidcRedirectURL    string
 	insecureCookies    bool // omit the Secure cookie attribute (plain-HTTP dev only)
 	sessionTTL         time.Duration
-	seed               bool   // server-side-seed a new wavelet's conversation at first open
-	attachRoot         string // filesystem root for attachment blobs; "" disables attachments
-	attachMaxBytes     int64  // per-upload size cap in bytes; <=0 disables the cap
-	agents             string // agent gateway tokens: "addr=token,addr2=token2"; "" disables
-	logFormat          string // text | json
-	logLevel           string // debug | info | warn | error
-	snapshotEvery      int    // write a snapshot every N ops (0 disables)
-	index              bool   // maintain the derived read index (inbox/search)
+	seed               bool          // server-side-seed a new wavelet's conversation at first open
+	attachRoot         string        // filesystem root for attachment blobs; "" disables attachments
+	attachMaxBytes     int64         // per-upload size cap in bytes; <=0 disables the cap
+	agents             string        // agent gateway tokens: "addr=token,addr2=token2"; "" disables
+	logFormat          string        // text | json
+	logLevel           string        // debug | info | warn | error
+	snapshotEvery      int           // write a snapshot every N ops (0 disables)
+	index              bool          // maintain the derived read index (inbox/search)
+	waveCacheIdle      time.Duration // evict idle, unsubscribed wavelets after this (0 disables)
 	showVersion        bool
 }
 
@@ -195,6 +196,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug | info | warn | error")
 	fs.IntVar(&c.snapshotEvery, "snapshot-every", 0, "snapshot a wavelet every N ops (0 = disabled)")
 	fs.BoolVar(&c.index, "index", true, "maintain the derived read index (inbox/search)")
+	fs.DurationVar(&c.waveCacheIdle, "wave-cache-idle", 30*time.Minute, "evict a wavelet from memory after this long idle with no open sessions (0 = never)")
 	fs.BoolVar(&c.showVersion, "version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -264,6 +266,10 @@ func run(ctx context.Context, cfg config) error {
 		idx = search.New(store, logger)
 		opts = append(opts, server.WithIndexer(idx))
 		logger.Info("index maintenance enabled")
+	}
+	if cfg.waveCacheIdle > 0 {
+		opts = append(opts, server.WithEviction(cfg.waveCacheIdle))
+		logger.Info("wave cache eviction enabled", "idle", cfg.waveCacheIdle)
 	}
 	wm := server.NewWaveMap(store, clock.System{}, opts...)
 	srv := &transport.Server{WaveMap: wm, Logger: logger}

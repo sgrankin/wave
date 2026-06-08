@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sgrankin/wave/internal/cc"
 	"github.com/sgrankin/wave/internal/clock"
@@ -15,15 +16,28 @@ import (
 // name, loading them from the delta store on first access. It is the routing
 // layer beneath the frontend: Open/Submit for a wavelet name resolve to a
 // container here.
+//
+// Without eviction the cache grows for the life of the process — every wavelet
+// ever touched stays resident. WithEviction reaps containers that have been idle
+// (no access) for idleTTL and have no live subscribers (see cacheEntry / sweep).
 type WaveMap struct {
 	store     storage.DeltaStore
 	clk       clock.Clock
 	snapshots storage.SnapshotStore // nil unless WithSnapshots is set
 	snapEvery int                   // ops between snapshots (0 = disabled)
 	indexer   Indexer               // nil unless WithIndexer is set
+	idleTTL   time.Duration         // evict idle, unsubscribed containers after this; 0 = never (WithEviction)
 
 	mu         sync.Mutex
-	containers map[string]*WaveletContainer
+	containers map[string]*cacheEntry
+	lastSweep  time.Time // last idle-eviction sweep (gates sweep frequency to ~idleTTL)
+}
+
+// cacheEntry is a cached container with the time it was last handed out, so the
+// idle-eviction sweep can tell a hot container from one nobody has touched.
+type cacheEntry struct {
+	c          *WaveletContainer
+	lastAccess time.Time
 }
 
 // Indexer is notified after each committed delta so it can maintain derived read
@@ -57,16 +71,33 @@ func WithSnapshots(store storage.SnapshotStore, every int) Option {
 	}
 }
 
+// WithEviction bounds the container cache: a container that has been idle (no
+// Container() access) for idleTTL and has no live subscribers is dropped from the
+// cache, reclaiming its in-memory state (it reloads from the durable delta log on
+// next access). A non-zero idleTTL is required; the zero value disables eviction
+// (the cache grows unbounded, the historical behavior).
+//
+// Safety: eviction only ever drops an UNSUBSCRIBED container, and only after a full
+// idleTTL of no access. A submitter always holds a subscription (it opened the
+// wavelet), so it is never evicted out from under an editing session; and the
+// brief window between Container() returning and the caller subscribing is
+// millisecond-scale, far shorter than any sane idleTTL — so an idle container has
+// no in-flight holder that could submit to a stale instance.
+func WithEviction(idleTTL time.Duration) Option {
+	return func(m *WaveMap) { m.idleTTL = idleTTL }
+}
+
 // NewWaveMap creates a wave map backed by the given delta store and clock.
 func NewWaveMap(store storage.DeltaStore, clk clock.Clock, opts ...Option) *WaveMap {
 	m := &WaveMap{
 		store:      store,
 		clk:        clk,
-		containers: map[string]*WaveletContainer{},
+		containers: map[string]*cacheEntry{},
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.lastSweep = clk.Now()
 	return m
 }
 
@@ -93,8 +124,10 @@ func (m *WaveMap) Container(name id.WaveletName) (*WaveletContainer, error) {
 	key := name.Serialize()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if c, ok := m.containers[key]; ok {
-		return c, nil
+	now := m.clk.Now()
+	if e, ok := m.containers[key]; ok {
+		e.lastAccess = now // touch: keep a hot container out of the eviction sweep
+		return e.c, nil
 	}
 	access, err := m.store.Open(name)
 	if err != nil {
@@ -104,6 +137,28 @@ func (m *WaveMap) Container(name id.WaveletName) (*WaveletContainer, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.containers[key] = c
+	m.containers[key] = &cacheEntry{c: c, lastAccess: now}
+	// Opportunistic reaping: piggyback the idle sweep on loads (the only thing that
+	// grows the cache), rate-limited to ~idleTTL so it stays cheap. An idle server
+	// never sweeps, but it is also not growing, so that is fine.
+	m.maybeSweepLocked(now)
 	return c, nil
+}
+
+// maybeSweepLocked runs an idle-eviction sweep if enabled and at least idleTTL has
+// elapsed since the last one. Caller holds m.mu.
+func (m *WaveMap) maybeSweepLocked(now time.Time) {
+	if m.idleTTL <= 0 || now.Sub(m.lastSweep) < m.idleTTL {
+		return
+	}
+	m.lastSweep = now
+	for key, e := range m.containers {
+		if now.Sub(e.lastAccess) <= m.idleTTL {
+			continue // accessed recently — hot
+		}
+		if e.c.subscriberCount() != 0 {
+			continue // a live session may still submit — must not evict
+		}
+		delete(m.containers, key)
+	}
 }
