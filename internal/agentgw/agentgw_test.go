@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -505,4 +506,87 @@ func TestAgentStateMemory(t *testing.T) {
 	if snap.State["status"] != "ready" || snap.State["runs"] != "7" || len(snap.State) != 2 {
 		t.Fatalf("snapshot state = %v, want {status:ready, runs:7}", snap.State)
 	}
+}
+
+// TestAgentStateChangedEvent proves the reactive path: a connected agent receives a
+// state.changed event (with the new state) when ANOTHER participant writes state.
+func TestAgentStateChangedEvent(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)))
+	wid, _ := id.NewWaveID("example.com", "w+statechg")
+	wlid, _ := id.NewWaveletID("example.com", "conv+root")
+	name := id.NewWaveletName(wid, wlid)
+	c, err := wm.Container(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+	addCtx := waveop.Context{Creator: alice, Timestamp: 1000, VersionIncrement: 1}
+	if _, err := c.Submit(waveop.NewWaveletDelta(alice, c.Version(), []waveop.Operation{
+		waveop.AddParticipant{Ctx: addCtx, Participant: bot},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	fixedID := func() string { return "b+unused" }
+
+	// The agent connects and streams events to a pipe; an unfed intent pipe keeps Run
+	// streaming (cancel unblocks it at the end).
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(2000)), fixedID)
+	lc.Open()
+	defer lc.Close()
+	gw := agent.NewGateway(lc, bot, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	er, ew := io.Pipe()
+	ir, iw := io.Pipe() // never written → Run keeps streaming until ctx cancel
+	defer iw.Close()
+	go func() { _ = gw.Run(ctx, ew, ir); _ = ew.Close() }()
+	dec := json.NewDecoder(er)
+
+	// Drain the wave.opened snapshot.
+	var snap struct {
+		Kind string `json:"kind"`
+	}
+	if err := dec.Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	// Alice (another participant) writes state.
+	aliceLC := agent.NewLocalClient(c, alice, clock.NewFixed(time.UnixMilli(3000)), fixedID)
+	aliceLC.Open()
+	defer aliceLC.Close()
+	if err := aliceLC.SubmitIntent(agent.Intent{Kind: agent.IntentSetState, Key: "phase", Value: "build"}); err != nil {
+		t.Fatalf("alice set.state: %v", err)
+	}
+
+	// The agent receives a state.changed carrying the new state.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("never received a state.changed event")
+		}
+		var ev struct {
+			Kind  string            `json:"kind"`
+			State map[string]string `json:"state"`
+		}
+		if err := dec.Decode(&ev); err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		if ev.Kind == string(agent.StateChanged) {
+			if ev.State["phase"] != "build" {
+				t.Fatalf("state.changed state = %v, want phase=build", ev.State)
+			}
+			break
+		}
+	}
+	_ = ir // keep the read end referenced
 }

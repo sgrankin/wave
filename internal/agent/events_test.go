@@ -131,3 +131,31 @@ func TestExtractNilState(t *testing.T) {
 		t.Errorf("Extract(nil state) = %+v, want nil", got)
 	}
 }
+
+func TestExtractStateChanged(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	// The wavelet state holds the structured-state doc with one entry (the post-delta
+	// state the event reports).
+	set, err := conv.SetStateValue(conv.EmptyState(), "status", "ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDoc, err := op.Apply(conv.EmptyState(), set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := stateWithBlip(t, 7, "alice@example.com", conv.StateDocumentID, stateDoc)
+
+	// A delta op targeting the state doc → exactly one state.changed carrying the full
+	// state (read live from the wavelet, not from the op), and no blip.added/edited.
+	events := agent.Extract(alice, []waveop.Operation{blipOp(alice, conv.StateDocumentID, stateDoc)}, 7, state)
+	if len(events) != 1 || events[0].Kind != agent.StateChanged {
+		t.Fatalf("got %+v, want one state.changed", events)
+	}
+	if events[0].State["status"] != "ready" || len(events[0].State) != 1 {
+		t.Errorf("state.changed state = %v, want {status:ready}", events[0].State)
+	}
+	if events[0].Version != 7 || events[0].Author != alice {
+		t.Errorf("state.changed meta = version %d author %v", events[0].Version, events[0].Author)
+	}
+}

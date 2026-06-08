@@ -217,6 +217,9 @@ func wireEventFrom(ev Event) wireEvent {
 	if ev.Participant != (id.ParticipantID{}) {
 		w.Participant = ev.Participant.Address()
 	}
+	if ev.Kind == StateChanged {
+		w.State = ev.State
+	}
 	return w
 }
 

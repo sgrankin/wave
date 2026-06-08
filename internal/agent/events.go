@@ -35,6 +35,9 @@ const (
 	ParticipantRemoved EventKind = "participant.removed"
 	// Mention: an @address token appeared in newly inserted blip text.
 	Mention EventKind = "mention"
+	// StateChanged: the wave's structured key/value state document changed (a set/
+	// delete by any participant). Carries the full new state map.
+	StateChanged EventKind = "state.changed"
 )
 
 // Event is one semantic conversation event derived from a delta. Fields are
@@ -49,6 +52,8 @@ type Event struct {
 
 	Participant id.ParticipantID // participant.added / participant.removed
 	Target      string           // mention: the mentioned reference (the text after '@')
+
+	State map[string]string // state.changed: the wave's full key/value state (read live)
 }
 
 // mentionRE matches an @-mention preceded by a word boundary (start of the
@@ -83,6 +88,16 @@ func Extract(author id.ParticipantID, ops []waveop.Operation, version uint64, st
 		case waveop.WaveletBlipOperation:
 			if wo.BlipID == conv.ManifestDocumentID {
 				continue // structural; blip arrival is seen via the content blip's own op
+			}
+			if wo.BlipID == conv.StateDocumentID {
+				// The structured-state memory changed: emit the full new state map (read
+				// live), so a harness reacts to others' state writes without re-reading.
+				st := map[string]string{}
+				if b, ok := state.Blip(conv.StateDocumentID); ok {
+					st = conv.ReadState(b.Content())
+				}
+				events = append(events, Event{Kind: StateChanged, Version: version, Author: author, State: st})
+				continue
 			}
 			bc, ok := wo.BlipOp.(waveop.BlipContentOperation)
 			if !ok {
