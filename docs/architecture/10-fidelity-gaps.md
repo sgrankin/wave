@@ -18,10 +18,15 @@ Status key: ✅ shipped 2026-06-08.
 2. ✅ **[Editor] Undo/redo entirely absent** — DONE. Transform-based per-blip undo
    (`web/src/wave/undo.ts` + clientcc), Cmd-Z/Cmd-Shift-Z; reviewed (OT-correct, 80k
    fuzz). (Task #42.)
-3. **[Conversation] Read state is wavelet-granular, not per-blip** — NEXT. Can't tell
-   *which* blips are unread, only that the wave changed. (Note: blip/thread DELETE
-   authoring — also a conversation gap — is now ✅ DONE via `conv.SetBlipDeleted` +
-   the delete UI: a logically-deleted tombstone that keeps reply threads.)
+3. ✅ **[Conversation] Read state is wavelet-granular, not per-blip** — DONE. Backend
+   (`storage blip_read_state` + queryapi GET/POST `/api/read?blip=`) and client UI
+   shipped: clientcc tracks each blip's last-modified version from REMOTE deltas;
+   `<wave-blip>` paints an unread accent + dot; an IntersectionObserver dwell marks
+   blips read on view; a floating pill jumps to the next unread. Reviewed (SHIP — no
+   correctness/race/OT-safety defects; both read stores monotonic). (Task #52.) Note:
+   blip/thread DELETE authoring — also a conversation gap — is likewise ✅ DONE via
+   `conv.SetBlipDeleted` + the delete UI (a logically-deleted tombstone that keeps
+   reply threads).
 4. ✅ **[Server] A removed participant keeps receiving the live stream** — DONE (cut at
    the removal boundary; reviewed). Original text: until they
    disconnect (membership enforced only at Open/Resync) — an access-control leak.
@@ -50,8 +55,10 @@ ports; annotations are fully general (no key allowlist). Gaps:
 ## Conversation / blip model (internal/conv, web conversation.ts) — structure faithful, supplement absent
 Manifest/threads/inline-anchors/contributors/last-modified are a faithful port. The
 per-user **supplement** is the systematic hole (spec §6 documents it fully):
-- **blocker / divergent — per-blip read state** → one `read_version` per wavelet
-  (`storage/readstate.go`); can't mark individual blips read. (#3 above.)
+- ✅ **per-blip read state — DONE** (#3 above). `storage/readstate.go` now also keys a
+  `blip_read_state` table per (participant, wavelet, blip); the client computes unread
+  from clientcc's per-blip last-modified vs the fetched read versions, marks-on-view,
+  and offers next-unread nav.
 - high / missing — participant-set / tags read state (separately-unread events).
 - high / missing — blip / thread **deletion authoring** (the read path parses
   `deleted="true"` but nothing writes it; no tombstone-vs-remove logic). Users can't
