@@ -101,9 +101,13 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
   text, no `link/*` annotation, doesn't round-trip. OG: `LinkAnnotationHandler` + toolbar.
 - ✅ highlight — DONE (toolbar toggle, `style/backgroundColor`). Remaining: **font color**
   (text color; like highlight but needs a color picker; `spanStyle()` already renders it).
-- high / missing — **links on arbitrary text** (only literal URLs auto-linkify at render
-  time via `INLINE_RE`; no way to attach a URL to selected text — needs a `link/manual`
-  annotation surfaced onto spans + a setLink command + a URL input).
+- ✅ **links on arbitrary text — DONE** (shipped+reviewed). A `link/manual` annotation
+  carries the href; the projection surfaces it onto spans (zero-width — caret-safe), the
+  selection-toolbar Link button prompts for a URL (scheme-less → https), and `safeHref`
+  gates the render against `javascript:`/`data:`/obfuscated-scheme XSS (the URL helpers
+  live in `web/src/editor/url.ts`; reviewed — 135-vector brute-force, gate correct by
+  construction). The annotation-range algebra was unified into `setAnnotationRange` /
+  `rangeAnnotation` (style + link share it).
 - ✅ "Enter continues the list" — DONE (continue/exit; widgets-only-item bug fixed).
   Remaining: **numbered lists** (a `listyle` attribute + numbered rendering).
 - ✅ **IME / composition input — DONE** (CJK / dictation / autocorrect). The editor now
