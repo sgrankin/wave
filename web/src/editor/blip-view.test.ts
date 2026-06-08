@@ -229,6 +229,24 @@ export async function testBoldButtonEmitsSetStyleRange(t: T): Promise<void> {
   eq(hasBoldAnnotation, true, "op sets style/fontWeight=bold");
 }
 
+export async function testUnderlineEmitsAnnotation(t: T): Promise<void> {
+  const content = makeContent(null, "underline me");
+  const el = await render(html`<blip-view .content=${content}></blip-view>`);
+  await waitForUpdate(el);
+  const edits = collectEdits(el);
+  const para = findDoc(el).querySelector<HTMLElement>(".para");
+  if (para === null) throw new Error("no .para");
+  eq(selectInPara(para, 0, 9), true, "selection placed"); // "underline"
+  applyCmd(el, "underline");
+  eq(edits.length, 1, "one edit dispatched");
+  const hasUnderline = edits[0]!.some(
+    (c) =>
+      c.kind === "annotationBoundary" &&
+      c.boundary.changes.some((ch) => ch.key === "style/underline" && ch.newValue === "true"),
+  );
+  eq(hasUnderline, true, "op sets style/underline=true");
+}
+
 export async function testBoldButtonTogglesOff(t: T): Promise<void> {
   // Plain paragraph, all text bold via annotation.
   const boldComps: Component[] = [

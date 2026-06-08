@@ -48,7 +48,13 @@ export class SelectionToolbar extends LitElement {
   };
 
   declare private visible: boolean;
-  declare private states: { bold: boolean; italic: boolean; lineType: string | null };
+  declare private states: {
+    bold: boolean;
+    italic: boolean;
+    underline: boolean;
+    strike: boolean;
+    lineType: string | null;
+  };
   declare private coarse: boolean; // touch layout (bottom-docked) vs. floating
   // Whether the current selection is collapsed (a caret, no range). The bar still
   // shows — H1/H2/H3/list and Comment act on the caret's line — but B/I (which need a
@@ -72,7 +78,7 @@ export class SelectionToolbar extends LitElement {
   constructor() {
     super();
     this.visible = false;
-    this.states = { bold: false, italic: false, lineType: null };
+    this.states = { bold: false, italic: false, underline: false, strike: false, lineType: null };
     this.coarse = false;
     this.collapsed = false;
   }
@@ -302,6 +308,8 @@ export class SelectionToolbar extends LitElement {
       >
         ${btn("bold", "Bold", s.bold, html`<b>B</b>`, this.collapsed)}
         ${btn("italic", "Italic", s.italic, html`<i>I</i>`, this.collapsed)}
+        ${btn("underline", "Underline", s.underline, html`<span style="text-decoration:underline">U</span>`, this.collapsed)}
+        ${btn("strike", "Strikethrough", s.strike, html`<span style="text-decoration:line-through">S</span>`, this.collapsed)}
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}

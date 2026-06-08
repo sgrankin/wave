@@ -305,6 +305,12 @@ export class BlipView extends LitElement {
       case "italic":
         this.toolbarToggleStyle("fontStyle", "italic");
         break;
+      case "underline":
+        this.toolbarToggleStyle("underline", "true");
+        break;
+      case "strike":
+        this.toolbarToggleStyle("strikethrough", "true");
+        break;
       case "h1":
         this.toolbarSetLineType("h1");
         break;
@@ -326,10 +332,12 @@ export class BlipView extends LitElement {
   // commandStates reports which formatting commands are active for the current
   // selection, so the floating toolbar can show pressed buttons. Reads live from
   // the selection + model (the same queries the toolbar button states used).
-  commandStates(): { bold: boolean; italic: boolean; lineType: string | null } {
+  commandStates(): { bold: boolean; italic: boolean; underline: boolean; strike: boolean; lineType: string | null } {
     return {
       bold: this.activeCharStyle("fontWeight") === "bold",
       italic: this.activeCharStyle("fontStyle") === "italic",
+      underline: this.activeCharStyle("underline") === "true",
+      strike: this.activeCharStyle("strikethrough") === "true",
       lineType: this.caretLineType(),
     };
   }
@@ -928,7 +936,17 @@ function paragraphStyle(p: Paragraph): string {
 
 function spanStyle(styles: Readonly<Record<string, string>>): string {
   const decls: string[] = [];
-  for (const [prop, value] of Object.entries(styles)) decls.push(`${camelToKebab(prop)}:${value}`);
+  // underline and strikethrough are modeled as independent boolean annotations so they
+  // toggle separately, but both render to the single `text-decoration` CSS property — so
+  // collect their tokens and emit one combined declaration.
+  const decoration: string[] = [];
+  for (const [prop, value] of Object.entries(styles)) {
+    if (prop === "underline" && value === "true") decoration.push("underline");
+    else if (prop === "strikethrough" && value === "true") decoration.push("line-through");
+    else if (prop === "textDecoration") decoration.push(value); // legacy/combined value
+    else decls.push(`${camelToKebab(prop)}:${value}`);
+  }
+  if (decoration.length > 0) decls.push(`text-decoration:${decoration.join(" ")}`);
   return decls.join(";");
 }
 
