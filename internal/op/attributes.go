@@ -13,7 +13,6 @@ package op
 import (
 	"fmt"
 	"sort"
-	"unicode/utf8"
 )
 
 // Attribute is a single XML attribute name/value pair.
@@ -23,14 +22,19 @@ type Attribute struct {
 }
 
 // Attributes is an immutable, strictly name-sorted set of XML attribute
-// name→value pairs. Names are unique and non-empty; names and values are valid
-// UTF-8. The zero value is the empty attribute set.
+// name→value pairs. Names are unique, non-empty, and valid XML names; values are
+// valid UTF-16 document text (valid UTF-8 with no surrogate/noncharacter code
+// points). The zero value is the empty attribute set. These invariants mirror
+// Java DocOpAutomaton.checkAttributesWellFormed, so the validator can rely on
+// them rather than re-checking each operation.
 type Attributes struct {
 	attrs []Attribute
 }
 
 // NewAttributes builds an Attributes from a name→value map (which guarantees
-// unique names), validating each name/value and sorting by name.
+// unique names), validating each name/value and sorting by name. A name that is
+// not a valid XML name, or a value that is not valid UTF-16 document text
+// (Java's Utf16Util.isXmlName / isValidUtf16), is rejected.
 func NewAttributes(m map[string]string) (Attributes, error) {
 	if len(m) == 0 {
 		return Attributes{}, nil
@@ -40,11 +44,11 @@ func NewAttributes(m map[string]string) (Attributes, error) {
 		if name == "" {
 			return Attributes{}, fmt.Errorf("op: empty attribute name")
 		}
-		if !utf8.ValidString(name) {
-			return Attributes{}, fmt.Errorf("op: attribute name %q is not valid UTF-8", name)
+		if !isXMLName(name) {
+			return Attributes{}, fmt.Errorf("op: attribute name %q is not a valid XML name", name)
 		}
-		if !utf8.ValidString(value) {
-			return Attributes{}, fmt.Errorf("op: attribute %q value is not valid UTF-8", name)
+		if !isValidUTF16Doc(value) {
+			return Attributes{}, fmt.Errorf("op: attribute %q value is not valid UTF-16 document text", name)
 		}
 		attrs = append(attrs, Attribute{Name: name, Value: value})
 	}
@@ -103,7 +107,10 @@ type AttributesUpdate struct {
 }
 
 // NewAttributesUpdate builds an AttributesUpdate from the given changes,
-// validating names/values, rejecting duplicate names, and sorting by name.
+// validating names/values, rejecting duplicate names, and sorting by name. A
+// change key that is not a valid XML name, or an old/new value that is not valid
+// UTF-16 document text (Java's Utf16Util.isXmlName / isValidUtf16, as in
+// DocOpAutomaton.checkAttributesUpdateWellFormed), is rejected.
 func NewAttributesUpdate(changes []AttributeChange) (AttributesUpdate, error) {
 	if len(changes) == 0 {
 		return AttributesUpdate{}, nil
@@ -117,14 +124,14 @@ func NewAttributesUpdate(changes []AttributeChange) (AttributesUpdate, error) {
 		if i > 0 && cp[i-1].Name == c.Name {
 			return AttributesUpdate{}, fmt.Errorf("op: duplicate attribute name %q in update", c.Name)
 		}
-		if !utf8.ValidString(c.Name) {
-			return AttributesUpdate{}, fmt.Errorf("op: attribute name %q is not valid UTF-8", c.Name)
+		if !isXMLName(c.Name) {
+			return AttributesUpdate{}, fmt.Errorf("op: attribute name %q in update is not a valid XML name", c.Name)
 		}
-		if c.OldValue != nil && !utf8.ValidString(*c.OldValue) {
-			return AttributesUpdate{}, fmt.Errorf("op: attribute %q old value is not valid UTF-8", c.Name)
+		if c.OldValue != nil && !isValidUTF16Doc(*c.OldValue) {
+			return AttributesUpdate{}, fmt.Errorf("op: attribute %q old value is not valid UTF-16 document text", c.Name)
 		}
-		if c.NewValue != nil && !utf8.ValidString(*c.NewValue) {
-			return AttributesUpdate{}, fmt.Errorf("op: attribute %q new value is not valid UTF-8", c.Name)
+		if c.NewValue != nil && !isValidUTF16Doc(*c.NewValue) {
+			return AttributesUpdate{}, fmt.Errorf("op: attribute %q new value is not valid UTF-16 document text", c.Name)
 		}
 	}
 	return AttributesUpdate{updates: cp}, nil

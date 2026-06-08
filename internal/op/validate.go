@@ -2,7 +2,6 @@ package op
 
 import (
 	"fmt"
-	"unicode/utf8"
 )
 
 // Validate reports whether op is well-formed and valid against the document doc
@@ -15,109 +14,39 @@ import (
 // not match the document, a deleteElementStart with the wrong tag/attributes, a
 // replace/updateAttributes whose expected old value disagrees — is otherwise
 // applied silently, corrupting the stored document and desyncing every client
-// (their hashed versions diverge). Validate catches exactly these, plus basic
-// well-formedness (coverage of the whole document, balanced inserted elements,
-// valid inserted text). It is meant for the SERVER SUBMIT PATH (untrusted client
-// ops); replay of already-accepted stored deltas need not re-validate.
+// (their hashed versions diverge). Validate catches exactly these, plus the full
+// structural well-formedness automaton (insertion/deletion scope nesting, balanced
+// inserted/deleted elements, annotation balance/adjacency, XML-name tags, BMP-only
+// text) and the document-content/coverage class. It is meant for the SERVER SUBMIT
+// PATH (untrusted client ops); replay of already-accepted stored deltas need not
+// re-validate.
 //
-// Scope: it checks the content/coverage class that causes silent corruption. It
-// does not (yet) enforce the full structural automaton (element nesting against the
-// document's tree, annotation balance, XML-name tags) — those are caught later as a
-// non-initialization result or are lower-severity well-formedness.
+// This is a faithful port of Java's DocOpValidator/DocOpAutomaton run with
+// NO_SCHEMA_CONSTRAINTS (the box server uses SchemaCollection.empty()): the
+// ILL_FORMED (well-formedness) and INVALID_DOCUMENT (content/coverage) axes are
+// enforced; the INVALID_SCHEMA axis (permitsChild / permittedCharacters /
+// permitsAttribute / required-initial-children) is authoritatively dropped — see
+// docs/architecture/01 §8. Like the Java automaton, the first violation in stream
+// order short-circuits; on a single component the well-formedness check precedes
+// the content (validity) check, so a malformed op is reported as ill-formed.
+//
+// NOTE on annotation-deletion coverage: checkAnnotationsForDeletion's O(items*keys)
+// "every annotation present on a deleted item is reset by the update or already
+// equals the inherited target" sub-predicate is the single most divergence-prone
+// rule (Java DocOpAutomaton.java:1168-1193). It is implemented faithfully here;
+// because the box server runs SchemaCollection.empty() and replay is not
+// re-validated, a tightened reject can only affect a live client submitting a
+// malformed delete, never stored history.
 func Validate(doc, op DocOp) error {
 	items := documentItems(doc)
-	pos := 0         // cursor into the document's items
-	insertDepth := 0 // inserted element-starts awaiting their end
+	a := newAutomaton(items)
 	for ci, c := range op.components {
-		switch c := c.(type) {
-		case Retain:
-			if c.Count <= 0 {
-				return fmt.Errorf("op component %d: retain count %d must be positive", ci, c.Count)
-			}
-			if pos+c.Count > len(items) {
-				return fmt.Errorf("op component %d: retain %d runs past end of document (%d item(s) left)", ci, c.Count, len(items)-pos)
-			}
-			pos += c.Count
-		case Characters:
-			if c.Text == "" {
-				return fmt.Errorf("op component %d: empty characters insertion", ci)
-			}
-			if !utf8.ValidString(c.Text) {
-				return fmt.Errorf("op component %d: inserted characters are not valid UTF-8", ci)
-			}
-		case ElementStart:
-			if c.Type == "" {
-				return fmt.Errorf("op component %d: element start with empty type", ci)
-			}
-			insertDepth++
-		case ElementEnd:
-			if insertDepth == 0 {
-				return fmt.Errorf("op component %d: element end with no matching inserted start", ci)
-			}
-			insertDepth--
-		case DeleteCharacters:
-			if c.Text == "" {
-				return fmt.Errorf("op component %d: empty characters deletion", ci)
-			}
-			for _, r := range c.Text {
-				if pos >= len(items) {
-					return fmt.Errorf("op component %d: deleteCharacters runs past end of document", ci)
-				}
-				it := items[pos]
-				if it.kind != itemChar {
-					return fmt.Errorf("op component %d: deleteCharacters at a non-character (element) position", ci)
-				}
-				if it.r != r {
-					return fmt.Errorf("op component %d: deleteCharacters content mismatch: document has %q, op deletes %q", ci, string(it.r), string(r))
-				}
-				pos++
-			}
-		case DeleteElementStart:
-			if pos >= len(items) || items[pos].kind != itemStart {
-				return fmt.Errorf("op component %d: deleteElementStart but document has no element start here", ci)
-			}
-			if items[pos].typ != c.Type {
-				return fmt.Errorf("op component %d: deleteElementStart type mismatch: document %q, op %q", ci, items[pos].typ, c.Type)
-			}
-			if !items[pos].attrs.Equal(c.Attributes) {
-				return fmt.Errorf("op component %d: deleteElementStart attributes differ from document", ci)
-			}
-			pos++
-		case DeleteElementEnd:
-			if pos >= len(items) || items[pos].kind != itemEnd {
-				return fmt.Errorf("op component %d: deleteElementEnd but document has no element end here", ci)
-			}
-			pos++
-		case ReplaceAttributes:
-			if pos >= len(items) || items[pos].kind != itemStart {
-				return fmt.Errorf("op component %d: replaceAttributes but document has no element start here", ci)
-			}
-			if !items[pos].attrs.Equal(c.OldAttributes) {
-				return fmt.Errorf("op component %d: replaceAttributes old attributes differ from document", ci)
-			}
-			pos++
-		case UpdateAttributes:
-			if pos >= len(items) || items[pos].kind != itemStart {
-				return fmt.Errorf("op component %d: updateAttributes but document has no element start here", ci)
-			}
-			if err := checkUpdateOldValues(items[pos].attrs, c.Update); err != nil {
-				return fmt.Errorf("op component %d: %w", ci, err)
-			}
-			pos++
-		case AnnotationBoundary:
-			// Zero-width: opens/closes annotation ranges, consumes no item. Annotation
-			// balance validation is out of scope for this content-corruption guard.
-		default:
-			return fmt.Errorf("op component %d: unknown component type %T", ci, c)
+		if err := a.check(ci, c); err != nil {
+			return err
 		}
+		a.do(c)
 	}
-	if pos != len(items) {
-		return fmt.Errorf("op does not cover the whole document: consumed %d of %d item(s)", pos, len(items))
-	}
-	if insertDepth != 0 {
-		return fmt.Errorf("op leaves %d inserted element(s) unclosed", insertDepth)
-	}
-	return nil
+	return a.checkFinish()
 }
 
 // checkUpdateOldValues verifies an attribute update's expected old values against
@@ -149,31 +78,61 @@ const (
 
 // docItem is one position in a document: a single character, an element start
 // (with its tag/attributes), or an element end. Annotation boundaries are
-// zero-width and contribute no items.
+// zero-width and contribute no items; instead each item carries ann, the
+// effective annotation snapshot (key→value) in force at that position — the form
+// the automaton's annotationsAt/getAnnotation/firstAnnotationChange queries read
+// (Java AutomatonDocument.annotationsAt/getAnnotation).
 type docItem struct {
 	kind  itemKind
-	r     rune       // itemChar
-	typ   string     // itemStart
-	attrs Attributes // itemStart
+	r     rune              // itemChar
+	typ   string            // itemStart
+	attrs Attributes        // itemStart
+	ann   map[string]string // effective annotations at this position (nil => none)
 }
 
 // documentItems flattens an insertion-only DocOp into its sequence of items
 // (each character is one item), the form against which an operation's
-// retains/deletions are validated.
+// retains/deletions are validated. It threads the document's running annotation
+// state left-to-right: each AnnotationBoundary applies its Changes() (NewValue
+// sets, nil NewValue clears) and drops its EndKeys(), and every item is stamped
+// with a copy of the annotation state in force at it. This mirrors how a
+// DocInitialization's boundaries determine the effective annotation at each item
+// (matching sameDocument/docTokens), which the deletion-annotation rules read.
 func documentItems(doc DocOp) []docItem {
 	var items []docItem
+	cur := map[string]string{} // running effective annotation state
+	stamp := func() map[string]string {
+		if len(cur) == 0 {
+			return nil
+		}
+		cp := make(map[string]string, len(cur))
+		for k, v := range cur {
+			cp[k] = v
+		}
+		return cp
+	}
 	for _, c := range doc.components {
 		switch c := c.(type) {
 		case Characters:
+			snap := stamp()
 			for _, r := range c.Text {
-				items = append(items, docItem{kind: itemChar, r: r})
+				items = append(items, docItem{kind: itemChar, r: r, ann: snap})
 			}
 		case ElementStart:
-			items = append(items, docItem{kind: itemStart, typ: c.Type, attrs: c.Attributes})
+			items = append(items, docItem{kind: itemStart, typ: c.Type, attrs: c.Attributes, ann: stamp()})
 		case ElementEnd:
-			items = append(items, docItem{kind: itemEnd})
+			items = append(items, docItem{kind: itemEnd, ann: stamp()})
 		case AnnotationBoundary:
-			// zero-width
+			for _, k := range c.Boundary.EndKeys() {
+				delete(cur, k)
+			}
+			for _, ch := range c.Boundary.Changes() {
+				if ch.NewValue == nil {
+					delete(cur, ch.Key)
+				} else {
+					cur[ch.Key] = *ch.NewValue
+				}
+			}
 		default:
 			// A non-insertion component in a "document" means doc is not actually a
 			// DocInitialization; leave it out of the item stream (the coverage check

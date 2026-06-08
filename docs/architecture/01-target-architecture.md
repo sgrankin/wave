@@ -81,6 +81,25 @@ to redesign — a "clean" rewrite that breaks any of them is wrong:
    server applies deltas without schema enforcement (matches Java
    `SchemaCollection.empty()`); do not add a server schema gate or emit
    `SCHEMA_VIOLATION`.
+9. **Document text is modelled as UTF-8 runes, not UTF-16 code units — a
+   deliberate, package-wide divergence from Java.** Java's `Utf16Util` is BMP-only:
+   `DocOpAutomaton`'s `firstSurrogate` gate rejects any string containing a
+   surrogate *code unit*, so a supplementary (astral) code point — an emoji,
+   `U+1F600` — is rejected because in UTF-16 it is a surrogate *pair*. The Go port
+   (`internal/op`) instead treats a supplementary code point as a single valid item
+   (one rune): `documentItems`, `inputItems`/`outputItems`, `Compose`, `Transform`,
+   the structural validator, and the fuzz generators all count and compose it as one
+   item. Consequences a reimplementer must keep consistent: (a) the validator
+   **accepts** valid supplementary runes (rejecting only surrogate and noncharacter
+   code points); (b) item indices/lengths differ from Java for astral text (Go: 1
+   item, Java: 2 code units), so a full-document retain over `"a😀b"` is `Retain{3}`
+   in Go vs `Retain{4}` in Java. This only matters at a UTF-16 boundary — replaying
+   historical UTF-16-indexed deltas, or interop with a UTF-16 client. The box server
+   is rune-based end-to-end, so its own ops are self-consistent. If exact Java
+   item-index parity is ever required, revisit the rune-vs-code-unit model
+   **package-wide**, not only in the validator. Noncharacter code points
+   (`U+FDD0..U+FDEF`, low 16 bits `0xFFFE`/`0xFFFF`) and surrogates are rejected in
+   text, attribute values, and annotation values, matching Java's `isValidUtf16`.
 
 ## Access control & wavelet creation
 

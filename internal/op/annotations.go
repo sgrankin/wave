@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf8"
 )
 
 // AnnotationChange records, for one annotation key, the value change at a
@@ -51,11 +50,11 @@ func NewAnnotationBoundaryMap(endKeys []string, changes []AnnotationChange) (Ann
 		if i > 0 && chg[i-1].Key == c.Key {
 			return AnnotationBoundaryMap{}, fmt.Errorf("op: duplicate change key %q in annotation boundary", c.Key)
 		}
-		if c.OldValue != nil && !utf8.ValidString(*c.OldValue) {
-			return AnnotationBoundaryMap{}, fmt.Errorf("op: annotation %q old value is not valid UTF-8", c.Key)
+		if c.OldValue != nil && !isValidUTF16Doc(*c.OldValue) {
+			return AnnotationBoundaryMap{}, fmt.Errorf("op: annotation %q old value is not valid UTF-16 document text", c.Key)
 		}
-		if c.NewValue != nil && !utf8.ValidString(*c.NewValue) {
-			return AnnotationBoundaryMap{}, fmt.Errorf("op: annotation %q new value is not valid UTF-8", c.Key)
+		if c.NewValue != nil && !isValidUTF16Doc(*c.NewValue) {
+			return AnnotationBoundaryMap{}, fmt.Errorf("op: annotation %q new value is not valid UTF-16 document text", c.Key)
 		}
 	}
 
@@ -74,17 +73,21 @@ func NewAnnotationBoundaryMap(endKeys []string, changes []AnnotationChange) (Ann
 	return AnnotationBoundaryMap{endKeys: ends, changes: chg}, nil
 }
 
-// validateAnnotationKey enforces the key character constraints: non-empty,
-// valid UTF-8, and free of '?' and '@'.
+// validateAnnotationKey enforces the key character constraints (Java
+// DocOpAutomaton.validateAnnotationKey): non-empty, free of '?' and '@', and
+// valid UTF-16 document text (valid UTF-8 with no surrogate/noncharacter code
+// points — isValidUtf16, which is strictly stronger than utf8.ValidString).
+// Annotation keys are NOT required to be XML names (unlike attribute names);
+// keys such as "style/bold" are valid.
 func validateAnnotationKey(k string) error {
 	if k == "" {
 		return fmt.Errorf("op: empty annotation key")
 	}
-	if !utf8.ValidString(k) {
-		return fmt.Errorf("op: annotation key %q is not valid UTF-8", k)
-	}
 	if strings.ContainsAny(k, "?@") {
 		return fmt.Errorf("op: annotation key %q contains '?' or '@'", k)
+	}
+	if !isValidUTF16Doc(k) {
+		return fmt.Errorf("op: annotation key %q is not valid UTF-16 document text", k)
 	}
 	return nil
 }

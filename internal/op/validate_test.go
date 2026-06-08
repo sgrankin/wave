@@ -98,10 +98,13 @@ func TestValidateRejectsContentMismatch(t *testing.T) {
 			"old value",
 		},
 		{
+			// Faithful to Java: deleteElementEnd's well-formedness check (no matching
+			// open deletion) precedes the document-content check (no element end),
+			// so an unmatched deleteElementEnd is reported as ill-formed first.
 			"deleteElementEnd at a character",
 			textDoc("hi"),
 			op.NewDocOp([]op.Component{op.DeleteElementEnd{}, op.Retain{Count: 1}}),
-			"no element end",
+			"no matching open deletion",
 		},
 		{
 			"deleteElementStart at a character",
@@ -137,7 +140,9 @@ func TestValidateRejectsMalformed(t *testing.T) {
 		{"element end with no start", op.EmptyDoc(), op.NewDocOp([]op.Component{op.ElementEnd{}}), "no matching inserted start"},
 		{"non-positive retain", textDoc("hi"), op.NewDocOp([]op.Component{op.Retain{Count: 0}, op.Retain{Count: 2}}), "must be positive"},
 		{"empty characters", op.EmptyDoc(), op.NewDocOp([]op.Component{op.Characters{Text: ""}}), "empty characters"},
-		{"empty element type", op.EmptyDoc(), op.NewDocOp([]op.Component{op.ElementStart{Type: ""}, op.ElementEnd{}}), "empty type"},
+		// Faithful to Java: the empty string is not a valid XML name (Utf16Util.isXmlName
+		// returns false on empty), so an empty element type is rejected as a name violation.
+		{"empty element type", op.EmptyDoc(), op.NewDocOp([]op.Component{op.ElementStart{Type: ""}, op.ElementEnd{}}), "not a valid XML name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
