@@ -22,7 +22,9 @@ function selectFirstPara(page: Page, start: number, end: number): Promise<void> 
     ({ start, end }) => {
       const para = document.querySelector(".blip-doc .para");
       if (para === null) throw new Error("no .para");
-      const tn = Array.from(para.childNodes).find((n) => n.nodeType === Node.TEXT_NODE) ?? para.firstChild;
+      // Walk to the first text node (it may be nested in a styled span — e.g. after a
+      // color/bold is applied — where a direct-child lookup would miss it).
+      const tn = document.createTreeWalker(para, NodeFilter.SHOW_TEXT).nextNode() ?? para.firstChild;
       if (tn === null) throw new Error("no text node");
       const r = document.createRange();
       r.setStart(tn, start);
@@ -53,6 +55,43 @@ test("Highlight applies a background color to the selection", async () => {
       () => document.querySelector('.blip-doc .para span[style*="background-color"]')?.textContent ?? "",
     );
     assert.equal(highlighted, "highlight", "the selected text was highlighted");
+  } finally {
+    await page.close();
+  }
+});
+
+test("a color swatch applies text color to the selection; Default clears it", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-color");
+  try {
+    await typeInto(page, 0, "color me");
+    await selectFirstPara(page, 0, 5); // select "color"
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+
+    await page.locator('.sel-toolbar button[data-cmd="color:#e11d48"]').click();
+
+    // The model now carries a style/color annotation → the run renders with a color.
+    await page.waitForFunction(
+      () => Array.from(document.querySelectorAll(".blip-doc .para span")).some((s) => (s as HTMLElement).style.color !== ""),
+      undefined,
+      { timeout: 5000 },
+    );
+    const colored = await page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll<HTMLElement>(".blip-doc .para span")).find((s) => s.style.color !== "");
+      return el ? { text: el.textContent ?? "", color: el.style.color } : null;
+    });
+    assert.ok(colored !== null, "a colored span exists");
+    assert.equal(colored.text, "color", "the selected text got the color");
+    assert.equal(colored.color, "rgb(225, 29, 72)", "the color is the chosen #e11d48");
+
+    // The Default (clear) button removes the color.
+    await selectFirstPara(page, 0, 5);
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await page.locator('.sel-toolbar button[data-cmd="color:"]').click();
+    await page.waitForFunction(
+      () => !Array.from(document.querySelectorAll(".blip-doc .para span")).some((s) => (s as HTMLElement).style.color !== ""),
+      undefined,
+      { timeout: 5000 },
+    );
   } finally {
     await page.close();
   }

@@ -32,6 +32,16 @@ const GAP = 8;
 // Viewport edge padding (px) so the bar never touches the window edge.
 const EDGE = 8;
 
+// The text-color palette offered in the bar (a small fixed set — a synchronous swatch
+// click keeps the selection, unlike a native color picker which would steal focus). A
+// separate "default" button (cmd "color:") clears the color annotation.
+const TEXT_COLORS: { name: string; css: string }[] = [
+  { name: "Red", css: "#e11d48" },
+  { name: "Orange", css: "#ea580c" },
+  { name: "Green", css: "#16a34a" },
+  { name: "Blue", css: "#2563eb" },
+];
+
 // isTouchPrimary reports whether this is a touch device (→ bottom-docked bar). maxTouchPoints
 // is the reliable discriminator (Mac trackpad = 0; iPhone/iPad > 0, even in iPad desktop-mode
 // where matchMedia lies); any-pointer:coarse is the live fallback / paired-mouse signal.
@@ -323,6 +333,16 @@ export class SelectionToolbar extends LitElement {
         ${btn("underline", "Underline", s.underline, html`<span style="text-decoration:underline">U</span>`, this.collapsed)}
         ${btn("strike", "Strikethrough", s.strike, html`<span style="text-decoration:line-through">S</span>`, this.collapsed)}
         ${btn("highlight", "Highlight", s.highlight, html`<span style="background:#fff3a0;padding:0 2px;border-radius:2px">H</span>`, this.collapsed)}
+        ${TEXT_COLORS.map((c) =>
+          btn(
+            `color:${c.css}`,
+            `${c.name} text`,
+            false,
+            html`<span class="color-swatch" style="background:${c.css}" aria-hidden="true"></span>`,
+            this.collapsed,
+          ),
+        )}
+        ${btn("color:", "Default text color", false, html`<span class="color-swatch color-clear" aria-hidden="true">A</span>`, this.collapsed)}
         ${btn("link", "Link", s.link, html`<span aria-hidden="true">🔗</span>`, this.collapsed)}
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
@@ -413,6 +433,25 @@ const STYLES = html`
     }
     selection-toolbar .sel-toolbar .cmt {
       white-space: nowrap;
+    }
+    /* Text-color swatches: a small colored square per palette entry; the "default"
+       button clears the color (an "A" glyph). */
+    selection-toolbar .sel-toolbar .color-swatch {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      border-radius: 3px;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      vertical-align: middle;
+    }
+    selection-toolbar .sel-toolbar .color-clear {
+      background: transparent;
+      border: none;
+      color: #f0f2f5;
+      font: 600 13px system-ui, sans-serif;
+      line-height: 13px;
+      text-align: center;
+      width: auto;
     }
     selection-toolbar .sel-toolbar .sep {
       width: 1px;

@@ -543,11 +543,41 @@ export class BlipView extends LitElement {
     this.emitWithSelection(ops, lo, hi);
   }
 
-  // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain/link)
-  // against the current selection. It is the public entry point for the floating
-  // <selection-toolbar>: the toolbar preventDefaults its own pointerdown so focus
-  // and the selection are still intact in this editor when this runs.
+  // toolbarSetColor sets (or, for value "", clears) the text color over the selection —
+  // a style/color annotation, which spanStyle already renders as `color:`. A specific
+  // color rather than a toggle (the toolbar offers a small palette), so it overwrites
+  // any existing color. Range-only (a no-op for a collapsed caret).
+  private toolbarSetColor(value: string): void {
+    const range = currentRange(this);
+    if (range === null || range.collapsed) return;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    if (hi <= lo) return;
+    const ops = ((): Component[] => {
+      try {
+        return value === ""
+          ? clearStyleRange(this.content, lo, hi, "color")
+          : setStyleRange(this.content, lo, hi, "color", value);
+      } catch {
+        return [];
+      }
+    })();
+    if (ops.length === 0) return;
+    this.emitWithSelection(ops, lo, hi);
+  }
+
+  // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain/link, or
+  // "color:<css>" / "color:" to clear) against the current selection. It is the public
+  // entry point for the floating <selection-toolbar>: the toolbar preventDefaults its
+  // own pointerdown so focus and the selection are still intact in this editor.
   applyCommand(cmd: string): void {
+    if (cmd.startsWith("color:")) {
+      this.toolbarSetColor(cmd.slice("color:".length));
+      return;
+    }
     switch (cmd) {
       case "link":
         this.toolbarSetLink();
