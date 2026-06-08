@@ -260,6 +260,44 @@ export async function testCaretInsideWidgetIsAtomic(t: T): Promise<void> {
   eq(m.domToOffset(img, 0), 9, "caret on the <img> descendant → before the widget (9)");
 }
 
+// emittedOpAfter dispatches a delete beforeinput and returns the content op the editor
+// emitted (or null if it swallowed the keystroke).
+function emittedOpAfter(el: HTMLElement, inputType: string): Component[] | null {
+  let captured: Component[] | null = null;
+  const onEdit = (e: Event): void => {
+    captured = (e as CustomEvent<Component[]>).detail;
+  };
+  el.addEventListener("edit", onEdit);
+  blipDoc(el).dispatchEvent(new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true }));
+  el.removeEventListener("edit", onEdit);
+  return captured;
+}
+
+// Backspace immediately AFTER an inline widget deletes the WIDGET (its element), not a
+// text rune — the gap that used to be a silent no-op once widgets sit mid-text.
+export async function testBackspaceDeletesAdjacentWidget(t: T): Promise<void> {
+  const el = await renderBlip(bodyWithMidTextWidgets());
+  const m = mapping(el);
+  const pos = m.offsetToDom(7); // immediately after the reply (which ends at 7)
+  if (pos === null) throw new Error("no DOM position after the reply");
+  setCaret(pos.node, pos.offset);
+  const op = emittedOpAfter(el, "deleteContentBackward");
+  eq(op !== null, true, "an edit was emitted");
+  eq(op!.some((c) => c.kind === "deleteElementStart"), true, "Backspace after the reply deletes the element");
+}
+
+// Delete immediately BEFORE an inline widget removes it.
+export async function testDeleteForwardRemovesAdjacentWidget(t: T): Promise<void> {
+  const el = await renderBlip(bodyWithMidTextWidgets());
+  const m = mapping(el);
+  const pos = m.offsetToDom(9); // immediately before the image (which starts at 9)
+  if (pos === null) throw new Error("no DOM position before the image");
+  setCaret(pos.node, pos.offset);
+  const op = emittedOpAfter(el, "deleteContentForward");
+  eq(op !== null, true, "an edit was emitted");
+  eq(op!.some((c) => c.kind === "deleteElementStart"), true, "Delete before the image removes the element");
+}
+
 // Typing immediately before a mid-text widget inserts at the widget's elementStart;
 // immediately after inserts past its 2 items — NOT snapped to the line end.
 export async function testTypingAroundMidTextWidget(t: T): Promise<void> {

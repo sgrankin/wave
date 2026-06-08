@@ -360,6 +360,23 @@ export function deleteLineMarker(content: DocOp, lineOffset: number, lineType: s
   ];
 }
 
+/**
+ * deleteInlineElement builds the content op removing an inline element (a <reply> or
+ * <image>) at `offset` — its ElementStart+ElementEnd, 2 items. The DeleteElementStart
+ * must echo the element's exact tag + attributes (the reply's id / the image's
+ * attachment) or compose() rejects it, so they are passed from the projected item.
+ */
+export function deleteInlineElement(content: DocOp, offset: number, type: string, attributes: Attributes): Component[] {
+  const len = content.documentLength();
+  const a = clamp(offset, 0, len);
+  return [
+    ...retain(a),
+    { kind: "deleteElementStart", type, attributes },
+    { kind: "deleteElementEnd" },
+    ...retain(len - a - 2),
+  ];
+}
+
 /** lineAttributes reconstructs a <line>'s attributes from its type and indent. */
 export function lineAttributes(lineType: string | null, indent: number): Attributes {
   const m: Record<string, string> = {};

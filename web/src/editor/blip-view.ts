@@ -21,6 +21,7 @@ import { Attributes, DocOp, runeCount } from "../wave/types.ts";
 import type { Component } from "../wave/types.ts";
 import {
   clearStyleRange,
+  deleteInlineElement,
   deleteLineMarker,
   project,
   rangeStyle,
@@ -196,6 +197,14 @@ export class BlipView extends LitElement {
       this.pendingCaret = para.lineOffset;
       return;
     }
+    // Caret immediately AFTER an inline widget (reply/image): Backspace deletes the
+    // widget (its 2 items), not a text rune — otherwise it would be a no-op (replaceText
+    // over an element item throws).
+    const w = this.widgetToDelete(lo, "before");
+    if (w !== null) {
+      this.tryEdit(() => deleteInlineElement(this.content, w.offset, w.type, w.attributes), w.offset);
+      return;
+    }
     if (lo > 0) this.tryEdit(() => replaceText(this.content, lo - 1, lo, ""), lo - 1);
   }
 
@@ -204,11 +213,38 @@ export class BlipView extends LitElement {
       this.tryEdit(() => replaceText(this.content, lo, hi, ""), lo);
       return;
     }
+    // Caret immediately BEFORE an inline widget: Delete removes the widget.
+    const w = this.widgetToDelete(lo, "after");
+    if (w !== null) {
+      this.tryEdit(() => deleteInlineElement(this.content, w.offset, w.type, w.attributes), w.offset);
+      return;
+    }
     // Collapsed, within text: delete the following rune (line-boundary forward-merge
     // is not handled in this cut).
     if (lo < this.content.documentLength()) {
       this.tryEditAllowFail(() => replaceText(this.content, lo, lo + 1, ""), lo);
     }
+  }
+
+  // widgetToDelete finds the inline widget (reply/image) immediately adjacent to a
+  // collapsed caret at `caret`: side "before" → a widget whose 2 items end at the caret
+  // (Backspace target); side "after" → a widget that starts at the caret (Delete target).
+  // Returns the element's offset + tag + exact attributes for deleteInlineElement, or null.
+  private widgetToDelete(
+    caret: number,
+    side: "before" | "after",
+  ): { offset: number; type: string; attributes: Attributes } | null {
+    for (const p of this.proj.paragraphs) {
+      for (const it of p.items) {
+        if (it.kind !== "reply" && it.kind !== "image") continue;
+        const hit = side === "before" ? it.offset + 2 === caret : it.offset === caret;
+        if (!hit) continue;
+        return it.kind === "reply"
+          ? { offset: it.offset, type: "reply", attributes: Attributes.of({ id: it.id }) }
+          : { offset: it.offset, type: "image", attributes: Attributes.of({ attachment: it.attachment }) };
+      }
+    }
+    return null;
   }
 
   // tryEdit builds an op and emits it; a builder that throws (e.g. a range spanning

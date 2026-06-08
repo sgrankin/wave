@@ -7,6 +7,7 @@ import { compose } from "../wave/compose.ts";
 import {
   caretToOffset,
   clearStyleRange,
+  deleteInlineElement,
   deleteLineMarker,
   deleteText,
   insertText,
@@ -457,6 +458,18 @@ test("project records two adjacent inline images at increasing offsets", () => {
   assert.deepEqual(p.items.map((i) => i.offset), [3, 4, 6], "image A at 4, image B at 6 (each 2 items)");
   assert.deepEqual(p.images, ["a", "b"]);
   assert.equal(p.paragraphEnd, 8, "textStart(3) + textLength(1) + 2*2 widgets");
+});
+
+test("deleteInlineElement removes an inline element's 2 items (compose-accepted)", () => {
+  // <body><line/>ab<reply id="r"/>cd</body> — the reply elementStart is at offset 5.
+  const content = new DocOp([es("body"), es("line"), ee, ch("ab"), es("reply", { id: "r" }), ee, ch("cd"), ee]);
+  // compose() throws if the DeleteElementStart attributes don't echo the document, so a
+  // successful compose proves the builder reconstructed them correctly.
+  const after = compose(content, new DocOp(deleteInlineElement(content, 5, "reply", Attributes.of({ id: "r" }))));
+  assert.equal(after.documentLength(), content.documentLength() - 2, "the element's 2 items are removed");
+  const p = project(after).paragraphs[0]!;
+  assert.deepEqual(p.anchors, [], "the reply anchor is gone");
+  assert.equal(paragraphText(p), "abcd", "surrounding text is preserved");
 });
 
 test("a widget breaks text-run coalescing (preserves document order)", () => {
