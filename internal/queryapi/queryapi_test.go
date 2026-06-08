@@ -264,6 +264,80 @@ func TestUnreadAndMarkRead(t *testing.T) {
 	}
 }
 
+// TestArchiveFilter: POST /api/archive hides a wave from the default inbox and the
+// ?archived=1 view shows only archived waves; un-archiving restores it.
+func TestArchiveFilter(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+	alice := pid(t, "alice@example.com")
+	w1 := waveName(t, "w+keep")
+	w2 := waveName(t, "w+archive")
+	seedWave(t, wm, w1, alice, "Keep me")
+	seedWave(t, wm, w2, alice, "Archive me")
+
+	h := queryapi.New(idx, store, alwaysAlice(t), nil).WithArchive(store)
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	titles := func(path string) map[string]bool {
+		t.Helper()
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", path, resp.StatusCode)
+		}
+		var dr digestResp
+		if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]bool{}
+		for _, d := range dr.Waves {
+			out[d.Title] = true
+		}
+		return out
+	}
+	setArchived := func(w id.WaveletName, archived bool) {
+		t.Helper()
+		u := fmt.Sprintf("%s/api/archive?wave=%s&archived=%t", srv.URL, url.QueryEscape(w.Serialize()), archived)
+		resp, err := http.Post(u, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("archive status = %d, want 204", resp.StatusCode)
+		}
+	}
+
+	// Default inbox shows both.
+	if got := titles("/api/inbox"); !got["Keep me"] || !got["Archive me"] || len(got) != 2 {
+		t.Fatalf("initial inbox = %v, want both", got)
+	}
+
+	// Archive w2: default inbox drops it; the archived view shows only it.
+	setArchived(w2, true)
+	if got := titles("/api/inbox"); !got["Keep me"] || got["Archive me"] || len(got) != 1 {
+		t.Errorf("after archive, inbox = %v, want only Keep me", got)
+	}
+	if got := titles("/api/inbox?archived=1"); !got["Archive me"] || got["Keep me"] || len(got) != 1 {
+		t.Errorf("archived view = %v, want only Archive me", got)
+	}
+
+	// Un-archive: back in the default inbox.
+	setArchived(w2, false)
+	if got := titles("/api/inbox"); !got["Keep me"] || !got["Archive me"] || len(got) != 2 {
+		t.Errorf("after un-archive, inbox = %v, want both", got)
+	}
+}
+
 // TestBlipReadStateEndpoints: POST /api/read with a blip records per-blip read
 // progress, and GET /api/read returns the participant's per-blip read versions.
 func TestBlipReadStateEndpoints(t *testing.T) {

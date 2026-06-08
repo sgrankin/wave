@@ -54,6 +54,16 @@ type ReadState interface {
 	BlipReadVersions(participant id.ParticipantID, wavelet id.WaveletName) (map[string]uint64, error)
 }
 
+// Archive is the per-participant inbox-archive store backing the archive filter and
+// the POST /api/archive endpoint (satisfied by *sqlite.Store). Optional — when nil,
+// nothing is archived and the inbox shows every wave.
+type Archive interface {
+	// SetArchived sets whether the participant has archived the wavelet out of their inbox.
+	SetArchived(participant id.ParticipantID, wavelet id.WaveletName, archived bool) error
+	// ArchivedWaves returns the participant's archived wavelets (serialized name → true).
+	ArchivedWaves(participant id.ParticipantID) (map[string]bool, error)
+}
+
 // Digest is one wave's summary for the list view.
 type Digest struct {
 	Wave             string   `json:"wave"`    // serialized WaveletName
@@ -66,12 +76,20 @@ type Digest struct {
 	Unread           bool     `json:"unread"` // version > the participant's read version
 }
 
-// Handler serves /api/inbox, /api/search, and /api/read.
+// Handler serves /api/inbox, /api/search, /api/read, and /api/archive.
 type Handler struct {
 	index    Index
 	reads    ReadState
+	archive  Archive // optional; nil ⇒ no archiving (inbox shows everything)
 	identify func(*http.Request) (id.ParticipantID, bool)
 	logger   *slog.Logger
+}
+
+// WithArchive attaches the inbox-archive store, enabling the archive filter on
+// /api/inbox and the POST /api/archive endpoint. Returns the handler for chaining.
+func (h *Handler) WithArchive(a Archive) *Handler {
+	h.archive = a
+	return h
 }
 
 // New builds a Handler over the index and read-state store. identify resolves the
@@ -96,6 +114,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/search", h.search)
 	mux.HandleFunc("POST /api/read", h.markRead)
 	mux.HandleFunc("GET /api/read", h.readState)
+	mux.HandleFunc("POST /api/archive", h.setArchived)
 	return mux
 }
 
@@ -110,7 +129,55 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inbox: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Archive filter: the default inbox hides archived waves; ?archived=1 shows ONLY
+	// archived ones (the "Archived" view). Best-effort — a store error degrades to the
+	// unfiltered inbox rather than failing the list. NOTE: filtering is applied after the
+	// index's limit, so a page heavy with archived waves can show fewer than `limit`
+	// non-archived; acceptable while archived waves are a minority. FOLLOW-UP: when
+	// archiving sees heavy use, push the filter into the index query (a LEFT JOIN on
+	// inbox_archive) so the archived view isn't windowed out by the recent-`limit` cutoff.
+	if h.archive != nil {
+		showArchived := boolParam(r.URL.Query().Get("archived"))
+		archived, aerr := h.archive.ArchivedWaves(p)
+		if aerr != nil {
+			h.log().Warn("queryapi: archived waves", "participant", p, "err", aerr)
+		} else {
+			kept := wds[:0]
+			for _, wd := range wds {
+				if archived[wd.Wavelet.Serialize()] == showArchived {
+					kept = append(kept, wd)
+				}
+			}
+			wds = kept
+		}
+	}
 	h.writeDigests(w, p, wds)
+}
+
+// setArchived records whether the participant has archived a wave out of their inbox
+// (POST /api/archive?wave=<name>&archived=true|false). Archiving is a personal inbox
+// preference; it does not change membership.
+func (h *Handler) setArchived(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.identify(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.archive == nil {
+		http.Error(w, "archive not enabled", http.StatusNotImplemented)
+		return
+	}
+	name, err := id.ParseWaveletName(r.FormValue("wave"))
+	if err != nil {
+		http.Error(w, "bad wave: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	archived := boolParam(r.FormValue("archived"))
+	if err := h.archive.SetArchived(p, name, archived); err != nil {
+		http.Error(w, "set archived: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +186,10 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	// Search spans ALL of the participant's waves, INCLUDING archived ones (the Gmail
+	// model — archiving removes a wave from the inbox view, not from findability). So
+	// search is deliberately NOT archive-filtered; archiving from search results leaves
+	// the row (it is still a match), and the inbox/archived views reflect the change.
 	wds, err := h.index.Search(p, r.URL.Query().Get("q"), parseLimit(r))
 	if err != nil {
 		http.Error(w, "search: "+err.Error(), http.StatusInternalServerError)
@@ -219,6 +290,12 @@ func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, wds []
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"waves": digests})
+}
+
+// boolParam reads a boolean query/form value, accepting both "1" and "true" (the two
+// forms the client uses across endpoints) so the flag is parsed consistently everywhere.
+func boolParam(s string) bool {
+	return s == "1" || s == "true"
 }
 
 func parseLimit(r *http.Request) int {

@@ -17,16 +17,20 @@ export class WaveList extends LitElement {
     waves: { attribute: false },
     selected: {},
     query: {},
+    archivedView: { type: Boolean },
   };
 
   declare waves: WaveDigest[];
   declare selected: string; // serialized name of the active wave, or ""
   declare query: string;
+  declare archivedView: boolean; // showing the Archived view (vs the default inbox)
 
   // Wired by <wave-app>.
   onSearch: (query: string) => void = () => {};
   onSelect: (wave: string) => void = () => {};
   onNew: () => void = () => {};
+  onArchive: (wave: string, archived: boolean) => void = () => {};
+  onToggleArchivedView: () => void = () => {};
 
   private unsub: (() => void) | null = null;
 
@@ -35,6 +39,7 @@ export class WaveList extends LitElement {
     this.waves = [];
     this.selected = "";
     this.query = "";
+    this.archivedView = false;
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -72,14 +77,24 @@ export class WaveList extends LitElement {
       ${STYLES}
       <div class="wl-head">
         <button class="wl-new" @click=${() => this.onNew()}>✎ New wave</button>
-        <input
-          class="wl-search"
-          type="search"
-          aria-label="Search waves"
-          placeholder="Search waves…"
-          .value=${this.query}
-          @input=${this.onInput}
-        />
+        <button
+          class="wl-view-toggle ${this.archivedView ? "active" : ""}"
+          title=${this.archivedView ? "Back to the inbox" : "Show archived waves"}
+          aria-pressed=${this.archivedView ? "true" : "false"}
+          @click=${() => this.onToggleArchivedView()}
+        >
+          ${this.archivedView ? "← Inbox" : "🗄 Archived"}
+        </button>
+        ${this.archivedView
+          ? html``
+          : html`<input
+              class="wl-search"
+              type="search"
+              aria-label="Search waves"
+              placeholder="Search waves…"
+              .value=${this.query}
+              @input=${this.onInput}
+            />`}
       </div>
       <div class="wl-items">${this.renderItems()}</div>
     `;
@@ -87,7 +102,11 @@ export class WaveList extends LitElement {
 
   private renderItems(): TemplateResult {
     if (this.waves.length === 0) {
-      const msg = this.query.trim() !== "" ? "No matching waves" : "No waves yet — create one";
+      const msg = this.archivedView
+        ? "No archived waves"
+        : this.query.trim() !== ""
+          ? "No matching waves"
+          : "No waves yet — create one";
       return html`<div class="wl-empty">${msg}</div>`;
     }
     // Resolve display names for everyone shown (one batched fetch); names that
@@ -117,6 +136,17 @@ export class WaveList extends LitElement {
           ? html`<div class="wl-snippet">${w.snippet}</div>`
           : html``}
         ${others !== "" ? html`<div class="wl-meta">${others}</div>` : html``}
+        <button
+          class="wl-archive"
+          title=${this.archivedView ? "Restore to inbox" : "Archive this wave"}
+          aria-label=${this.archivedView ? "Restore " + title + " to inbox" : "Archive " + title}
+          @click=${(e: Event) => {
+            e.stopPropagation(); // don't open the wave when archiving it
+            this.onArchive(w.wave, !this.archivedView);
+          }}
+        >
+          ${this.archivedView ? "↩︎" : "🗄"}
+        </button>
       </div>
     `;
   }
@@ -152,6 +182,28 @@ const STYLES = html`
       outline: 2px solid #4060c0;
       outline-offset: 2px;
     }
+    wave-list .wl-view-toggle {
+      font: 12px system-ui, sans-serif;
+      padding: 4px 8px;
+      border: 1px solid #ccc;
+      color: #555;
+      background: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    wave-list .wl-view-toggle:hover {
+      background: #f0f0f0;
+    }
+    wave-list .wl-view-toggle.active {
+      border-color: #4060c0;
+      color: #4060c0;
+      background: #eef2ff;
+    }
+    wave-list .wl-view-toggle:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 2px;
+    }
     wave-list .wl-search {
       font: 13px system-ui, sans-serif;
       padding: 6px 8px;
@@ -176,10 +228,46 @@ const STYLES = html`
       font: 13px system-ui, sans-serif;
     }
     wave-list .wl-item {
+      position: relative; /* containing block for the archive button */
       padding: 10px 12px;
       border-bottom: 1px solid #f0f0f0;
       cursor: pointer;
       outline: none; /* :focus-visible below supplies the ring */
+    }
+    /* Archive affordance: top-right of the row, revealed on hover/focus (kept always
+       visible on touch, where there is no hover). Stops the click from opening the wave. */
+    wave-list .wl-archive {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      border: none;
+      background: rgba(255, 255, 255, 0.85);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 13px;
+      line-height: 1.3;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+    wave-list .wl-item:hover .wl-archive,
+    wave-list .wl-item:focus-within .wl-archive,
+    wave-list .wl-archive:focus-visible {
+      opacity: 1;
+    }
+    wave-list .wl-archive:hover {
+      background: #e8eeff;
+    }
+    wave-list .wl-archive:focus-visible {
+      outline: 2px solid #4060c0;
+      outline-offset: 1px;
+    }
+    @media (pointer: coarse) {
+      wave-list .wl-archive {
+        opacity: 0.7; /* no hover on touch — keep it reachable */
+        min-width: 40px;
+        min-height: 34px;
+      }
     }
     wave-list .wl-item:hover {
       background: #f7f9ff;

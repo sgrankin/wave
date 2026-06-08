@@ -11,7 +11,7 @@ import { LitElement, html } from "lit";
 import type { TemplateResult } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 
-import { fetchInbox, markRead, searchWaves } from "../wave/api.ts";
+import { archiveWave, fetchInbox, markRead, searchWaves } from "../wave/api.ts";
 import type { WaveDigest } from "../wave/api.ts";
 import { domainOf, newConversationWave } from "../wave/waveid.ts";
 import type { OptimisticClient } from "../wave/transport.ts";
@@ -34,6 +34,7 @@ export class WaveApp extends LitElement {
     query: { state: true },
     playback: { state: true },
     navCollapsed: { state: true },
+    archivedView: { state: true },
   };
 
   wsUrl = "";
@@ -44,6 +45,7 @@ export class WaveApp extends LitElement {
   declare query: string;
   declare playback: boolean; // right pane shows the history scrubber instead of the editor
   declare navCollapsed: boolean; // left inbox pane hidden for a full-width conversation
+  declare archivedView: boolean; // the wave list shows archived waves instead of the inbox
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -72,6 +74,7 @@ export class WaveApp extends LitElement {
     this.query = "";
     this.playback = false;
     this.navCollapsed = false;
+    this.archivedView = false;
   }
 
   protected override createRenderRoot(): HTMLElement {
@@ -127,16 +130,40 @@ export class WaveApp extends LitElement {
 
   private async loadInbox(): Promise<void> {
     const seq = ++this.listSeq;
+    const archivedView = this.archivedView;
     let waves: WaveDigest[];
     try {
-      waves = await fetchInbox();
+      waves = await fetchInbox(archivedView);
     } catch {
       waves = [];
     }
     if (seq === this.listSeq) {
       this.waves = waves; // drop a stale (out-of-order) response
-      this.notifyNewUnread(waves); // desktop notification for newly-unread waves
+      // Only the live inbox drives unread notifications (never the archived view).
+      if (!archivedView) this.notifyNewUnread(waves);
     }
+  }
+
+  // toggleArchivedView flips between the inbox and the archived-waves list, reloading
+  // it. Archiving leaves the search view (search always queries the inbox).
+  private toggleArchivedView = (): void => {
+    this.archivedView = !this.archivedView;
+    this.query = ""; // the archived view has no search box
+    this.loadList();
+  };
+
+  // onArchive archives (or restores) a wave, then reloads the current list so the row
+  // moves to/from the archived view. Best-effort: a failed POST just leaves it.
+  private onArchive = (wave: string, archived: boolean): void => {
+    void archiveWave(wave, archived)
+      .then(() => this.loadList())
+      .catch(() => {});
+  };
+
+  // loadList reloads whichever list is showing (search results, the inbox, or the
+  // archived view), honoring archivedView.
+  private loadList(): void {
+    this.rerun(this.archivedView ? "" : this.query.trim());
   }
 
   private async runSearch(q: string): Promise<void> {
@@ -160,10 +187,11 @@ export class WaveApp extends LitElement {
 
   // refreshList re-runs the current view so the list reflects new/changed waves.
   // It uses its own timer so a background refresh never cancels the user's
-  // in-flight keystroke debounce. Debounced.
+  // in-flight keystroke debounce. Debounced. Goes through loadList so the inbox /
+  // archived / search view selection lives in exactly one place.
   private refreshList(): void {
     if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout(() => this.rerun(this.query.trim()), SEARCH_DEBOUNCE_MS);
+    this.refreshTimer = setTimeout(() => this.loadList(), SEARCH_DEBOUNCE_MS);
   }
 
   private handleSearch = (query: string): void => {
@@ -274,9 +302,12 @@ export class WaveApp extends LitElement {
             .waves=${this.waves}
             .selected=${this.activeWave}
             .query=${this.query}
+            .archivedView=${this.archivedView}
             .onSearch=${this.handleSearch}
             .onSelect=${this.handleSelect}
             .onNew=${this.handleNew}
+            .onArchive=${this.onArchive}
+            .onToggleArchivedView=${this.toggleArchivedView}
           ></wave-list>
         </div>
         <div class="app-right">

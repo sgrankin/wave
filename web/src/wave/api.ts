@@ -23,9 +23,19 @@ async function fetchWaves(path: string): Promise<WaveDigest[]> {
   return body.waves ?? [];
 }
 
-/** The signed-in participant's waves, most-recently-modified first. */
-export function fetchInbox(): Promise<WaveDigest[]> {
-  return fetchWaves("/api/inbox");
+/** The signed-in participant's waves, most-recently-modified first. With archived=true,
+ *  returns the ARCHIVED waves instead (the "Archived" view); otherwise excludes them. */
+export function fetchInbox(archived = false): Promise<WaveDigest[]> {
+  return fetchWaves(archived ? "/api/inbox?archived=1" : "/api/inbox");
+}
+
+/** Archive a wave out of the inbox (or restore it when archived=false). A personal
+ *  inbox preference — it does not change membership. Best-effort. */
+export async function archiveWave(wave: string, archived: boolean): Promise<void> {
+  await fetch(`/api/archive?wave=${encodeURIComponent(wave)}&archived=${archived}`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
 }
 
 /** Waves matching query (Wave operators: with:, creator:, orderby:modified, free text). */

@@ -61,7 +61,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	// Each store contributes its own DDL (delta log, accounts, …). All are
 	// CREATE TABLE IF NOT EXISTS, so running them on every open is idempotent.
-	for _, ddl := range []string{schema, accountsSchema, snapshotsSchema, indexSchema, settingsSchema, readStateSchema, credentialsSchema} {
+	for _, ddl := range []string{schema, accountsSchema, snapshotsSchema, indexSchema, settingsSchema, readStateSchema, archiveSchema, credentialsSchema} {
 		if _, err := db.Exec(ddl); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: init schema: %w", err)

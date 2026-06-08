@@ -597,7 +597,7 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 	// The read-side wave query API (inbox/search) backs the app shell's wave list;
 	// it is available only when the index is maintained (-index).
 	if idx != nil {
-		qh := queryapi.New(idx, store, identify, logger)
+		qh := queryapi.New(idx, store, identify, logger).WithArchive(store)
 		mux.Handle("/api/", authSvc.Middleware(qh.Routes()))
 	}
 	// Participant profiles (display names) back the client's humanized rosters,
