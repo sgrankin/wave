@@ -30,6 +30,13 @@ func (f *fakeAccounts) GetAccount(p id.ParticipantID) (*storage.Account, bool, e
 	return a, ok, nil
 }
 func (f *fakeAccounts) PutAccount(a *storage.Account) error { f.m[a.ID.Address()] = a; return nil }
+func (f *fakeAccounts) CreateAccount(a *storage.Account) (bool, error) {
+	if _, ok := f.m[a.ID.Address()]; ok {
+		return false, nil
+	}
+	f.m[a.ID.Address()] = a
+	return true, nil
+}
 func (f *fakeAccounts) RemoveAccount(p id.ParticipantID) error {
 	delete(f.m, p.Address())
 	return nil

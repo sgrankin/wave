@@ -52,33 +52,67 @@ func (s *Store) GetAccount(pid id.ParticipantID) (*storage.Account, bool, error)
 	return acct, true, nil
 }
 
-// PutAccount creates or replaces an account.
-func (s *Store) PutAccount(a *storage.Account) error {
+// encodeAccount validates the kind/payload pairing and marshals the kind-specific
+// data column. Shared by PutAccount and CreateAccount so both apply the same
+// kind-mismatch guard and JSON encoding.
+func encodeAccount(a *storage.Account) (string, error) {
 	var payload any
 	switch a.Kind {
 	case storage.AccountHuman:
 		if a.Human == nil {
-			return fmt.Errorf("sqlite: human account %s missing Human data", a.ID)
+			return "", fmt.Errorf("sqlite: human account %s missing Human data", a.ID)
 		}
 		payload = a.Human
 	case storage.AccountRobot:
 		if a.Robot == nil {
-			return fmt.Errorf("sqlite: robot account %s missing Robot data", a.ID)
+			return "", fmt.Errorf("sqlite: robot account %s missing Robot data", a.ID)
 		}
 		payload = a.Robot
 	default:
-		return fmt.Errorf("sqlite: account %s has unknown kind %q", a.ID, a.Kind)
+		return "", fmt.Errorf("sqlite: account %s has unknown kind %q", a.ID, a.Kind)
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("sqlite: encode account %s: %w", a.ID, err)
+		return "", fmt.Errorf("sqlite: encode account %s: %w", a.ID, err)
+	}
+	return string(data), nil
+}
+
+// PutAccount creates or replaces an account.
+func (s *Store) PutAccount(a *storage.Account) error {
+	data, err := encodeAccount(a)
+	if err != nil {
+		return err
 	}
 	if _, err := s.db.Exec(
 		`INSERT OR REPLACE INTO accounts (participant_id, kind, data) VALUES (?, ?, ?)`,
-		a.ID.Address(), string(a.Kind), string(data)); err != nil {
+		a.ID.Address(), string(a.Kind), data); err != nil {
 		return fmt.Errorf("sqlite: put account %s: %w", a.ID, err)
 	}
 	return nil
+}
+
+// CreateAccount inserts a only if no row exists at a.ID, atomically. It reports
+// created=true when it inserted a row, created=false when one was already present
+// (ON CONFLICT DO NOTHING leaves the existing row untouched). This is the insert-only
+// path that uniqueness-checks first-login provisioning without a check-then-write race.
+func (s *Store) CreateAccount(a *storage.Account) (bool, error) {
+	data, err := encodeAccount(a)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO accounts (participant_id, kind, data) VALUES (?, ?, ?)
+		 ON CONFLICT(participant_id) DO NOTHING`,
+		a.ID.Address(), string(a.Kind), data)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: create account %s: %w", a.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: create account %s: rows affected: %w", a.ID, err)
+	}
+	return n == 1, nil
 }
 
 // RemoveAccount deletes an account (no-op if absent).

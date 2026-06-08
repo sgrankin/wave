@@ -128,3 +128,50 @@ func TestPutAccountKindMismatch(t *testing.T) {
 		t.Error("expected error for human account with nil Human data")
 	}
 }
+
+func TestCreateAccountInsertOnly(t *testing.T) {
+	s := openAccounts(t)
+	alice := pid(t, "alice@example.com")
+
+	// First create inserts the row and reports created=true.
+	first := &storage.Account{ID: alice, Kind: storage.AccountHuman,
+		Human: &storage.HumanAccount{DisplayName: "the first alice", Locale: "en"}}
+	created, err := s.CreateAccount(first)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if !created {
+		t.Fatal("first create reported created=false, want true")
+	}
+
+	// A second create at the same address is a no-op: created=false, original preserved.
+	second := &storage.Account{ID: alice, Kind: storage.AccountHuman,
+		Human: &storage.HumanAccount{DisplayName: "the clobbering alice", Locale: "fr"}}
+	created, err = s.CreateAccount(second)
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if created {
+		t.Error("second create reported created=true, want false (address already taken)")
+	}
+	got, ok, err := s.GetAccount(alice)
+	if err != nil || !ok {
+		t.Fatalf("get after second create: ok=%v err=%v", ok, err)
+	}
+	if got.Human.DisplayName != "the first alice" || got.Human.Locale != "en" {
+		t.Errorf("original data was clobbered: %+v, want the first alice / en", got.Human)
+	}
+}
+
+func TestCreateAccountKindMismatch(t *testing.T) {
+	s := openAccounts(t)
+	alice := pid(t, "alice@example.com")
+	// Same kind-mismatch guard as PutAccount: human kind with nil Human data errors.
+	if _, err := s.CreateAccount(&storage.Account{ID: alice, Kind: storage.AccountHuman}); err == nil {
+		t.Error("expected error for human account with nil Human data")
+	}
+	// And nothing was inserted.
+	if _, ok, _ := s.GetAccount(alice); ok {
+		t.Error("a failed CreateAccount must not insert a row")
+	}
+}

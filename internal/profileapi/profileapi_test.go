@@ -67,6 +67,16 @@ func (f *fakeAccounts) PutAccount(a *storage.Account) error {
 	return nil
 }
 
+// CreateAccount satisfies storage.AccountStore (insert-only). profileapi does not
+// use it, but the fake must implement the full interface.
+func (f *fakeAccounts) CreateAccount(a *storage.Account) (bool, error) {
+	if _, ok := f.m[a.ID.Address()]; ok {
+		return false, nil
+	}
+	f.m[a.ID.Address()] = a
+	return true, nil
+}
+
 func (f *fakeAccounts) putHuman(t *testing.T, addr, name string) {
 	t.Helper()
 	p := pid(t, addr)

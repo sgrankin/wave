@@ -56,6 +56,13 @@ func (a *memAccounts) PutAccount(acct *storage.Account) error {
 	a.m[acct.ID.Address()] = acct
 	return nil
 }
+func (a *memAccounts) CreateAccount(acct *storage.Account) (bool, error) {
+	if _, ok := a.m[acct.ID.Address()]; ok {
+		return false, nil
+	}
+	a.m[acct.ID.Address()] = acct
+	return true, nil
+}
 func (a *memAccounts) RemoveAccount(p id.ParticipantID) error {
 	delete(a.m, p.Address())
 	return nil
@@ -237,6 +244,12 @@ func TestGitHubCallbackRejectsClaimedAddress(t *testing.T) {
 	rec := driveCallback(t, m)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("takeover attempt status = %d (body %q), want 403", rec.Code, rec.Body.String())
+	}
+	// Account-enumeration defence: the 403 body must be GENERIC. Appending the mint
+	// error would leak "address X is already taken", confirming the derived address is
+	// registered and letting an attacker enumerate accounts.
+	if strings.Contains(rec.Body.String(), "already taken") {
+		t.Errorf("403 body leaked account-existence detail: %q", rec.Body.String())
 	}
 	// No credential was bound for the attacker's id (binding happens only after a
 	// successful uniqueness-checked provision).

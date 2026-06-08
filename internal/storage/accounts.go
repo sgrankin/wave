@@ -57,6 +57,11 @@ type AccountStore interface {
 	GetAccount(pid id.ParticipantID) (*Account, bool, error)
 	// PutAccount creates or replaces an account.
 	PutAccount(a *Account) error
+	// CreateAccount inserts a only if no account exists at a.ID. created reports
+	// whether a row was inserted (false means one was already present, left
+	// untouched). It is the atomic, insert-only counterpart to PutAccount, used to
+	// uniqueness-check first-login provisioning without a check-then-write race.
+	CreateAccount(a *Account) (created bool, err error)
 	// RemoveAccount deletes an account (no-op if absent).
 	RemoveAccount(pid id.ParticipantID) error
 }

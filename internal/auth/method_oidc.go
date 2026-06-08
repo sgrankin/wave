@@ -197,8 +197,10 @@ func (m *OIDCMethod) callback(w http.ResponseWriter, r *http.Request) {
 	// Convergence: MintIdP resolves issuer+sub → bound account (returning), or
 	// uniqueness-checks the derived address (verified email, else sub@issuer-host)
 	// before binding — so a reassigned email cannot adopt another user's account.
+	// The 403 body is GENERIC: appending err.Error() would leak "address X is already
+	// taken", letting an attacker enumerate which derived addresses are registered.
 	if _, err := m.Service.MintIdP(w, m.Credentials, m.loginFor(claims)); err != nil {
-		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
+		http.Error(w, "login denied", http.StatusForbidden)
 		return
 	}
 	http.Redirect(w, r, state.Redirect, http.StatusSeeOther)

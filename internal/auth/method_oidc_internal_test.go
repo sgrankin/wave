@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,33 @@ func TestOIDCRejectsClaimedAddress(t *testing.T) {
 	acct, _, _ := accounts.GetAccount(mustPID(t, "alice@corp.com"))
 	if acct.Human == nil || acct.Human.DisplayName != "the original alice" {
 		t.Errorf("victim account was mutated: %+v", acct.Human)
+	}
+}
+
+// TestOIDCRejectsSharedDomainParticipant is the shared-domain regression: an OIDC
+// verified email with an EMPTY local part ("@corp.com") derives the shared-domain
+// participant, which grants domain-wide access (spec §2.9). MintIdP must refuse to mint
+// it from an IdP claim — and bind nothing, provision nothing.
+func TestOIDCRejectsSharedDomainParticipant(t *testing.T) {
+	accounts := newMemAccounts()
+	creds := newMemCreds()
+	m := oidcTestMethod(t, accounts, creds, "login.corp.com")
+
+	// A verified email whose address is "@corp.com" (empty local part).
+	_, err := mintOIDC(t, m, oidcClaims{Subject: "shared-sub", Email: "@corp.com", EmailVerified: true})
+	if err == nil {
+		t.Fatal("minting the shared-domain participant from an IdP claim must be rejected")
+	}
+	if !strings.Contains(err.Error(), "shared-domain") {
+		t.Errorf("error = %v, want a shared-domain refusal", err)
+	}
+	// Nothing was provisioned at the shared-domain address.
+	if _, ok, _ := accounts.GetAccount(mustPID(t, "@corp.com")); ok {
+		t.Error("the shared-domain participant must not be provisioned")
+	}
+	// No credential was bound for the subject.
+	if _, ok, _ := creds.GetCredential("oidc", "login.corp.com|shared-sub"); ok {
+		t.Error("no credential must be bound when the derived address is refused")
 	}
 }
 

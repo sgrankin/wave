@@ -93,15 +93,24 @@ func (p Provisioner) Ensure(participant id.ParticipantID) error {
 // contact). It is uniqueness-checked: an address already taken by an account is
 // rejected, so two users cannot register the same chosen address. displayName is
 // stored if non-empty. See docs/architecture/04-auth-model.md §5.
+//
+// The check is ATOMIC: it does an insert-only CreateAccount, so two concurrent
+// first-logins deriving the same address cannot both pass an absent-check and both
+// provision (the loser sees the address as taken). A separate GetAccount-then-Put
+// would be a TOCTOU race that clobbers the winner.
 func (p Provisioner) RegisterChosen(participant id.ParticipantID, displayName string) error {
-	_, ok, err := p.Accounts.GetAccount(participant)
+	created, err := p.Accounts.CreateAccount(&storage.Account{
+		ID:    participant,
+		Kind:  storage.AccountHuman,
+		Human: &storage.HumanAccount{DisplayName: displayName},
+	})
 	if err != nil {
 		return err
 	}
-	if ok {
+	if !created {
 		return fmt.Errorf("auth: address %s is already taken", participant)
 	}
-	return p.newHuman(participant, displayName)
+	return nil
 }
 
 // EnsureDisplayName provisions participant if absent (a derived address) and, when
@@ -274,6 +283,12 @@ func (s *Service) MintIdP(w http.ResponseWriter, store storage.CredentialStore, 
 	participant, policy, data, err := in.Derive()
 	if err != nil {
 		return id.ParticipantID{}, err
+	}
+	// Refuse the shared-domain participant ("@domain", empty local part), which grants
+	// domain-wide access (spec §2.9). An IdP claim — e.g. an OIDC email_verified for a
+	// bare "@corp.com" — must never mint the most-privileged identity in a domain.
+	if participant.Name() == "" {
+		return id.ParticipantID{}, fmt.Errorf("auth: refusing to mint the shared-domain participant %q from an IdP claim", participant)
 	}
 	if err := policy.Permits(participant); err != nil {
 		return id.ParticipantID{}, fmt.Errorf("auth: mint denied: %w", err)

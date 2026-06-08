@@ -139,8 +139,10 @@ func (m *GitHubMethod) callback(w http.ResponseWriter, r *http.Request) {
 
 	// Convergence: MintIdP resolves the stable numeric id → bound account (returning),
 	// or uniqueness-checks the derived <login>@github (first login) before binding.
+	// The 403 body is GENERIC: appending err.Error() would leak "address X is already
+	// taken", letting an attacker enumerate which derived addresses are registered.
 	if _, err := m.Service.MintIdP(w, m.Credentials, m.loginFor(gh)); err != nil {
-		http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
+		http.Error(w, "login denied", http.StatusForbidden)
 		return
 	}
 	http.Redirect(w, r, state.Redirect, http.StatusSeeOther)
