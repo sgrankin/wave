@@ -223,6 +223,57 @@ func ReplyToBlip(manifest op.DocOp, parentBlipID, newBlipID string, inline bool)
 	}), nil
 }
 
+// SetBlipDeleted returns the operation that marks blip blipID logically deleted:
+// it sets deleted="true" on the blip's <blip> element in the manifest. A logically
+// deleted blip is kept as a tombstone — it remains a parent for any reply threads
+// (OG ConversationBlip: "a blip may be logically deleted, but remain as a parent to
+// non-inline reply threads"). The caller pairs this manifest mutation with an op
+// that clears the blip's own content (op.Invert of its current content composed with
+// an empty body), in the same wavelet delta, so the deleted text is gone and
+// un-indexed. It errors if no such blip exists; a blip that is already deleted will
+// be rejected at apply (the deleted attribute is expected absent).
+func SetBlipDeleted(manifest op.DocOp, blipID string) (op.DocOp, error) {
+	start, ok := elementStartOffset(manifest, func(tag, id string) bool {
+		return tag == tagBlip && id == blipID
+	})
+	if !ok {
+		return op.DocOp{}, fmt.Errorf("conv: no blip %q in manifest", blipID)
+	}
+	yes := boolTrue
+	upd, err := op.NewAttributesUpdate([]op.AttributeChange{{Name: attrDelete, OldValue: nil, NewValue: &yes}})
+	if err != nil {
+		return op.DocOp{}, err
+	}
+	n := manifest.DocumentLength()
+	return op.NewDocOp([]op.Component{
+		op.Retain{Count: start},
+		op.UpdateAttributes{Update: upd},
+		op.Retain{Count: n - start - 1},
+	}), nil
+}
+
+// elementStartOffset returns the document item offset of the first ElementStart
+// whose (tag, id) satisfies pred (id is the "id" attribute, "" if absent). ok is
+// false if none matches. Like elementCloseOffset it assumes a well-formed manifest.
+func elementStartOffset(manifest op.DocOp, pred func(tag, id string) bool) (int, bool) {
+	pos := 0
+	for _, c := range manifest.Components() {
+		switch c := c.(type) {
+		case op.ElementStart:
+			id, _ := c.Attributes.Get(attrID)
+			if pred(c.Type, id) {
+				return pos, true
+			}
+			pos++
+		case op.ElementEnd:
+			pos++
+		case op.Characters:
+			pos += utf8.RuneCountInString(c.Text)
+		}
+	}
+	return 0, false
+}
+
 // elementCloseOffset returns the document offset of the ElementEnd item that
 // closes the first element (by close order) whose (tag, id) satisfies pred, where
 // id is the element's "id" attribute ("" if absent). The returned offset is the

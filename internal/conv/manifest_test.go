@@ -313,3 +313,43 @@ func TestNonManifestRejected(t *testing.T) {
 		t.Error("ReadManifest should reject a non-<conversation> root")
 	}
 }
+
+// TestSetBlipDeleted marks a blip logically deleted (deleted="true") in the
+// manifest, keeping it as a tombstone; siblings are untouched and the op is valid
+// against the manifest (the server validator would accept it).
+func TestSetBlipDeleted(t *testing.T) {
+	manifest := conv.EmptyManifest()
+	for _, id := range []string{"b+1", "b+2", "b+3"} {
+		next, err := op.Apply(manifest, conv.AppendBlipToRootThread(manifest, id))
+		if err != nil {
+			t.Fatalf("append %s: %v", id, err)
+		}
+		manifest = next
+	}
+
+	del, err := conv.SetBlipDeleted(manifest, "b+2")
+	if err != nil {
+		t.Fatalf("SetBlipDeleted: %v", err)
+	}
+	if err := op.Validate(manifest, del); err != nil {
+		t.Fatalf("delete op is not valid against the manifest: %v", err)
+	}
+	next, err := op.Apply(manifest, del)
+	if err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+	m, err := conv.ReadManifest(next)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	for _, b := range m.RootThread.Blips {
+		want := b.ID == "b+2"
+		if b.Deleted != want {
+			t.Errorf("blip %s deleted = %v, want %v", b.ID, b.Deleted, want)
+		}
+	}
+
+	if _, err := conv.SetBlipDeleted(manifest, "b+nope"); err == nil {
+		t.Error("SetBlipDeleted on a missing blip should error")
+	}
+}
