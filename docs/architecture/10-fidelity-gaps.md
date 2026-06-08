@@ -30,12 +30,11 @@ Status key: ✅ shipped 2026-06-08.
 4. ✅ **[Server] A removed participant keeps receiving the live stream** — DONE (cut at
    the removal boundary; reviewed). Original text: until they
    disconnect (membership enforced only at Open/Resync) — an access-control leak.
-5. **[Agent] wave memory primitives** (task #34 flagship) — PARTIAL. ✅ lifecycle &
-   discovery DONE: `POST/GET /agent/waves` (create + list) + `POST /agent/leave` REST
-   endpoints (agentgw, bearer-auth, reviewed SHIP) — an agent can now own/find/abandon
-   its own waves, not just human-invited ones. REMAINING: the **structured-state
-   primitive** (key-value memory; gadget-state/datadoc dropped) — the architecturally
-   deep part, needs a design pass on modeling state in the conv doc model.
+5. **[Agent] wave memory primitives** (task #34 flagship) — ✅ MOSTLY DONE (reviewed SHIP).
+   ✅ lifecycle & discovery: `POST/GET /agent/waves` + `POST /agent/leave`. ✅ structured
+   key-value state: a per-wave `<state>` document + `set.state`/`delete.state` intents +
+   state in the snapshot (doc 11). An agent can own/find/abandon its waves AND store/read
+   machine-readable memory in them. REMAINING: only the reactive `state.changed` event.
 
 ## OT core (internal/op, internal/doc, web/src/wave) — overall fidelity HIGH
 Transform (all 4 sub-transforms), Compose, Invert, the asymmetric annotation algebra,
@@ -141,10 +140,13 @@ intents). Gaps, ranked for the agent-first goal:
   `GET /agent/waves` (list/discover), `POST /agent/leave` — REST endpoints behind the
   agent bearer auth (agentgw.Routes + WithIndex). An agent can own/find/abandon its own
   waves. (The socket is still one-wave; these manage the set of waves around it.)
-- high / missing — **structured state**: no gadget-state revival and no datadoc — the
-  agent has *no* per-wave key/value or private store, only prose blips. Best revived in
-  reduced form (a state doc + `state.changed` event + `set.state` intent). THIS is the
-  remaining architecturally-deep part of #34 — needs a design pass before implementing.
+- ✅ **structured state — DONE** (reviewed SHIP): a per-wave `<state>` key/value document
+  (`conv.StateDocumentID`, seeded atomically with the wave), `set.state` / `delete.state`
+  intents, and the `state` map in the `wave.opened` snapshot — an agent's OT-native shared
+  memory. Reviewed: a concurrent-create corruption (fixed by seeding) and an invalid-UTF-8
+  panic-DoS (fixed via `op.NewAttributes`) both closed. Design + remaining: doc 11. REMAINING
+  is only the reactive **`state.changed` event** (others' live writes; lower priority — an
+  agent reads its own writes and re-reads on reconnect).
 - medium / missing — annotation ops/events (agent reads/writes flat text only, though the
   OT layer supports annotations); title/tag ops + change events (snapshot lacks both).
 - medium / partial — `blip.edited` fires per delta with no debounce/coalesce → floods an

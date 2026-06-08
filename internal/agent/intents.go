@@ -27,8 +27,10 @@ const (
 	IntentEditBlip IntentKind = "edit.blip"
 	// IntentAddParticipant adds a participant to the wavelet.
 	IntentAddParticipant IntentKind = "add.participant"
-	// IntentSetState sets a key→value entry in the wave's structured state document
-	// (the agent's shared key/value memory; lazily creates the doc on first set).
+	// IntentSetState sets a key→value entry in the wave's structured state document —
+	// the agent's shared key/value memory. The state doc is seeded with the wave, so a
+	// set normally mutates the existing doc (creating it only on a legacy wave that
+	// predates state — the defensive fallback in Translate).
 	IntentSetState IntentKind = "set.state"
 	// IntentDeleteState removes a key from the structured state document.
 	IntentDeleteState IntentKind = "delete.state"
