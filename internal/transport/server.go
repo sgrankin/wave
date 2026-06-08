@@ -480,10 +480,40 @@ func (s *session) forward(sub *server.Subscription) {
 				"nonce", u.Delta.Nonce,
 			)
 			s.push(encodeUpdate(encodeStored(u.Delta)))
+			// Authorization boundary: if this delta removed the connection's
+			// participant, cut the stream. Membership is otherwise only checked at
+			// Open/Resync, so without this a removed participant keeps receiving live
+			// edits on their open connection until they disconnect. The removal delta
+			// itself is pushed first (best-effort — the writer may not flush it before
+			// the cut), but the GUARANTEE is that no edit applied AFTER the removal
+			// reaches a non-member: the stream is cut here and a reconnect+resync is
+			// then denied by checkAccess.
+			if s.removesSelf(u.Delta) {
+				s.srv.logger().Debug("participant removed; closing stream",
+					"wavelet", s.waveletName, "participant", s.authParticipant.Address())
+				s.shutdown()
+				return
+			}
 		case <-s.done:
 			return
 		}
 	}
+}
+
+// removesSelf reports whether delta removes this session's authenticated
+// participant — the point past which they are no longer a member and must stop
+// receiving the wavelet's live stream. Returns false on an unauthenticated
+// (dev/local) connection, which has no participant boundary to enforce.
+func (s *session) removesSelf(delta cc.TransformedWaveletDelta) bool {
+	if s.authParticipant == nil {
+		return false
+	}
+	for _, o := range delta.Ops {
+		if rp, ok := o.(waveop.RemoveParticipant); ok && rp.Participant == *s.authParticipant {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *session) handleSubmit(raw []cbor.RawMessage) error {
