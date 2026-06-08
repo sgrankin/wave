@@ -186,9 +186,10 @@ export class CC {
   // optimistic document and carry a per-op versionIncrement (normally 1).
   edit(ops: Operation[]): Outgoing | null {
     this.apply(ops);
-    // Record each blip content op as undoable, one undo unit per edit() call (per
-    // input event). A later remote op on the same blip is fed as non-undoable in
-    // onServerDelta, so undo transforms past it.
+    // Record each blip content op as undoable, checkpointing per op so each is its
+    // own undo unit (in the editor one input event = one edit() = one blip op, so
+    // this is one unit per keystroke). A later remote op on the same blip is fed as
+    // non-undoable in onServerDelta, so undo transforms past it.
     for (const o of ops) {
       if (o.kind === "blip") {
         const m = this.undoFor(o.blipId);

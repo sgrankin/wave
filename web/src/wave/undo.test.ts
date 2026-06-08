@@ -132,6 +132,33 @@ test("grouped undo (no checkpoint between ops) reverts the whole unit", () => {
   assert.equal(um.undo(), null);
 });
 
+test("deep undo: two edits with an intervening remote op revert correctly", () => {
+  const um = new UndoManager();
+  const d0 = textDoc("abc");
+  const opA = insertAt(3, 0, "A"); // "abc" -> "Aabc"
+  const d1 = apply(d0, opA);
+  um.undoableOp(opA);
+  um.checkpoint();
+
+  // A remote op lands between the two local edits: append "R" to "Aabc" (len 4).
+  const remote = insertAt(4, 4, "R"); // "Aabc" -> "AabcR"
+  const d2 = apply(d1, remote);
+  um.nonUndoableOp(remote);
+
+  const opB = insertAt(5, 1, "B"); // "AabcR" -> "ABabcR"
+  const d3 = apply(d2, opB);
+  um.undoableOp(opB);
+  um.checkpoint();
+
+  // Undo B first -> back to "AabcR".
+  const u1 = um.undo()!;
+  assert.ok(docOpEqual(apply(d3, u1), d2), "undo B");
+  // Undo A: the intervening remote R is threaded onto A's entry, so undoing A must
+  // remove only A and keep R -> "abcR".
+  const u2 = um.undo()!;
+  assert.ok(docOpEqual(apply(d2, u2), textDoc("abcR")), "undo A keeps the intervening remote R");
+});
+
 test("undo with an empty stack returns null", () => {
   const um = new UndoManager();
   assert.equal(um.undo(), null);

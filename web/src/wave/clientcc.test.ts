@@ -618,3 +618,20 @@ test("undo past a concurrent remote edit converges", () => {
   assert.ok(docOpEqual(blipDoc(a, "b"), want), "alice converged on XB");
   assert.ok(docOpEqual(blipDoc(b, "b"), want), "bob converged on XB");
 });
+
+// undo is per-blip: one delta editing two blips lands each op on its own undo
+// stack (as a reply-creation delta does), so undoing one blip leaves the other.
+test("undo is per-blip within a multi-blip delta", () => {
+  const name = mkName();
+  const alice = mkPID("alice@example.com");
+  const c = new CC(name, alice, synthVersion(0), "sessA");
+  c.edit([blipContentOp(alice, "b1", docInsert("X")), blipContentOp(alice, "b2", docInsert("Y"))]);
+  assert.ok(docOpEqual(blipDoc(c, "b1"), docInsert("X")));
+  assert.ok(docOpEqual(blipDoc(c, "b2"), docInsert("Y")));
+
+  c.undo("b1"); // undo b1 only
+  assert.equal(blipDoc(c, "b1").components.length, 0, "b1 reverted to empty");
+  assert.ok(docOpEqual(blipDoc(c, "b2"), docInsert("Y")), "b2 untouched by undoing b1");
+  assert.ok(c.canUndo("b2"), "b2 still has its own undoable edit");
+  assert.equal(c.canUndo("b1"), false, "b1 has nothing left to undo");
+});
