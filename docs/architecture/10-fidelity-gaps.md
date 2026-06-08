@@ -108,8 +108,13 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
   live in `web/src/editor/url.ts`; reviewed — 135-vector brute-force, gate correct by
   construction). The annotation-range algebra was unified into `setAnnotationRange` /
   `rangeAnnotation` (style + link share it).
-- ✅ "Enter continues the list" — DONE (continue/exit; widgets-only-item bug fixed).
-  Remaining: **numbered lists** (a `listyle` attribute + numbered rendering).
+- ✅ "Enter continues the list" — DONE. ✅ **numbered lists — DONE** (shipped+reviewed):
+  `<line t="li" listyle="decimal">` (faithful to OG schema); a combined `setLineMarkers`
+  updater (t+listyle in one op), continuation/merge carry the style, toolbar 1. button.
+  Reviewed SHIP (all 16 line transitions compose + pass the Go validator). KNOWN FOLLOW-UP:
+  mixed/split lists mis-number (shared CSS implicit list-item counter, no `<ol>` wrapper) —
+  model correct + converges, only the rendered digits are off; fix = group same-style runs
+  under real `<ol>`/`<ul>` at render.
 - ✅ **IME / composition input — DONE** (CJK / dictation / autocorrect). The editor now
   cooperates with composition: the browser owns the DOM during composition, re-renders are
   suppressed, and compositionend reconciles the committed text into a model op (with a
