@@ -84,10 +84,56 @@ func (p Provisioner) Ensure(participant id.ParticipantID) error {
 	if !p.RegisterOnFirstUse {
 		return fmt.Errorf("auth: no account for %s and register-on-first-use is off", participant)
 	}
+	return p.newHuman(participant, "")
+}
+
+// RegisterChosen provisions a chosen address the user picked under their method's
+// MintPolicy (passkey / dev), distinct from Ensure's derived-address path
+// (GitHub → foo@github, verified email → that email, which are known at first
+// contact). It is uniqueness-checked: an address already taken by an account is
+// rejected, so two users cannot register the same chosen address. displayName is
+// stored if non-empty. See docs/architecture/04-auth-model.md §5.
+func (p Provisioner) RegisterChosen(participant id.ParticipantID, displayName string) error {
+	_, ok, err := p.Accounts.GetAccount(participant)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return fmt.Errorf("auth: address %s is already taken", participant)
+	}
+	return p.newHuman(participant, displayName)
+}
+
+// EnsureDisplayName provisions participant if absent (a derived address) and, when
+// displayName is non-empty, stores it as the account's DisplayName — used by the
+// IdP methods (GitHub login, OIDC name) so the roster shows a human name. An
+// existing account's DisplayName is updated to the latest from the IdP.
+func (p Provisioner) EnsureDisplayName(participant id.ParticipantID, displayName string) error {
+	acct, ok, err := p.Accounts.GetAccount(participant)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if !p.RegisterOnFirstUse {
+			return fmt.Errorf("auth: no account for %s and register-on-first-use is off", participant)
+		}
+		return p.newHuman(participant, displayName)
+	}
+	// Refresh the display name from the IdP if it changed (and we have one).
+	if displayName != "" && acct.Kind == storage.AccountHuman && acct.Human != nil && acct.Human.DisplayName != displayName {
+		acct.Human.DisplayName = displayName
+		return p.Accounts.PutAccount(acct)
+	}
+	return nil
+}
+
+// newHuman writes a fresh minimal human account (no password — auth is external)
+// with an optional display name.
+func (p Provisioner) newHuman(participant id.ParticipantID, displayName string) error {
 	return p.Accounts.PutAccount(&storage.Account{
 		ID:    participant,
 		Kind:  storage.AccountHuman,
-		Human: &storage.HumanAccount{},
+		Human: &storage.HumanAccount{DisplayName: displayName},
 	})
 }
 
@@ -155,6 +201,40 @@ func (s *Service) SetCookie(w http.ResponseWriter, participant id.ParticipantID)
 		Secure:   s.SecureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// MintSession is the policy-enforcing convergence point for an interactive method
+// that has just verified an identity and DERIVED its address (GitHub → foo@github,
+// verified email → that email). It rejects an address outside policy (the §4
+// security boundary — a GitHub login cannot claim alice@example.com), provisions
+// the account (storing displayName), and sets the session cookie. A method MUST
+// route through this (or MintChosen) rather than calling SetCookie directly, so
+// the policy check is never skipped.
+func (s *Service) MintSession(w http.ResponseWriter, participant id.ParticipantID, displayName string, policy MintPolicy) error {
+	if err := policy.Permits(participant); err != nil {
+		return fmt.Errorf("auth: mint denied: %w", err)
+	}
+	if err := s.provisioner.EnsureDisplayName(participant, displayName); err != nil {
+		return err
+	}
+	s.SetCookie(w, participant)
+	return nil
+}
+
+// MintChosen is the policy-enforcing convergence point for a chosen-address method
+// (passkey / dev): the user picked participant under the method's MintPolicy. It
+// rejects an out-of-policy address, registers the chosen address with a uniqueness
+// check (rejecting one already taken), then sets the session cookie. Use this when
+// the address is user-selected; use MintSession when it is derived from the proof.
+func (s *Service) MintChosen(w http.ResponseWriter, participant id.ParticipantID, displayName string, policy MintPolicy) error {
+	if err := policy.Permits(participant); err != nil {
+		return fmt.Errorf("auth: mint denied: %w", err)
+	}
+	if err := s.provisioner.RegisterChosen(participant, displayName); err != nil {
+		return err
+	}
+	s.SetCookie(w, participant)
+	return nil
 }
 
 // ClearCookie expires the session cookie (logout). It mirrors SetCookie's

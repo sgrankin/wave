@@ -69,6 +69,13 @@ func (s *Service) LoginHandler() http.Handler {
 // Production uses LoginHandler behind a trusted proxy (or a real interactive
 // flow), not this.
 func (s *Service) DevLoginHandler(defaultDomain string) http.Handler {
+	// Dev's MintPolicy is the chosen address restricted to defaultDomain (§4): a
+	// bare username gets it appended; a full address in another domain is rejected.
+	// (An empty defaultDomain means "any", preserving the old trust-any behavior.)
+	policy := AnyAddress()
+	if defaultDomain != "" {
+		policy = DomainOnly(defaultDomain)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		redirect := sanitizeRedirect(r.FormValue("redirect"))
 		user := strings.TrimSpace(r.FormValue("user"))
@@ -85,11 +92,12 @@ func (s *Service) DevLoginHandler(defaultDomain string) http.Handler {
 			http.Error(w, "invalid address: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.provisioner.Ensure(p); err != nil {
-			http.Error(w, "provision failed: "+err.Error(), http.StatusInternalServerError)
+		// MintSession enforces the dev policy, provisions (idempotent re-login), and
+		// sets the cookie — the same convergence point the IdP methods use.
+		if err := s.MintSession(w, p, "", policy); err != nil {
+			http.Error(w, "login denied: "+err.Error(), http.StatusForbidden)
 			return
 		}
-		s.SetCookie(w, p)
 		http.Redirect(w, r, redirect, http.StatusSeeOther)
 	})
 }

@@ -6,7 +6,9 @@ tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/fxamacker/cbor/v2 v2.9.2
+	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.51.0
 )
 
@@ -72,6 +74,7 @@ require (
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v0.3.16 // indirect
 	github.com/go-critic/go-critic v0.13.0 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-toolsmith/astcast v1.1.0 // indirect
 	github.com/go-toolsmith/astcopy v1.1.0 // indirect
 	github.com/go-toolsmith/astequal v1.2.0 // indirect

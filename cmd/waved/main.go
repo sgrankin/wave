@@ -4,10 +4,11 @@
 // graceful shutdown.
 //
 // A browser WebSocket transport is available behind -ws: it serves /socket,
-// /login, and /whoami with session-cookie authentication (see startWebSocket and
-// docs/architecture/04-auth-model.md). The -auth mode selects dev (trust-any
-// login, permissive access) or proxy (a trusted-header provider, strict wavelet
-// membership).
+// /login, /whoami, and /auth/* with session-cookie authentication (see
+// startWebSocket and docs/architecture/04-auth-model.md). Authentication methods
+// are enabled individually (-auth-dev, -auth-proxy, -auth-github, -auth-oidc),
+// each converging on one session model; -auth-strict gates wavelet access by
+// membership. With no method set, dev (trust-any, loopback-only) is the default.
 package main
 
 import (
@@ -57,19 +58,36 @@ type config struct {
 	httpAddr      string // operability HTTP address; "" disables
 	wsAddr        string // browser WebSocket transport address; "" disables
 	webRoot       string // static web root served at / on the -ws server; "" disables
-	authMode      string // dev | proxy
-	authHeader    string // proxy mode: header carrying the identity
-	authDomain    string // default domain appended to a bare username
-	sessionTTL    time.Duration
-	seed          bool   // server-side-seed a new wavelet's conversation at first open
-	attachRoot     string // filesystem root for attachment blobs; "" disables attachments
-	attachMaxBytes int64  // per-upload size cap in bytes; <=0 disables the cap
-	agents        string // agent gateway tokens: "addr=token,addr2=token2"; "" disables
-	logFormat     string // text | json
-	logLevel      string // debug | info | warn | error
-	snapshotEvery int    // write a snapshot every N ops (0 disables)
-	index         bool   // maintain the derived read index (inbox/search)
-	showVersion   bool
+	authHeader    string // proxy method: header carrying the identity
+	authDomain    string // default domain appended to a bare username / chosen-address namespace
+	authStrict    bool   // strict wavelet membership (vs dev-permissive allow-all)
+	authCompat    string // DEPRECATED back-compat for the retired -auth dev|proxy bundle
+	authPublicURL string // public origin (scheme+host) for OAuth callback URLs, e.g. https://wave.example.com
+	// Per-method enable flags (replacing the single -auth bundle). With none set,
+	// dev is enabled by default (the local demo). Each method converges on one
+	// session model.
+	authDev            bool // dev trust-any login (loopback only)
+	authProxy          bool // trusted-header login (behind an authenticating proxy)
+	authProxyExclusive bool // assert the -ws bind is reachable only via the trusted proxy (allows a public bind for -auth-proxy)
+	authGitHub         bool // GitHub OAuth login
+	githubClientID     string
+	githubClientSecret string
+	authOIDC           bool // generic OIDC login
+	oidcIssuer         string
+	oidcClientID       string
+	oidcClientSecret   string
+	oidcRedirectURL    string
+	insecureCookies    bool // omit the Secure cookie attribute (plain-HTTP dev only)
+	sessionTTL         time.Duration
+	seed               bool   // server-side-seed a new wavelet's conversation at first open
+	attachRoot         string // filesystem root for attachment blobs; "" disables attachments
+	attachMaxBytes     int64  // per-upload size cap in bytes; <=0 disables the cap
+	agents             string // agent gateway tokens: "addr=token,addr2=token2"; "" disables
+	logFormat          string // text | json
+	logLevel           string // debug | info | warn | error
+	snapshotEvery      int    // write a snapshot every N ops (0 disables)
+	index              bool   // maintain the derived read index (inbox/search)
+	showVersion        bool
 }
 
 func main() {
@@ -151,9 +169,23 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&c.httpAddr, "http", "127.0.0.1:8099", "operability HTTP address (\"\" to disable)")
 	fs.StringVar(&c.wsAddr, "ws", "", "browser WebSocket transport address, host:port (\"\" to disable)")
 	fs.StringVar(&c.webRoot, "webroot", "", "static web root served at / on the -ws server (\"\" to disable)")
-	fs.StringVar(&c.authMode, "auth", "dev", "auth mode for the -ws server: dev (trust-any login, permissive access) | proxy (trusted-header, strict membership)")
-	fs.StringVar(&c.authHeader, "auth-header", "X-Authenticated-User", "proxy mode: request header carrying the verified identity")
-	fs.StringVar(&c.authDomain, "auth-domain", "example.com", "default domain appended to a bare username at login")
+	fs.StringVar(&c.authCompat, "auth", "", "DEPRECATED back-compat: 'dev' = -auth-dev, 'proxy' = -auth-proxy -auth-strict")
+	fs.BoolVar(&c.authDev, "auth-dev", false, "enable the dev trust-any login (no proof; loopback bind only). Default when no other method is enabled.")
+	fs.BoolVar(&c.authProxy, "auth-proxy", false, "enable the trusted-header login (behind an authenticating proxy)")
+	fs.BoolVar(&c.authProxyExclusive, "auth-proxy-exclusive", false, "assert the -ws bind is reachable ONLY through the trusted proxy, permitting -auth-proxy on a public bind (the header is forgeable otherwise)")
+	fs.BoolVar(&c.authGitHub, "auth-github", false, "enable GitHub OAuth login (set WAVED_GITHUB_CLIENT_ID / WAVED_GITHUB_CLIENT_SECRET)")
+	fs.StringVar(&c.githubClientID, "github-client-id", "", "GitHub OAuth app client id (prefer WAVED_GITHUB_CLIENT_ID)")
+	fs.StringVar(&c.githubClientSecret, "github-client-secret", "", "GitHub OAuth app client secret (prefer WAVED_GITHUB_CLIENT_SECRET)")
+	fs.BoolVar(&c.authOIDC, "auth-oidc", false, "enable generic OIDC login (set WAVED_OIDC_ISSUER / _CLIENT_ID / _CLIENT_SECRET / _REDIRECT_URL)")
+	fs.StringVar(&c.oidcIssuer, "oidc-issuer", "", "OIDC issuer URL for discovery (prefer WAVED_OIDC_ISSUER)")
+	fs.StringVar(&c.oidcClientID, "oidc-client-id", "", "OIDC client id (prefer WAVED_OIDC_CLIENT_ID)")
+	fs.StringVar(&c.oidcClientSecret, "oidc-client-secret", "", "OIDC client secret (prefer WAVED_OIDC_CLIENT_SECRET)")
+	fs.StringVar(&c.oidcRedirectURL, "oidc-redirect-url", "", "OIDC redirect URL registered with the provider, e.g. https://host/auth/oidc/callback (prefer WAVED_OIDC_REDIRECT_URL)")
+	fs.BoolVar(&c.authStrict, "auth-strict", false, "enforce strict wavelet membership (default is dev-permissive allow-all)")
+	fs.StringVar(&c.authPublicURL, "auth-public-url", "", "public origin (scheme+host) used to build OAuth callback URLs, e.g. https://wave.example.com (required for -auth-github; OIDC may instead set WAVED_OIDC_REDIRECT_URL)")
+	fs.BoolVar(&c.insecureCookies, "auth-insecure-cookies", false, "omit the Secure cookie attribute so cookies work over plain HTTP (DEV ONLY; default secure)")
+	fs.StringVar(&c.authHeader, "auth-header", "X-Authenticated-User", "trusted-header method: request header carrying the verified identity")
+	fs.StringVar(&c.authDomain, "auth-domain", "example.com", "default domain for bare usernames, and the address namespace dev/passkey logins may mint")
 	fs.DurationVar(&c.sessionTTL, "session-ttl", 24*time.Hour, "session cookie lifetime")
 	fs.BoolVar(&c.seed, "seed-conversations", true, "server-side-seed a brand-new wavelet's conversation (manifest + root blip) at first open")
 	fs.StringVar(&c.attachRoot, "attach-root", "", "filesystem root for attachment blobs on the -ws server (\"\" to disable attachments)")
@@ -172,6 +204,20 @@ func parseFlags(args []string) (config, error) {
 	// An explicit flag always wins; this makes container/12-factor deployment ergonomic.
 	if err := applyEnvDefaults(fs); err != nil {
 		return config{}, err
+	}
+	// Back-compat: the retired single -auth dev|proxy bundle maps onto the per-method
+	// flags (the old "proxy" bundle implied strict membership). New deployments should
+	// use -auth-dev / -auth-proxy / -auth-github / -auth-oidc directly.
+	switch c.authCompat {
+	case "":
+		// no legacy flag
+	case "dev":
+		c.authDev = true
+	case "proxy":
+		c.authProxy = true
+		c.authStrict = true
+	default:
+		return config{}, fmt.Errorf("-auth %q: use -auth-dev / -auth-proxy / -auth-github / -auth-oidc", c.authCompat)
 	}
 	return c, nil
 }
@@ -227,7 +273,7 @@ func run(ctx context.Context, cfg config) error {
 	// membership. These apply to authenticated (WebSocket) connections only; the
 	// trusted socket/stdio path is unaffected. Built even when -ws is disabled so
 	// the wiring stays in one place; they cost nothing without WebSocket clients.
-	authSvc, err := buildAuth(cfg, store)
+	authSvc, authReg, err := buildAuth(ctx, cfg, store, logger)
 	if err != nil {
 		return finishShutdown(store, srv, nil, nil, logger, err)
 	}
@@ -236,7 +282,9 @@ func run(ctx context.Context, cfg config) error {
 			return conv.SeedConversation(opener, clock.System{}.Now().UnixMilli())
 		}
 	}
-	if cfg.authMode == "proxy" {
+	// Strict wavelet membership is now its own flag, decoupled from the auth method
+	// (the old -auth proxy bundle). Dev-permissive (nil Access) stays the default.
+	if cfg.authStrict {
 		srv.Access = transport.MembershipChecker{WaveMap: wm}
 	}
 
@@ -263,7 +311,7 @@ func run(ctx context.Context, cfg config) error {
 
 	httpSrv := startOperability(cfg, srv, wm, store, logger)
 
-	wsSrv, err := startWebSocket(ctx, cfg, srv, authSvc, idx, store, attachStore, logger)
+	wsSrv, err := startWebSocket(ctx, cfg, srv, authSvc, authReg, idx, store, attachStore, logger)
 	if err != nil {
 		return finishShutdown(store, srv, httpSrv, nil, logger, err)
 	}
@@ -387,14 +435,15 @@ func startOperability(cfg config, srv *transport.Server, wm *server.WaveMap, sto
 	return httpSrv
 }
 
-// requireSafeAuthBind rejects the trust-any dev login on a non-loopback bind.
-// In dev mode the /login endpoint asserts any claimed identity with no proof
-// (and sets a cookie on a GET), so exposing it beyond loopback is a complete
-// authentication bypass — a safe-by-default guard rather than relying on the
-// operator reading a comment. Proxy mode (a trusted-header provider behind an
-// authenticating proxy) may bind anywhere. An empty/disabled -ws is fine.
-func requireSafeAuthBind(authMode, wsAddr string) error {
-	if authMode != "dev" || wsAddr == "" {
+// requireSafeAuthBind refuses a non-loopback -ws bind when any enabled method must
+// be loopback-only (per-method safety, not one global mode string). The dev
+// trust-any login asserts identity with no proof and sets a cookie on a GET;
+// trusted-header trusts a forgeable request header unless the bind is asserted
+// proxy-exclusive. Either on a public bind is an authentication bypass. Methods
+// backed by a real IdP handshake (GitHub, OIDC) may bind anywhere. An
+// empty/disabled -ws is fine.
+func requireSafeAuthBind(reg *auth.Registry, wsAddr string) error {
+	if wsAddr == "" || !reg.RequiresLoopback() {
 		return nil
 	}
 	host, _, err := net.SplitHostPort(wsAddr)
@@ -407,38 +456,72 @@ func requireSafeAuthBind(authMode, wsAddr string) error {
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
 		return nil
 	}
-	return fmt.Errorf("-auth dev mounts a trust-any login and must bind -ws to a loopback "+
-		"address (got %q); bind to 127.0.0.1/localhost, or use -auth proxy behind an "+
-		"authenticating proxy to bind publicly", wsAddr)
+	return fmt.Errorf("an enabled auth method (dev trust-any login, or trusted-header "+
+		"without -auth-proxy-exclusive) is unsafe on a public bind and must bind -ws to "+
+		"loopback (got %q); bind to 127.0.0.1/localhost, set -auth-proxy-exclusive behind "+
+		"an authenticating proxy, or use a real IdP method (GitHub/OIDC) to bind publicly", wsAddr)
 }
 
-// buildAuth constructs the authentication Service for the browser path: a session
-// signer keyed by a persisted (restart-stable) signing key, register-on-first-use
-// provisioning into the account store, and a provider chain selected by -auth.
-// In dev mode the chain is empty (identity is asserted via the dev /login
-// endpoint and then carried by the session cookie); in proxy mode it reads a
-// trusted-header set by a fronting authenticating proxy.
-func buildAuth(cfg config, store *sqlite.Store) (*auth.Service, error) {
+// buildAuth constructs the authentication Service and the enabled-method Registry
+// for the browser path: a session signer keyed by a persisted (restart-stable)
+// signing key, register-on-first-use provisioning into the account store, and the
+// set of auth Methods selected by the per-method enable flags. Every method
+// converges on Service.SetCookie (one session model). With no method enabled, dev
+// is enabled by default (the local demo).
+//
+// The trusted-header provider (for the proxy method) is added to the Service's
+// per-request chain so a proxy-set header authenticates every request, not just
+// /login; interactive methods (GitHub, OIDC) are routes, not chain providers.
+func buildAuth(ctx context.Context, cfg config, store *sqlite.Store, logger *slog.Logger) (*auth.Service, *auth.Registry, error) {
 	key, err := auth.SigningKey(store)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sessions := auth.NewSessions(key, cfg.sessionTTL, clock.System{})
 	prov := auth.Provisioner{Accounts: store, RegisterOnFirstUse: true}
+
+	// Default to dev when the operator enabled nothing, preserving the local demo.
+	dev, proxy := cfg.authDev, cfg.authProxy
+	if !dev && !proxy && !cfg.authGitHub && !cfg.authOIDC {
+		dev = true
+	}
+
 	var providers []auth.Provider
-	switch cfg.authMode {
-	case "dev":
-		// Cookie-only general chain; the dev /login endpoint asserts identity.
-	case "proxy":
+	if proxy {
 		providers = append(providers, auth.TrustedHeader{Header: cfg.authHeader, Domain: cfg.authDomain})
-	default:
-		return nil, fmt.Errorf("unknown -auth %q (want dev or proxy)", cfg.authMode)
 	}
 	svc := auth.NewService(sessions, prov, providers...)
-	// Dev runs over plain HTTP, so the Secure cookie attribute would prevent the
-	// browser from ever sending the cookie. Proxy deployments terminate TLS.
-	svc.SecureCookies = cfg.authMode == "proxy"
-	return svc, nil
+	// Secure cookies by default; the operator opts out only for plain-HTTP dev.
+	svc.SecureCookies = !cfg.insecureCookies
+
+	var methods []auth.Method
+	if dev {
+		methods = append(methods, auth.DevMethod{Service: svc, Domain: cfg.authDomain})
+	}
+	if proxy {
+		methods = append(methods, auth.ProxyMethod{Service: svc, ProxyExclusive: cfg.authProxyExclusive})
+	}
+	interactive, err := buildInteractiveMethods(ctx, cfg, svc, store)
+	if err != nil {
+		return nil, nil, err
+	}
+	methods = append(methods, interactive...)
+	if dev && proxy {
+		// Both register the shared /login; mounting both would panic (duplicate
+		// pattern). They are conceptually exclusive entry points for /login.
+		return nil, nil, fmt.Errorf("-auth-dev and -auth-proxy both claim /login; enable at most one")
+	}
+	logger.Info("auth methods enabled", "methods", methodNames(methods), "strict-access", cfg.authStrict)
+	return svc, auth.NewRegistry(methods...), nil
+}
+
+// methodNames lists the enabled method names for a startup log line (no secrets).
+func methodNames(methods []auth.Method) []string {
+	out := make([]string, len(methods))
+	for i, m := range methods {
+		out[i] = m.Name()
+	}
+	return out
 }
 
 // parseAgents parses the -agents flag ("addr=token,addr2=token2") into a
@@ -480,11 +563,11 @@ func parseAgents(s string) (agentgw.StaticAuth, error) {
 // authenticated participant is bound to the request (identify reads it from the
 // context). The static web root is intentionally NOT authenticated — the app
 // shell must load so its JS can call /whoami and redirect to /login when needed.
-func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, authSvc *auth.Service, idx *search.Index, store *sqlite.Store, attachStore *attachments.Store, logger *slog.Logger) (*http.Server, error) {
+func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, authSvc *auth.Service, authReg *auth.Registry, idx *search.Index, store *sqlite.Store, attachStore *attachments.Store, logger *slog.Logger) (*http.Server, error) {
 	if cfg.wsAddr == "" {
 		return nil, nil
 	}
-	if err := requireSafeAuthBind(cfg.authMode, cfg.wsAddr); err != nil {
+	if err := requireSafeAuthBind(authReg, cfg.wsAddr); err != nil {
 		return nil, err
 	}
 	identify := func(r *http.Request) (id.ParticipantID, bool) {
@@ -499,12 +582,10 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 	// socket (srv.Access: nil dev-permissive, MembershipChecker in proxy mode).
 	mux.Handle("/presence", authSvc.Middleware(
 		presence.New(ctx, presence.NewHub(), srv.Access, identify, logger)))
-	switch cfg.authMode {
-	case "dev":
-		mux.Handle("/login", authSvc.DevLoginHandler(cfg.authDomain))
-	case "proxy":
-		mux.Handle("/login", authSvc.LoginHandler())
-	}
+	// Mount every enabled auth method: the shared /login (dev or proxy) and each
+	// interactive method's /auth/<name>/* routes, plus GET /auth/methods for the
+	// landing page. Every method converges on authSvc.SetCookie (one session model).
+	authReg.Mount(mux)
 	// Logout clears the session cookie (no identity required to clear it).
 	mux.Handle("/logout", authSvc.LogoutHandler())
 	// The read-side wave query API (inbox/search) backs the app shell's wave list;
@@ -586,8 +667,8 @@ func startWebSocket(ctx context.Context, cfg config, srv *transport.Server, auth
 		}
 	}()
 	logger.Info("websocket transport listening",
-		"addr", cfg.wsAddr, "paths", "/socket /login /whoami", "auth", cfg.authMode,
-		"access", map[bool]string{true: "strict", false: "permissive"}[cfg.authMode == "proxy"],
+		"addr", cfg.wsAddr, "paths", "/socket /login /whoami /auth/methods",
+		"access", map[bool]string{true: "strict", false: "permissive"}[cfg.authStrict],
 		"seed", cfg.seed)
 	return httpSrv, nil
 }

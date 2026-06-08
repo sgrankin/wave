@@ -6,31 +6,40 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/sgrankin/wave/internal/auth"
 )
 
 func TestRequireSafeAuthBind(t *testing.T) {
+	// A registry with a loopback-only method (dev) vs one without (proxy asserted
+	// exclusive, or a real IdP). requireSafeAuthBind only blocks the former on a
+	// public bind.
+	devReg := auth.NewRegistry(auth.DevMethod{})                                  // RequireLoopback() == true
+	proxyExclusiveReg := auth.NewRegistry(auth.ProxyMethod{ProxyExclusive: true}) // false
+	proxyReg := auth.NewRegistry(auth.ProxyMethod{})                              // true (not exclusive)
 	cases := []struct {
-		name     string
-		authMode string
-		wsAddr   string
-		wantErr  bool
+		name    string
+		reg     *auth.Registry
+		wsAddr  string
+		wantErr bool
 	}{
-		{"dev disabled ws", "dev", "", false},
-		{"dev loopback ip", "dev", "127.0.0.1:8131", false},
-		{"dev loopback ipv6", "dev", "[::1]:8131", false},
-		{"dev localhost", "dev", "localhost:8131", false},
-		{"dev all interfaces", "dev", "0.0.0.0:8131", true},
-		{"dev empty host", "dev", ":8131", true},
-		{"dev lan ip", "dev", "192.168.1.10:8131", true},
-		{"dev bad addr", "dev", "not-an-addr", true},
-		{"proxy all interfaces ok", "proxy", "0.0.0.0:8131", false},
-		{"proxy lan ok", "proxy", "192.168.1.10:8131", false},
+		{"dev disabled ws", devReg, "", false},
+		{"dev loopback ip", devReg, "127.0.0.1:8131", false},
+		{"dev loopback ipv6", devReg, "[::1]:8131", false},
+		{"dev localhost", devReg, "localhost:8131", false},
+		{"dev all interfaces", devReg, "0.0.0.0:8131", true},
+		{"dev empty host", devReg, ":8131", true},
+		{"dev lan ip", devReg, "192.168.1.10:8131", true},
+		{"dev bad addr", devReg, "not-an-addr", true},
+		{"proxy non-exclusive lan blocked", proxyReg, "192.168.1.10:8131", true},
+		{"proxy exclusive all interfaces ok", proxyExclusiveReg, "0.0.0.0:8131", false},
+		{"proxy exclusive lan ok", proxyExclusiveReg, "192.168.1.10:8131", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := requireSafeAuthBind(tc.authMode, tc.wsAddr)
+			err := requireSafeAuthBind(tc.reg, tc.wsAddr)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("requireSafeAuthBind(%q, %q) err = %v, wantErr %v", tc.authMode, tc.wsAddr, err, tc.wantErr)
+				t.Errorf("requireSafeAuthBind(%q) err = %v, wantErr %v", tc.wsAddr, err, tc.wantErr)
 			}
 		})
 	}

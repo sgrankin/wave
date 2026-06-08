@@ -1,6 +1,6 @@
 # 04 — Authentication & Identity Model
 
-Status: **draft** (2026-06-06). The target identity/auth model for the Go server,
+Status: **partially implemented** (2026-06-08). The target identity/auth model for the Go server,
 deepening the high-level seam in [01-target-architecture.md](01-target-architecture.md)
 §Authentication. Scope: how a request becomes a verified participant, how many
 authentication methods coexist, how external credentials map to Wave identities,
@@ -152,15 +152,15 @@ modeling up front even though `#10` only uses auto-derive (dev) / no-provision.
 
 | Method | Kind | Address mapping | Status |
 |---|---|---|---|
-| session cookie | stateless | (carries the resolved id) | **#10** (the convergence) |
-| local / dev-trust | stateless | configured / asserted | **#10** (dev-permissive) |
-| trusted-header | stateless | header → address (proxy-only) | near-term (provider exists) |
+| session cookie | stateless | (carries the resolved id) | **shipped** (the convergence) |
+| local / dev-trust | stateless | configured / asserted | **shipped** (`DevMethod`, loopback-only, dev MintPolicy) |
+| trusted-header | stateless | header → address (proxy-only) | **shipped** (`ProxyMethod`; public bind needs `-auth-proxy-exclusive`) |
 | tsnet | stateless | WhoIs → address | near-term (optional dep / build tag) |
-| GitHub | interactive (OAuth) | `foo@github` | later |
-| OIDC | interactive (OAuth2/OIDC) | verified email, or `sub@issuer` | later (credential store if by `sub`) |
-| passkey / WebAuthn | interactive | chosen address (credential-bound) | later (credential store + chosen-address reg) |
+| GitHub | interactive (OAuth) | `foo@github` | **shipped** (`GitHubMethod`; credential keyed by numeric id) |
+| OIDC | interactive (OAuth2/OIDC) | verified email, or `sub@issuer` | **shipped** (`OIDCMethod`; PKCE+nonce; credential keyed by issuer+sub) |
+| passkey / WebAuthn | interactive | chosen address (credential-bound) | later (credential store + `RegisterChosen`/`MintChosen` are in place) |
 | magic-link email | interactive | verified email | much later (needs outbound email) |
-| account linking / merge | — | repoint credentials → one account | later (credential store is the prerequisite) |
+| account linking / merge | — | repoint credentials → one account | later (credential store + `ListByAccount` shipped) |
 | multiple identities | — | account → many addresses | later (schema reservation) |
 
 Per-listener configuration makes "all of them" coherent (doc 01 §Authentication):
@@ -238,10 +238,37 @@ container lock — reading the live wavelet directly would race a concurrent sub
    `maybeBootstrap` is removed and the cold-start double-manifest race is gone.
    Gated by `-seed-conversations` (default on); the raw OT/CC interop test opts out.
 
-**Deferred, kept additive by the seams above:** the credential store (§3), GitHub/
-OIDC/passkey/magic-link flows (§2, all end at `SetCookie`), chosen-address
-registration (§5), account linking/merge and multiple identities (§3), key
-rotation, outbound email.
+**Shipped since (the real-auth increment), all additive via the seams above:**
+
+1. **Credential store** (§3): `storage.CredentialStore` + a sqlite `credentials`
+   table keyed by `(method, subject)`, indexed by account; `auth.resolveCredential`
+   / `bindCredential` over it.
+2. **Method registry** (§2): `auth.Method` / `InteractiveMethod` / `LoopbackOnly`
+   interfaces and `auth.Registry`. Dev and proxy re-expressed as `DevMethod` /
+   `ProxyMethod` so the model is uniform; `cmd/waved` enables methods individually
+   (`-auth-dev`, `-auth-proxy`, `-auth-github`, `-auth-oidc`) instead of one `-auth`
+   bundle, with strict access split out to `-auth-strict`. `GET /auth/methods`
+   lists the enabled interactive methods (name + label + start URL) for the landing
+   page. `requireSafeAuthBind` now consults `Registry.RequiresLoopback()` —
+   per-method safety, not one global mode string.
+3. **MintPolicy** (§4): `auth.MintPolicy` (`AnyAddress` / `DomainOnly`) declares
+   each method's allowed namespace; `Service.MintSession` / `MintChosen` reject any
+   address a method tries to assert outside its namespace (a GitHub login cannot
+   claim `alice@example.com`). `Provisioner.RegisterChosen` (uniqueness-checked) is
+   the chosen-address path (§5), distinct from `RegisterOnFirstUse`.
+4. **GitHub OAuth** (`GitHubMethod`): `/auth/github/start` + `/callback` over
+   `x/oauth2`; HMAC-signed short-TTL state cookie (nonce + redirect, constant-time
+   verify); subject = stable numeric id; mints `<login>@github`; login stored as
+   `DisplayName`.
+5. **Generic OIDC** (`OIDCMethod`): discovery + cached verifier at startup; PKCE
+   (S256) + nonce bound in the signed state cookie; `/callback` verifies the raw ID
+   token (signature/issuer/audience/expiry via go-oidc) + nonce; mints the verified
+   email else `sub@<issuer-host>`; `name` stored as `DisplayName`.
+
+**Still deferred, kept additive:** passkey / WebAuthn (chosen-address registration
+machinery — `RegisterChosen`/`MintChosen` — is already in place), magic-link email
+(needs outbound email), account linking/merge (`ListByAccount` is the seam) and
+multiple identities (§3), session key rotation, tsnet.
 
 ## 10. Open decisions
 
@@ -255,19 +282,23 @@ Resolved by `#10`:
   a single-machine collaborative app, so existence is not a meaningful secret and
   an explicit reason is friendlier. (Reversible: the checker could later return a
   not-found-shaped error without touching callers.)
-- **`-auth` bundles auth-method + access-policy** — for the `#10` slice, one `-auth`
-  flag picks a coherent bundle (`dev` = trust-any login + permissive access + plain
-  cookie; `proxy` = trusted-header + strict membership + Secure cookie). Doc §8
-  keeps them conceptually separate; the bundling is a deliberate simplification for
-  the two deployments that exist today, not a constraint — per-listener / split
-  flags can be added when a third shape appears.
+- **`-auth` bundles auth-method + access-policy** — RESOLVED (the real-auth
+  increment). The single `-auth` bundle is gone: methods are enabled individually
+  (`-auth-dev`/`-auth-proxy`/`-auth-github`/`-auth-oidc`), cookie security is
+  `-auth-insecure-cookies` (default Secure), and access policy is its own
+  `-auth-strict` flag. The per-method loopback-safety check (`Registry.Requires
+  Loopback`) replaces the global mode string in `requireSafeAuthBind`. Dev is the
+  default only when no method is set (preserving the local demo).
+- **Domain conventions for fake-namespaced identities** — RESOLVED. GitHub →
+  `<login>@github`; OIDC → the verified email, else `<sub>@<issuer-host>`; dev /
+  passkey chosen addresses → restricted to `-auth-domain`. Each is enforced as a
+  `MintPolicy` (§4), so a method can only mint inside its namespace.
+- **Credential store: dedicated table vs JSON column** — RESOLVED as a dedicated
+  `credentials` table keyed by `(method, subject)` with an `account` index (§3): the
+  index is load-bearing for login-by-credential and account linking. Method-specific
+  fields ride a JSON `data` column on that row.
 
 Still open (future increments):
 
-- Domain conventions for fake-namespaced identities (`@github`? `@passkey`? `sub@`
-  vs verified-email for OIDC).
-- Whether the credential store lands as a dedicated table or a typed JSON column
-  with a secondary `(method, subject)` index (doc 01 leaned JSON; §3 argues the
-  index is the load-bearing part either way).
 - Default `RegisterOnFirstUse` per listener (open registration vs invite-only;
-  `#10` uses register-on-first-use everywhere).
+  today register-on-first-use everywhere).

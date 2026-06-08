@@ -61,7 +61,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	// Each store contributes its own DDL (delta log, accounts, …). All are
 	// CREATE TABLE IF NOT EXISTS, so running them on every open is idempotent.
-	for _, ddl := range []string{schema, accountsSchema, snapshotsSchema, indexSchema, settingsSchema, readStateSchema} {
+	for _, ddl := range []string{schema, accountsSchema, snapshotsSchema, indexSchema, settingsSchema, readStateSchema, credentialsSchema} {
 		if _, err := db.Exec(ddl); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("sqlite: init schema: %w", err)
@@ -72,12 +72,13 @@ func Open(path string) (*Store, error) {
 
 // Compile-time assertions that Store implements the storage contracts.
 var (
-	_ storage.DeltaStore     = (*Store)(nil)
-	_ storage.AccountStore   = (*Store)(nil)
-	_ storage.SnapshotStore  = (*Store)(nil)
-	_ storage.IndexStore     = (*Store)(nil)
-	_ storage.SettingsStore  = (*Store)(nil)
-	_ storage.ReadStateStore = (*Store)(nil)
+	_ storage.DeltaStore      = (*Store)(nil)
+	_ storage.AccountStore    = (*Store)(nil)
+	_ storage.SnapshotStore   = (*Store)(nil)
+	_ storage.IndexStore      = (*Store)(nil)
+	_ storage.SettingsStore   = (*Store)(nil)
+	_ storage.ReadStateStore  = (*Store)(nil)
+	_ storage.CredentialStore = (*Store)(nil)
 )
 
 // Checkpoint forces a WAL checkpoint (TRUNCATE), folding the write-ahead log
