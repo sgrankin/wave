@@ -56,6 +56,7 @@ export class SelectionToolbar extends LitElement {
     highlight: boolean;
     link: boolean;
     lineType: string | null;
+    listStyle: string | null;
   };
   declare private coarse: boolean; // touch layout (bottom-docked) vs. floating
   // Whether the current selection is collapsed (a caret, no range). The bar still
@@ -88,6 +89,7 @@ export class SelectionToolbar extends LitElement {
       highlight: false,
       link: false,
       lineType: null,
+      listStyle: null,
     };
     this.coarse = false;
     this.collapsed = false;
@@ -325,7 +327,8 @@ export class SelectionToolbar extends LitElement {
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}
-        ${btn("li", "Bullet list", s.lineType === "li", "•")}
+        ${btn("li", "Bullet list", s.lineType === "li" && s.listStyle !== "decimal", "•")}
+        ${btn("ol", "Numbered list", s.lineType === "li" && s.listStyle === "decimal", "1.")}
         <span class="sep" aria-hidden="true"></span>
         ${btn("comment", "Comment", false, html`<span class="cmt">💬 Comment</span>`)}
       </div>

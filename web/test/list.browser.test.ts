@@ -5,17 +5,19 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { client, startServer, stopServer, typeInto } from "./browser-harness.ts";
+import { client, startServer, stopServer, typeInto, waitForBlipTexts } from "./browser-harness.ts";
 import type { Page } from "playwright";
 
 before(startServer);
 after(stopServer);
 
 // makeList turns the focused blip's current line into a list item via the editor's
-// public applyCommand (the same entry point the toolbar uses).
-function makeList(page: Page): Promise<void> {
-  return page.evaluate(() =>
-    (document.querySelector("blip-view") as HTMLElement & { applyCommand(c: string): void }).applyCommand("li"),
+// public applyCommand (the same entry point the toolbar uses). cmd "li" = bullet,
+// "ol" = numbered.
+function makeList(page: Page, cmd: "li" | "ol" = "li"): Promise<void> {
+  return page.evaluate(
+    (c) => (document.querySelector("blip-view") as HTMLElement & { applyCommand(c: string): void }).applyCommand(c),
+    cmd,
   );
 }
 
@@ -69,4 +71,61 @@ test("Enter inside a list item continues the list; empty item exits", async () =
   assert.deepEqual(await listItems(page), ["first", "second"]);
 
   await page.close();
+});
+
+// numberedItems returns the text of every NUMBERED list-item paragraph (decimal marker).
+function numberedItems(page: Page): Promise<string[]> {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll(".blip-doc .para"))
+      .filter((p) => getComputedStyle(p).display === "list-item" && getComputedStyle(p).listStyleType === "decimal")
+      .map((p) => (p.textContent ?? "").trim()),
+  );
+}
+
+test("Numbered list: items render decimal, Enter continues numbered, and it converges", async () => {
+  const wave = "w+numlist";
+  const alice = await client("alice@example.com", wave);
+  try {
+    await typeInto(alice, 0, "one");
+    await makeList(alice, "ol");
+    await alice.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll(".blip-doc .para")).some(
+          (p) => getComputedStyle(p).display === "list-item" && getComputedStyle(p).listStyleType === "decimal",
+        ),
+      undefined,
+      { timeout: 5000 },
+    );
+
+    // Enter continues the NUMBERED list (carries listyle=decimal), not a bullet/plain line.
+    await alice.keyboard.press("Enter");
+    await alice.keyboard.type("two");
+    await alice.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll(".blip-doc .para")).filter(
+          (p) => getComputedStyle(p).display === "list-item" && getComputedStyle(p).listStyleType === "decimal",
+        ).length === 2,
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.deepEqual(await numberedItems(alice), ["one", "two"]);
+
+    // A fresh client converges via history replay AND sees them as numbered items.
+    const bob = await client("bob@example.com", wave);
+    try {
+      await waitForBlipTexts(bob, ["one", "two"]);
+      await bob.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll(".blip-doc .para")).filter(
+            (p) => getComputedStyle(p).display === "list-item" && getComputedStyle(p).listStyleType === "decimal",
+          ).length === 2,
+        undefined,
+        { timeout: 8000 },
+      );
+    } finally {
+      await bob.close();
+    }
+  } finally {
+    await alice.close();
+  }
 });

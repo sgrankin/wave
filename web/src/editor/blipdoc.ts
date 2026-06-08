@@ -57,6 +57,9 @@ export type InlineItem =
 export interface Paragraph {
   /** The <line t="..."> value (e.g. "h1", "li"), or null for a plain line. */
   readonly lineType: string | null;
+  /** The <line listyle="..."> value (e.g. "decimal" for a numbered list item), or null.
+   *  Only meaningful when lineType==="li"; null is a bullet. */
+  readonly listStyle: string | null;
   /** The <line i="..."> indent level (0 if unset). */
   readonly indent: number;
   /** Doc offset of the <line> element-start item, or null for text before any line. */
@@ -91,6 +94,7 @@ export interface BlipProjection {
 
 interface MutParagraph {
   lineType: string | null;
+  listStyle: string | null;
   indent: number;
   lineOffset: number | null;
   textStart: number;
@@ -116,7 +120,7 @@ export function project(content: DocOp): BlipProjection {
   const ensureParagraph = (): MutParagraph => {
     if (cur === null) {
       // Text before any <line> (flat blip, or leading text): implicit plain paragraph.
-      cur = { lineType: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, widgetCount: 0, items: [] };
+      cur = { lineType: null, listStyle: null, indent: 0, lineOffset: null, textStart: pos, textLength: 0, widgetCount: 0, items: [] };
       paras.push(cur);
     }
     return cur;
@@ -128,6 +132,7 @@ export function project(content: DocOp): BlipProjection {
         if (c.type === LINE) {
           cur = {
             lineType: c.attributes.get("t") ?? null,
+            listStyle: c.attributes.get("listyle") ?? null,
             indent: parseIndent(c.attributes),
             lineOffset: pos,
             textStart: pos + 1, // text begins after the (empty) <line> marker's start+end
@@ -200,6 +205,7 @@ function finalizeParagraph(m: MutParagraph): Paragraph {
   }
   return {
     lineType: m.lineType,
+    listStyle: m.listStyle,
     indent: m.indent,
     lineOffset: m.lineOffset,
     textStart: m.textStart,
@@ -371,17 +377,23 @@ export function splitLine(content: DocOp, at: number, attributes: Attributes): C
 /**
  * deleteLineMarker builds the content op removing the empty <line/> marker at
  * lineOffset (its ElementStart+ElementEnd, 2 items), merging the paragraph it
- * begins into the previous one. The marker's type/indent must match the document
- * (DeleteElementStart echoes the attributes), so they are passed from the
- * projected paragraph. NOTE: only the t/i attributes are reconstructed — a line
- * carrying other attributes would not match (acceptable for the current line set).
+ * begins into the previous one. The marker's type/indent/list-style must match the
+ * document (DeleteElementStart echoes the attributes), so they are passed from the
+ * projected paragraph. NOTE: only the t/listyle/i attributes are reconstructed — a
+ * line carrying other attributes would not match (acceptable for the current line set).
  */
-export function deleteLineMarker(content: DocOp, lineOffset: number, lineType: string | null, indent: number): Component[] {
+export function deleteLineMarker(
+  content: DocOp,
+  lineOffset: number,
+  lineType: string | null,
+  indent: number,
+  listStyle: string | null = null,
+): Component[] {
   const len = content.documentLength();
   const a = clamp(lineOffset, 0, len);
   return [
     ...retain(a),
-    { kind: "deleteElementStart", type: LINE, attributes: lineAttributes(lineType, indent) },
+    { kind: "deleteElementStart", type: LINE, attributes: lineAttributes(lineType, indent, listStyle) },
     { kind: "deleteElementEnd" },
     ...retain(len - a - 2),
   ];
@@ -404,10 +416,13 @@ export function deleteInlineElement(content: DocOp, offset: number, type: string
   ];
 }
 
-/** lineAttributes reconstructs a <line>'s attributes from its type and indent. */
-export function lineAttributes(lineType: string | null, indent: number): Attributes {
+/** lineAttributes reconstructs a <line>'s attributes from its type, indent, and list
+ *  style. listStyle is only meaningful for a list item (lineType==="li"); it must be
+ *  echoed exactly when deleting/recreating the marker or compose() rejects the op. */
+export function lineAttributes(lineType: string | null, indent: number, listStyle: string | null = null): Attributes {
   const m: Record<string, string> = {};
   if (lineType !== null) m.t = lineType;
+  if (listStyle !== null) m.listyle = listStyle;
   if (indent > 0) m.i = String(indent);
   return Attributes.of(m);
 }
@@ -663,6 +678,34 @@ export function setLineType(
       kind: "updateAttributes",
       update: AttributesUpdate.of([{ name: "t", oldValue: oldType, newValue: newType }]),
     },
+    ...retain(len - a - 1),
+  ];
+}
+
+/**
+ * setLineMarkers changes a <line>'s type AND list-style in one updateAttributes —
+ * the combined form list toggles need (bullet/numbered set t="li" with/without
+ * listyle="decimal"; switching to a heading or plain clears listyle). Only the
+ * attributes that actually change are emitted, each with the document's current value
+ * as oldValue, so compose() accepts the op. A no-op transition retains the whole doc.
+ */
+export function setLineMarkers(
+  content: DocOp,
+  lineOffset: number,
+  oldType: string | null,
+  newType: string | null,
+  oldStyle: string | null,
+  newStyle: string | null,
+): Component[] {
+  const len = content.documentLength();
+  const a = clamp(lineOffset, 0, len);
+  const updates: { name: string; oldValue: string | null; newValue: string | null }[] = [];
+  if (oldType !== newType) updates.push({ name: "t", oldValue: oldType, newValue: newType });
+  if (oldStyle !== newStyle) updates.push({ name: "listyle", oldValue: oldStyle, newValue: newStyle });
+  if (updates.length === 0) return [...retain(len)];
+  return [
+    ...retain(a),
+    { kind: "updateAttributes", update: AttributesUpdate.of(updates) },
     ...retain(len - a - 1),
   ];
 }

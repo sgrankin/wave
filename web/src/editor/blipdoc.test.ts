@@ -17,6 +17,7 @@ import {
   rangeLink,
   rangeStyle,
   replaceText,
+  setLineMarkers,
   setLineType,
   setLink,
   setStyleRange,
@@ -363,6 +364,61 @@ test("setLineType: plain→h1 changes lineType in projection", () => {
   const next = compose(content, op); // must not throw
   const proj = project(next);
   assert.equal(proj.paragraphs[1]!.lineType, "h2");
+});
+
+// --- numbered lists (setLineMarkers + listyle projection) ---
+
+test("setLineMarkers: plain → numbered list item sets t=li and listyle=decimal", () => {
+  const content = plainDoc();
+  const p0 = project(content).paragraphs[0]!;
+  assert.equal(p0.lineType, null);
+  assert.equal(p0.listStyle, null);
+
+  // plain → numbered (t: null→li, listyle: null→decimal) in one op.
+  const op = new DocOp(setLineMarkers(content, p0.lineOffset!, null, "li", null, "decimal"));
+  const next = compose(content, op); // must not throw (oldValues match)
+  const p = project(next).paragraphs[0]!;
+  assert.equal(p.lineType, "li");
+  assert.equal(p.listStyle, "decimal");
+});
+
+test("setLineMarkers: numbered → bullet drops only listyle; → plain clears both", () => {
+  const content = plainDoc();
+  const off = project(content).paragraphs[0]!.lineOffset!;
+  // Make it numbered first.
+  const numbered = compose(content, new DocOp(setLineMarkers(content, off, null, "li", null, "decimal")));
+
+  // numbered → bullet: keep t=li, clear listyle.
+  const bullet = compose(numbered, new DocOp(setLineMarkers(numbered, off, "li", "li", "decimal", null)));
+  const pb = project(bullet).paragraphs[0]!;
+  assert.equal(pb.lineType, "li");
+  assert.equal(pb.listStyle, null);
+
+  // bullet → plain: clear t (listyle already null, so only t changes).
+  const plain = compose(bullet, new DocOp(setLineMarkers(bullet, off, "li", null, null, null)));
+  const pp = project(plain).paragraphs[0]!;
+  assert.equal(pp.lineType, null);
+  assert.equal(pp.listStyle, null);
+});
+
+test("setLineMarkers: no-op transition retains the whole doc unchanged", () => {
+  const content = plainDoc();
+  const off = project(content).paragraphs[0]!.lineOffset!;
+  const op = new DocOp(setLineMarkers(content, off, null, null, null, null));
+  const next = compose(content, op); // must not throw
+  assert.equal(project(next).paragraphs[0]!.lineType, null);
+});
+
+test("lineAttributes + deleteLineMarker round-trip a numbered <line>'s attributes", () => {
+  // A numbered item must be deletable: deleteLineMarker echoes t=li AND listyle=decimal,
+  // or compose rejects the DeleteElementStart.
+  const content = plainDoc();
+  const off = project(content).paragraphs[0]!.lineOffset!;
+  const numbered = compose(content, new DocOp(setLineMarkers(content, off, null, "li", null, "decimal")));
+  const p = project(numbered).paragraphs[0]!;
+  // Deleting the (numbered) line marker must compose cleanly.
+  const del = new DocOp(deleteLineMarker(numbered, p.lineOffset!, p.lineType, p.indent, p.listStyle));
+  assert.doesNotThrow(() => compose(numbered, del));
 });
 
 test("setLineType: h1→plain round-trip", () => {

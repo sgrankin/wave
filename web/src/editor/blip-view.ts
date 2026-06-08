@@ -32,7 +32,7 @@ import {
   rangeLink,
   rangeStyle,
   replaceText,
-  setLineType,
+  setLineMarkers,
   setLink,
   setStyleRange,
   splitLineAt,
@@ -208,10 +208,18 @@ export class BlipView extends LitElement {
           // textLength counts text runes only, so an item holding just an inline
           // image/reply (widgetCount>0, textLength==0) must still SPLIT, not exit.
           if (range.collapsed && para.items.length === 0) {
-            this.tryEdit(() => setLineType(this.content, para.lineOffset!, "li", null), para.lineOffset);
+            // Exit the list: clear t AND listyle so an empty numbered item leaves a plain line.
+            this.tryEdit(
+              () => setLineMarkers(this.content, para.lineOffset!, "li", null, para.listStyle, null),
+              para.lineOffset,
+            );
             break;
           }
-          this.tryEdit(() => splitLineAt(this.content, lo, hi, lineAttributes("li", para.indent)), lo + 2);
+          // Continue the list, carrying the SAME style (a numbered item begets a numbered item).
+          this.tryEdit(
+            () => splitLineAt(this.content, lo, hi, lineAttributes("li", para.indent, para.listStyle)),
+            lo + 2,
+          );
           break;
         }
         this.tryEdit(() => splitLineAt(this.content, lo, hi, Attributes.empty()), lo + 2);
@@ -364,8 +372,12 @@ export class BlipView extends LitElement {
     // Collapsed: find the paragraph the caret sits at the start of.
     const para = this.paragraphAtTextStart(lo);
     if (para !== null && para.lineOffset !== null) {
-      // At a line's start: merge into the previous paragraph by deleting the marker.
-      this.tryEdit(() => deleteLineMarker(this.content, para.lineOffset!, para.lineType, para.indent), para.lineOffset - 0);
+      // At a line's start: merge into the previous paragraph by deleting the marker
+      // (echoing its exact attributes, including any list style, so compose accepts it).
+      this.tryEdit(
+        () => deleteLineMarker(this.content, para.lineOffset!, para.lineType, para.indent, para.listStyle),
+        para.lineOffset - 0,
+      );
       // caret lands where the previous paragraph's text ended (the marker offset).
       this.pendingCaret = para.lineOffset;
       return;
@@ -451,19 +463,50 @@ export class BlipView extends LitElement {
     this.toggleStyle(Math.min(a, b), Math.max(a, b), prop, value);
   }
 
-  // toolbarSetLineType changes the paragraph that contains the caret to `newType`.
+  // toolbarSetLineType changes the caret's paragraph to `newType` (a heading or plain).
+  // It always clears any list-style (a heading/plain line is never a list), so toggling
+  // a numbered item to a heading leaves no dangling listyle.
   private toolbarSetLineType(newType: string | null): void {
-    const range = currentRange(this);
-    if (range === null) return;
-    const a = this.domToOffset(range.startContainer, range.startOffset);
-    if (a === null) return;
-    const para = this.paragraphAtOffset(a);
+    const para = this.caretParagraph();
     if (para === null || para.lineOffset === null) return;
-    const caretOffset = a; // preserve caret position after re-render
-    const oldType = para.lineType;
-    // If the paragraph already has this type, toggle off to plain.
-    const targetType = oldType === newType ? null : newType;
-    this.tryEdit(() => setLineType(this.content, para.lineOffset!, oldType, targetType), caretOffset);
+    const target = para.lineType === newType ? null : newType; // toggle off if already this type
+    this.tryEdit(
+      () => setLineMarkers(this.content, para.lineOffset!, para.lineType, target, para.listStyle, null),
+      this.caretOffsetForLineEdit(),
+    );
+  }
+
+  // toolbarSetListType makes the caret's paragraph a list item — bulleted (decimal=false)
+  // or numbered (decimal=true) — toggling back to a plain line if it is already exactly
+  // that list style. Bullet is t="li" with no listyle; numbered is t="li" listyle="decimal".
+  private toolbarSetListType(decimal: boolean): void {
+    const para = this.caretParagraph();
+    if (para === null || para.lineOffset === null) return;
+    const wantStyle = decimal ? "decimal" : null;
+    const isThis = para.lineType === "li" && para.listStyle === wantStyle;
+    const newType = isThis ? null : "li";
+    const newStyle = isThis ? null : wantStyle;
+    this.tryEdit(
+      () => setLineMarkers(this.content, para.lineOffset!, para.lineType, newType, para.listStyle, newStyle),
+      this.caretOffsetForLineEdit(),
+    );
+  }
+
+  // caretParagraph returns the paragraph the caret sits in (its <line> marker), or null.
+  private caretParagraph(): Paragraph | null {
+    const range = currentRange(this);
+    if (range === null) return null;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    if (a === null) return null;
+    return this.paragraphAtOffset(a);
+  }
+
+  // caretOffsetForLineEdit returns the current caret doc offset to restore after a
+  // line-marker edit (which does not move text), or 0 if unmappable.
+  private caretOffsetForLineEdit(): number {
+    const range = currentRange(this);
+    if (range === null) return 0;
+    return this.domToOffset(range.startContainer, range.startOffset) ?? 0;
   }
 
   // toolbarSetLink prompts for a URL and links the current selection to it (or clears
@@ -534,7 +577,10 @@ export class BlipView extends LitElement {
         this.toolbarSetLineType("h3");
         break;
       case "li":
-        this.toolbarSetLineType("li");
+        this.toolbarSetListType(false); // bullet
+        break;
+      case "ol":
+        this.toolbarSetListType(true); // numbered
         break;
       case "plain":
         this.toolbarSetLineType(null);
@@ -553,6 +599,7 @@ export class BlipView extends LitElement {
     highlight: boolean;
     link: boolean;
     lineType: string | null;
+    listStyle: string | null;
   } {
     return {
       bold: this.activeCharStyle("fontWeight") === "bold",
@@ -562,6 +609,7 @@ export class BlipView extends LitElement {
       highlight: this.activeCharStyle("backgroundColor") === HIGHLIGHT_COLOR,
       link: this.activeCharLink(),
       lineType: this.caretLineType(),
+      listStyle: this.caretParagraph()?.listStyle ?? null,
     };
   }
 
@@ -1054,6 +1102,7 @@ customElements.define("blip-view", BlipView);
 
 const EMPTY_PARAGRAPH: Paragraph = {
   lineType: null,
+  listStyle: null,
   indent: 0,
   lineOffset: null,
   textStart: 0,
@@ -1179,9 +1228,19 @@ function paragraphStyle(p: Paragraph): string {
     case "h3":
       decls.push("font-size:1.2em", "font-weight:600", "margin:0.2em 0");
       break;
-    case "li":
-      decls.push("list-style:disc", "display:list-item", "margin-left:1.5em");
+    case "li": {
+      // Numbered (listyle="decimal") vs bulleted. display:list-item participates in the
+      // implicit list-item counter across sibling paragraphs, so a homogeneous run of
+      // numbered items counts 1, 2, 3 without an explicit <ol> wrapper.
+      // KNOWN LIMITATION: the implicit counter is shared across ALL list-item siblings
+      // regardless of marker, so a MIXED list (a bullet between numbered items) or a
+      // numbered list split by a plain paragraph numbers wrong (gaps / no restart). The
+      // model is correct and converges; only the rendered digits are off. A faithful fix
+      // groups consecutive same-style items under a real <ol>/<ul> at render time.
+      const marker = p.listStyle === "decimal" ? "decimal" : "disc";
+      decls.push(`list-style-type:${marker}`, "display:list-item", "margin-left:1.5em");
       break;
+    }
     default:
       break;
   }
