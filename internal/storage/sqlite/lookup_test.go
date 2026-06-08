@@ -118,3 +118,37 @@ func TestGetDeltaByEndVersion(t *testing.T) {
 		t.Errorf("GetDeltaByEndVersion(999) = ok %v err %v, want false/nil", ok, err)
 	}
 }
+
+// TestCheckpointFoldsWALAndPreservesData appends a delta, forces a WAL checkpoint
+// (TRUNCATE), and confirms the data is intact afterward — the explicit shutdown
+// checkpoint must fold the WAL into the main file without losing or corrupting it.
+func TestCheckpointFoldsWALAndPreservesData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wave.db")
+	store := openStore(t, path)
+	defer store.Close()
+	alice := pid(t, "alice@example.com")
+	name := waveletName(t, "w+ckpt", "conv+root")
+	appendOne(t, store, name, alice)
+
+	if err := store.Checkpoint(); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	// Data is still queryable after the checkpoint.
+	waves, err := store.WaveIDs()
+	if err != nil {
+		t.Fatalf("WaveIDs after checkpoint: %v", err)
+	}
+	found := false
+	for _, w := range waves {
+		if w.Serialize() == name.Wave().Serialize() {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("wave %s missing after checkpoint; got %v", name.Wave().Serialize(), waves)
+	}
+	// A second checkpoint on a clean WAL is still a no-error no-op.
+	if err := store.Checkpoint(); err != nil {
+		t.Errorf("second Checkpoint should succeed, got %v", err)
+	}
+}

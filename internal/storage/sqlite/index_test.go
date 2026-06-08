@@ -105,3 +105,54 @@ func TestOpenIsIdempotentForDigestColumns(t *testing.T) {
 	openStore(t, path).Close()
 	openStore(t, path).Close() // second open must be a no-op, not a duplicate-column error
 }
+
+// TestDeleteWaveletIndex removes a wavelet from every index table (inbox membership,
+// meta/digest, blip-text search) so it disappears from inbox and search — used by
+// Rebuild and wavelet deletion.
+func TestDeleteWaveletIndex(t *testing.T) {
+	store := openStore(t, filepath.Join(t.TempDir(), "wave.db"))
+	defer store.Close()
+	alice := pid(t, "alice@example.com")
+	name := waveletName(t, "w+gone", "conv+root")
+
+	if err := store.SetWaveletParticipants(name, []id.ParticipantID{alice}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetWaveletMeta(name, storage.WaveletMeta{
+		Creator: alice, LastModifiedVersion: 2, LastModifiedTime: 5, Title: "Doomed", Snippet: "delete me please",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetBlipText(name, "b+root", "delete me please"); err != nil {
+		t.Fatal(err)
+	}
+	// Present before deletion: inbox digest, membership predicate, and full-text search.
+	if ds, _ := store.InboxDigests(alice, 0); len(ds) != 1 {
+		t.Fatalf("pre-delete inbox = %d, want 1", len(ds))
+	}
+	if ok, _ := store.IsParticipant(name, alice); !ok {
+		t.Fatal("pre-delete: alice should be a participant")
+	}
+	if res, _ := store.Search(storage.SearchQuery{Participant: alice, Terms: []string{"delete"}}); len(res) != 1 {
+		t.Fatalf("pre-delete search = %d, want 1", len(res))
+	}
+
+	if err := store.DeleteWaveletIndex(name); err != nil {
+		t.Fatalf("DeleteWaveletIndex: %v", err)
+	}
+
+	// Gone from every index table.
+	if ds, _ := store.InboxDigests(alice, 0); len(ds) != 0 {
+		t.Errorf("post-delete inbox = %d, want 0", len(ds))
+	}
+	if ok, _ := store.IsParticipant(name, alice); ok {
+		t.Error("post-delete: membership row should be gone")
+	}
+	if res, _ := store.Search(storage.SearchQuery{Participant: alice, Terms: []string{"delete"}}); len(res) != 0 {
+		t.Errorf("post-delete search = %d, want 0 (blip text un-indexed)", len(res))
+	}
+	// Idempotent: deleting an already-absent wavelet is not an error.
+	if err := store.DeleteWaveletIndex(name); err != nil {
+		t.Errorf("second DeleteWaveletIndex should be a no-op, got %v", err)
+	}
+}
