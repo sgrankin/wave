@@ -8,7 +8,7 @@
 // Go reference: internal/conv/manifest.go.
 // Spec: docs/specs/01-data-model.md §3 (conversation model), §8.3 (creating a blip).
 
-import { Attributes, DocOp, runeCount } from "./types.ts";
+import { Attributes, AttributesUpdate, DocOp, runeCount } from "./types.ts";
 import type { Component } from "./types.ts";
 import { attr, childElements, root } from "./doc.ts";
 import type { Element } from "./doc.ts";
@@ -193,6 +193,46 @@ export function replyToBlip(manifest: DocOp, parentBlipID: string, newBlipID: st
     { kind: "elementEnd" }, // thread
     { kind: "retain", count: n - close },
   ]);
+}
+
+// setBlipDeleted returns the op that marks blip blipID logically deleted (sets
+// deleted="true" on its <blip> element), keeping it as a tombstone parent for any
+// reply threads. Pair it with an op clearing the blip's own content. Throws if no
+// such blip exists. (Port of conv.SetBlipDeleted.)
+export function setBlipDeleted(manifest: DocOp, blipID: string): DocOp {
+  const start = elementStartOffset(manifest, (tag, id) => tag === tagBlip && id === blipID);
+  if (start === null) throw new Error(`conv: no blip ${JSON.stringify(blipID)} in manifest`);
+  const upd = AttributesUpdate.of([{ name: attrDelete, oldValue: null, newValue: boolTrue }]);
+  const n = manifest.documentLength();
+  return new DocOp([
+    { kind: "retain", count: start },
+    { kind: "updateAttributes", update: upd },
+    { kind: "retain", count: n - start - 1 },
+  ]);
+}
+
+// elementStartOffset returns the item offset of the first ElementStart matching
+// pred (id is the "id" attribute, "" if absent), or null. (Port of
+// conv.elementStartOffset.)
+function elementStartOffset(manifest: DocOp, pred: (tag: string, id: string) => boolean): number | null {
+  let pos = 0;
+  for (const c of manifest.components as readonly Component[]) {
+    switch (c.kind) {
+      case "elementStart":
+        if (pred(c.type, c.attributes.get(attrID) ?? "")) return pos;
+        pos += 1;
+        break;
+      case "elementEnd":
+        pos += 1;
+        break;
+      case "characters":
+        pos += runeCount(c.text);
+        break;
+      default:
+        break;
+    }
+  }
+  return null;
 }
 
 // ReplyAnchor is an inline-reply anchor found in a blip body: the reply thread's

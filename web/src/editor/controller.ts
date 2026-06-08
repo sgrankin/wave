@@ -44,6 +44,9 @@ export interface ConvController {
   // fake/headless controller may omit it.
   undo?(blipId: string): void;
   redo?(blipId: string): void;
+  // Logically delete a blip (mark it deleted + clear its content), keeping it as a
+  // tombstone parent for any reply threads. Optional — a fake controller may omit it.
+  deleteBlip?(blipId: string): void;
   // Append a new blip to a thread (threadId "" selects the root thread) and
   // create that blip's content, in one delta.
   continueThread(threadId: string): void;

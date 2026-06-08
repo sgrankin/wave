@@ -67,6 +67,14 @@ export class WaveBlip extends LitElement {
     this.controller.replyToBlip(this.blip.id, false);
   };
 
+  // onDelete logically deletes this blip (after a confirm). The blip becomes a
+  // "message deleted" tombstone; its reply threads remain.
+  private onDelete = (): void => {
+    if (this.controller.deleteBlip === undefined) return;
+    if (!window.confirm("Delete this message? Its text will be removed.")) return;
+    this.controller.deleteBlip(this.blip.id);
+  };
+
   // onReplyInline anchors a reply within the parent blip's text, at the exact caret
   // offset (or the end of the blip if the caret is elsewhere).
   private onReplyInline = (): void => {
@@ -116,7 +124,25 @@ export class WaveBlip extends LitElement {
     this.controller.attachImage(this.blip.id, file, this.anchorOffset());
   };
 
+  // renderDeleted is the tombstone view for a logically-deleted blip: a placeholder
+  // in place of the editor, but its reply threads remain (a deleted blip stays a
+  // parent for its non-inline replies).
+  private renderDeleted(): TemplateResult {
+    return html`
+      <div class="wave-blip deleted">
+        <div class="blip-deleted" role="note">🗑️ message deleted</div>
+        ${this.blip.threads
+          .filter((t) => !t.inline)
+          .map(
+            (t) =>
+              html`<wave-thread data-thread-id=${t.id} .thread=${t} .controller=${this.controller}></wave-thread>`,
+          )}
+      </div>
+    `;
+  }
+
   protected override render(): TemplateResult {
+    if (this.blip.deleted) return this.renderDeleted();
     const content = this.controller.blipContent(this.blip.id);
     return html`
       <div class="wave-blip">
@@ -155,6 +181,15 @@ export class WaveBlip extends LitElement {
             style="display:none"
             @change=${this.onAttachFile}
           />
+          ${this.controller.deleteBlip === undefined
+            ? html``
+            : html`<button
+                class="delete-btn"
+                @mousedown=${(e: MouseEvent) => e.preventDefault()}
+                @click=${this.onDelete}
+              >
+                Delete
+              </button>`}
         </div>
         ${this.renderCommentPills()}
         ${this.blip.threads

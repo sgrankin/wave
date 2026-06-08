@@ -28,7 +28,9 @@ import {
   newBlipID,
   readManifest,
   replyToBlip as buildReplyOp,
+  setBlipDeleted,
 } from "../wave/conversation.ts";
+import { invert } from "../wave/docop.ts";
 import { MANIFEST_ID, addParticipantOp, blipContentOp, removeParticipantOp } from "./controller.ts";
 import type { ConvController } from "./controller.ts";
 import { colorFor, contactSuggestions, displayNameFor, profiles } from "../wave/profiles.ts";
@@ -274,6 +276,24 @@ export class WaveConversation extends LitElement {
       redo: (id) => {
         this.markTyping(id);
         client.redo(id);
+      },
+      deleteBlip: (id) => {
+        // Logically delete the blip: mark deleted="true" in the manifest AND clear
+        // its content (so the text is gone and un-indexed), in one delta. The blip
+        // remains a tombstone parent for any reply threads. submitWith re-reads the
+        // live manifest/content at submit time.
+        void client.submitWith((blip) => {
+          const manifest = blip(MANIFEST_ID);
+          const content = blip(id);
+          if (manifest === undefined || content === undefined) return [];
+          // Clear to the empty body: delete the current content, then insert a fresh
+          // <body><line/></body> so the blip stays a valid (empty) document.
+          const clear = new DocOp([...invert(content).components, ...initialBlipContent().components]);
+          return [
+            blipContentOp(author, MANIFEST_ID, setBlipDeleted(manifest, id)),
+            blipContentOp(author, id, clear),
+          ];
+        });
       },
       setCaret: (blipId, anchor, focus) => this.setCaret(blipId, anchor, focus),
       remoteCaretsFor: (blipId) => this.remoteCaretsFor(blipId),
@@ -732,6 +752,31 @@ const STYLES = html`
       outline-offset: 1px;
       border-radius: 4px;
       text-decoration: underline;
+    }
+    /* Delete: a borderless link-style button like the others, but muted red so it
+       reads as a destructive secondary action. */
+    wave-conversation .delete-btn {
+      font: 11px system-ui, sans-serif;
+      color: #b04040;
+      background: none;
+      border: none;
+      padding: 2px 4px;
+      cursor: pointer;
+    }
+    wave-conversation .delete-btn:hover {
+      text-decoration: underline;
+    }
+    wave-conversation .delete-btn:focus-visible {
+      outline: 2px solid #b04040;
+      outline-offset: 1px;
+      border-radius: 4px;
+      text-decoration: underline;
+    }
+    /* Tombstone placeholder shown in place of a logically-deleted blip's editor. */
+    wave-conversation .blip-deleted {
+      font: italic 13px system-ui, sans-serif;
+      color: #999;
+      padding: 6px 2px;
     }
     wave-conversation .thread-actions {
       margin: 4px 0 8px;
