@@ -260,3 +260,66 @@ func TestRebuildFromLog(t *testing.T) {
 		t.Errorf("inbox after rebuild = %v, want both w+a and w+b", got)
 	}
 }
+
+// TestCanAccessParticipationPredicate exercises the REAL access-control predicate
+// (Index.CanAccess → store.IsParticipant) against a real sqlite store. Every consumer
+// (attachments, presence, playback, transport) substitutes a fake access checker in its
+// own tests, so a bug in the membership WHERE clause would silently mis-authorize with
+// no failing test — this is the one place it is exercised end to end.
+func TestCanAccessParticipationPredicate(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+
+	name := waveletName(t, "w+access")
+	alice := pid(t, "alice@example.com")
+	bob := pid(t, "bob@example.com")
+	carol := pid(t, "carol@example.com")
+
+	c, _ := wm.Container(name)
+	if _, err := c.Submit(addParticipantDelta(alice, alice, version.Zero(name))); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := c.Submit(addParticipantDelta(alice, bob, c.Version())); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	canAccess := func(p id.ParticipantID, n id.WaveletName) bool {
+		ok, err := idx.CanAccess(p, n)
+		if err != nil {
+			t.Fatalf("CanAccess(%s): %v", p, err)
+		}
+		return ok
+	}
+
+	if !canAccess(alice, name) {
+		t.Error("alice (creator) should have access")
+	}
+	if !canAccess(bob, name) {
+		t.Error("bob (member) should have access")
+	}
+	if canAccess(carol, name) {
+		t.Error("carol (non-member) must NOT have access")
+	}
+	if canAccess(alice, waveletName(t, "w+nonexistent")) {
+		t.Error("no one should have access to an unknown wavelet")
+	}
+
+	// Removing bob revokes his access immediately.
+	rm := waveop.NewWaveletDelta(alice, c.Version(), []waveop.Operation{
+		waveop.RemoveParticipant{Ctx: waveop.Context{Creator: alice, Timestamp: 1000, VersionIncrement: 1}, Participant: bob},
+	})
+	if _, err := c.Submit(rm); err != nil {
+		t.Fatalf("remove bob: %v", err)
+	}
+	if canAccess(bob, name) {
+		t.Error("bob's access must be revoked after removal")
+	}
+	if !canAccess(alice, name) {
+		t.Error("alice should still have access")
+	}
+}
