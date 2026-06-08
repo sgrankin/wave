@@ -263,3 +263,57 @@ func TestUnreadAndMarkRead(t *testing.T) {
 		t.Errorf("wave should be read after /api/read")
 	}
 }
+
+// TestBlipReadStateEndpoints: POST /api/read with a blip records per-blip read
+// progress, and GET /api/read returns the participant's per-blip read versions.
+func TestBlipReadStateEndpoints(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	idx := search.New(store, nil)
+	h := queryapi.New(idx, store, alwaysAlice(t), nil)
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	wave := waveName(t, "w+blipread").Serialize()
+	get := func() map[string]uint64 {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/api/read?wave=" + url.QueryEscape(wave))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/read status = %d", resp.StatusCode)
+		}
+		var body struct {
+			BlipReads map[string]uint64 `json:"blipReads"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return body.BlipReads
+	}
+
+	if got := get(); len(got) != 0 {
+		t.Fatalf("initial per-blip read versions = %v, want {}", got)
+	}
+
+	// Mark blip b+root read at version 4. The blip id must be url-encoded (its '+'
+	// would otherwise decode to a space) — the client contract.
+	markURL := fmt.Sprintf("%s/api/read?wave=%s&blip=%s&version=4", srv.URL, url.QueryEscape(wave), url.QueryEscape("b+root"))
+	resp, err := http.Post(markURL, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST blip read status = %d, want 204", resp.StatusCode)
+	}
+
+	if got := get(); got["b+root"] != 4 {
+		t.Errorf("per-blip read version for b+root = %d, want 4 (full: %v)", got["b+root"], got)
+	}
+}

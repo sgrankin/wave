@@ -47,6 +47,11 @@ type ReadState interface {
 	// SetReadVersion records that the participant has read the wavelet through
 	// version (monotonic).
 	SetReadVersion(participant id.ParticipantID, wavelet id.WaveletName, version uint64) error
+	// SetBlipReadVersion records that the participant has read one blip through a
+	// version (monotonic), the per-blip granularity behind "which blips are unread".
+	SetBlipReadVersion(participant id.ParticipantID, wavelet id.WaveletName, blipID string, version uint64) error
+	// BlipReadVersions returns the participant's per-blip read versions for a wavelet.
+	BlipReadVersions(participant id.ParticipantID, wavelet id.WaveletName) (map[string]uint64, error)
 }
 
 // Digest is one wave's summary for the list view.
@@ -90,6 +95,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/inbox", h.inbox)
 	mux.HandleFunc("GET /api/search", h.search)
 	mux.HandleFunc("POST /api/read", h.markRead)
+	mux.HandleFunc("GET /api/read", h.readState)
 	return mux
 }
 
@@ -122,7 +128,10 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 }
 
 // markRead records that the participant has read a wavelet through a version
-// (POST /api/read?wave=<name>&version=<n>), clearing its unread state.
+// (POST /api/read?wave=<name>&version=<n>), clearing its unread state. With an
+// additional &blip=<id> it records PER-BLIP read progress instead (the granularity
+// behind "which blips are unread"); the wavelet-level read (backing the inbox dot)
+// is set by the no-blip form.
 func (h *Handler) markRead(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.identify(r)
 	if !ok {
@@ -139,11 +148,45 @@ func (h *Handler) markRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad version", http.StatusBadRequest)
 		return
 	}
+	if blip := r.FormValue("blip"); blip != "" {
+		if err := h.reads.SetBlipReadVersion(p, name, blip, version); err != nil {
+			http.Error(w, "mark blip read: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if err := h.reads.SetReadVersion(p, name, version); err != nil {
 		http.Error(w, "mark read: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// readState returns the participant's per-blip read versions for one wave
+// (GET /api/read?wave=<name>), so the client can compute which blips are unread
+// when it opens the wave: {"blipReads": {"<blipId>": <version>, ...}}.
+func (h *Handler) readState(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.identify(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name, err := id.ParseWaveletName(r.URL.Query().Get("wave"))
+	if err != nil {
+		http.Error(w, "bad wave: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	blipReads, err := h.reads.BlipReadVersions(p, name)
+	if err != nil {
+		http.Error(w, "read state: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if blipReads == nil {
+		blipReads = map[string]uint64{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"blipReads": blipReads})
 }
 
 // writeDigests converts index digests to the JSON list shape, stamping each wave's
