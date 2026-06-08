@@ -22,8 +22,8 @@ func TestSeedConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if len(ops) != 3 {
-		t.Fatalf("seed produced %d ops, want 3 (addParticipant, manifest, root blip)", len(ops))
+	if len(ops) != 4 {
+		t.Fatalf("seed produced %d ops, want 4 (addParticipant, manifest, root blip, state doc)", len(ops))
 	}
 
 	waveID, _ := id.NewWaveID("example.com", "w+x")
@@ -51,5 +51,11 @@ func TestSeedConversation(t *testing.T) {
 	}
 	if _, ok := w.Blip(conv.RootBlipID); !ok {
 		t.Error("root blip document was not created")
+	}
+	// The structured-state document is seeded empty (created once, atomically).
+	if sd, ok := w.Blip(conv.StateDocumentID); !ok {
+		t.Error("state document was not created")
+	} else if st := conv.ReadState(sd.Content()); len(st) != 0 {
+		t.Errorf("seeded state = %v, want empty", st)
 	}
 }

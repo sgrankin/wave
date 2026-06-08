@@ -115,8 +115,8 @@ func TestWebSocketSeedNoDoubleSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("container: %v", err)
 	}
-	if got := c.Version().Version(); got != 3 {
-		t.Errorf("wavelet version = %d, want 3 (a second seed would make it 6)", got)
+	if got := c.Version().Version(); got != 4 {
+		t.Errorf("wavelet version = %d, want 4 (a second seed would make it 8)", got)
 	}
 	man, ok := a.BlipContent(conv.ManifestDocumentID)
 	if !ok {

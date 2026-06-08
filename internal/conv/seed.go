@@ -21,6 +21,11 @@ const RootBlipID = "b+root"
 //  2. the conversation manifest document (id "conversation") holding a single
 //     root blip: <conversation><blip id="b+root"/></conversation>.
 //  3. the root blip's initial content: <body><line/></body>.
+//  4. an empty structured-state document (id "state"): <state></state>. Seeding it
+//     here — created exactly once, atomically, at wavelet creation — is what makes
+//     set.state safe under concurrent agents: every later write is an insert/update
+//     against this single root, so two agents first-writing state converge to sibling
+//     entries rather than racing to emit two competing <state> initializations.
 //
 // These are exactly the operations the browser client used to submit on cold
 // start (see web/src/editor/wave-conversation.ts maybeBootstrap); authoring them
@@ -43,6 +48,10 @@ func SeedConversation(creator id.ParticipantID, ts int64) ([]waveop.Operation, e
 		waveop.WaveletBlipOperation{
 			BlipID: RootBlipID,
 			BlipOp: waveop.BlipContentOperation{Ctx: ctx, ContentOp: InitialBlipContent(), Method: waveop.ContributorAdd},
+		},
+		waveop.WaveletBlipOperation{
+			BlipID: StateDocumentID,
+			BlipOp: waveop.BlipContentOperation{Ctx: ctx, ContentOp: EmptyState(), Method: waveop.ContributorAdd},
 		},
 	}, nil
 }

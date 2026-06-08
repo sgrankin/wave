@@ -1,10 +1,17 @@
 # 11 — Agent structured state (design)
 
-Status: **design / not yet implemented** (2026-06-08). The remaining piece of the
-flagship "wave as shareable agent memory" goal (task #34, doc 10 §Agent). The wave
-**lifecycle/discovery** primitives (create / list / leave) are shipped (agentgw REST
-endpoints); this doc designs the **structured key-value state** primitive — the part
+Status: **core implemented; agent-channel wiring remaining** (2026-06-08). The remaining
+piece of the flagship "wave as shareable agent memory" goal (task #34, doc 10 §Agent).
+The wave **lifecycle/discovery** primitives (create / list / leave) are shipped (agentgw
+REST endpoints); this doc designs the **structured key-value state** primitive — the part
 that lets a wave hold machine-readable memory, not just prose blips.
+
+**DONE:** the OT-native `conv` core — `StateDocumentID`, `EmptyState`, `ReadState`,
+`SetStateValue`, `DeleteStateValue`, size caps (`internal/conv/state.go` + tests). Chosen
+design (below): a `state` document, opaque-string values, lazy-create via the first set,
+≤256 keys / ≤4 KB per value. **REMAINING:** the agent-channel surface (set.state /
+delete.state intents, state.changed event, state in the wave.opened snapshot) — see
+"Implementation sketch" steps 2–4.
 
 This is a design to review/steer before implementing: the value model and the OT
 mapping have real forks. It does NOT change anything yet.
@@ -118,9 +125,11 @@ matches "the agent owns the schema."
 
 ## Implementation sketch (when approved)
 
-1. `internal/conv`: `StateDocumentID` const; `ReadState(doc) map[string]string`;
-   `SetStateValue(doc, k, v) []op.Component`; `DeleteStateValue(doc, k) []op.Component`;
-   builder size-cap. Unit tests (set/overwrite/delete/read round-trips + cap).
+1. ✅ DONE — `internal/conv/state.go`: `StateDocumentID`; `EmptyState`;
+   `ReadState(doc) map[string]string`; `SetStateValue(doc, k, v) (DocOp, error)`;
+   `DeleteStateValue(doc, k) (DocOp, error)`; `MaxStateKeys`/`MaxStateValueSize` caps.
+   Unit tests: set/overwrite-in-place/delete round-trips, special-char (JSON/unicode)
+   values, value-size + key-count caps.
 2. `internal/agent`: `IntentSetState` / `IntentDeleteState` translation; a `state.changed`
    event derived from a `state`-doc delta; include state in the `wave.opened` snapshot.
 3. Gateway wire types + tests (intent in → state doc changes; state.changed out).
