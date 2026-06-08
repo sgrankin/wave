@@ -990,6 +990,10 @@ export class BlipView extends LitElement {
            single long unbreakable run (a long URL or word) so it never overflows the
            blip width horizontally. */
         .blip-doc .para { min-height: 1.6em; white-space: pre-wrap; overflow-wrap: break-word; }
+        /* Native list containers grouping consecutive same-marker <li class="para">
+           items; the browser draws + scopes the marker/counter per list run. */
+        .blip-doc .para-list { margin: 0.2em 0; padding-left: 1.8em; }
+        .blip-doc li.para { min-height: 1.6em; }
         .blip-doc .wave-link { color: #1565c0; text-decoration: underline; }
         .blip-doc .wave-mention { color: #3949ab; }
         .blip-doc .wave-mention-self { background: #fff3cd; border-radius: 3px; padding: 0 2px; font-weight: 600; }
@@ -1025,7 +1029,7 @@ export class BlipView extends LitElement {
           @paste=${this.onPaste}
           @compositionstart=${this.onCompositionStart}
           @compositionend=${this.onCompositionEnd}
-        >${this.proj.paragraphs.map((p) => renderParagraph(p, this.selfAddress))}</div>`,
+        >${renderParagraphs(this.proj.paragraphs, this.selfAddress)}</div>`,
       )}
       <div class="remote-carets" aria-hidden="true"></div>
     `;
@@ -1114,18 +1118,58 @@ const EMPTY_PARAGRAPH: Paragraph = {
   images: [],
 };
 
-function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
-  const style = paragraphStyle(p);
-  // Render the paragraph's inline content (text runs + reply/image widgets) in DOCUMENT
-  // ORDER, so a widget sits at its true position rather than being appended at the end.
-  // An empty paragraph still needs a <br/> so the line has height + a caret target.
-  if (p.items.length === 0) return html`<div class="para" style=${style}><br /></div>`;
-  const parts = p.items.map((it) => {
+// renderParagraphs renders the projected paragraphs, grouping each maximal run of
+// consecutive list items with the SAME marker into one native <ol>/<ul>. Native list
+// containers scope the item counter to the run, so a homogeneous numbered list counts
+// 1,2,3 and a list interrupted by a different marker or a plain paragraph restarts —
+// instead of the document-wide implicit list-item counter sharing across all siblings
+// (which produced gaps). The .para elements stay in document order (the caret/offset
+// mapping walks them by class), just nested under a list container.
+function renderParagraphs(paras: readonly Paragraph[], selfAddress: string): TemplateResult[] {
+  const out: TemplateResult[] = [];
+  let i = 0;
+  while (i < paras.length) {
+    const p = paras[i]!;
+    if (p.lineType !== "li") {
+      out.push(renderParagraph(p, selfAddress));
+      i++;
+      continue;
+    }
+    const decimal = p.listStyle === "decimal";
+    const run: Paragraph[] = [];
+    while (i < paras.length && paras[i]!.lineType === "li" && (paras[i]!.listStyle === "decimal") === decimal) {
+      run.push(paras[i]!);
+      i++;
+    }
+    const items = run.map((q) => renderListItem(q, selfAddress));
+    out.push(decimal ? html`<ol class="para-list">${items}</ol>` : html`<ul class="para-list">${items}</ul>`);
+  }
+  return out;
+}
+
+// renderInlineParts renders a paragraph's inline content (text runs + reply/image
+// widgets) in DOCUMENT ORDER, so a widget sits at its true position rather than being
+// appended at the end. An empty paragraph renders a <br/> so the line has height + a
+// caret target.
+function renderInlineParts(p: Paragraph, selfAddress: string): TemplateResult | TemplateResult[] {
+  if (p.items.length === 0) return html`<br />`;
+  return p.items.map((it) => {
     if (it.kind === "text") return renderSpan(it.span, selfAddress);
     if (it.kind === "reply") return renderReplyAnchor(it.id);
     return renderImage(it.attachment);
   });
-  return html`<div class="para" style=${style}>${parts}</div>`;
+}
+
+function renderParagraph(p: Paragraph, selfAddress: string): TemplateResult {
+  return html`<div class="para" style=${paragraphStyle(p)}>${renderInlineParts(p, selfAddress)}</div>`;
+}
+
+// renderListItem renders a list-item paragraph as a native <li> (inside an <ol>/<ul>
+// from renderParagraphs), so the browser draws and numbers the marker. Only the indent
+// is styled here; the list container provides the marker and base indentation.
+function renderListItem(p: Paragraph, selfAddress: string): TemplateResult {
+  const style = p.indent > 0 ? `margin-left:${p.indent * 1.5}em` : "";
+  return html`<li class="para" style=${style}>${renderInlineParts(p, selfAddress)}</li>`;
 }
 
 // renderReplyAnchor renders the inline-reply 💬 marker: a non-editable span carrying
@@ -1228,19 +1272,8 @@ function paragraphStyle(p: Paragraph): string {
     case "h3":
       decls.push("font-size:1.2em", "font-weight:600", "margin:0.2em 0");
       break;
-    case "li": {
-      // Numbered (listyle="decimal") vs bulleted. display:list-item participates in the
-      // implicit list-item counter across sibling paragraphs, so a homogeneous run of
-      // numbered items counts 1, 2, 3 without an explicit <ol> wrapper.
-      // KNOWN LIMITATION: the implicit counter is shared across ALL list-item siblings
-      // regardless of marker, so a MIXED list (a bullet between numbered items) or a
-      // numbered list split by a plain paragraph numbers wrong (gaps / no restart). The
-      // model is correct and converges; only the rendered digits are off. A faithful fix
-      // groups consecutive same-style items under a real <ol>/<ul> at render time.
-      const marker = p.listStyle === "decimal" ? "decimal" : "disc";
-      decls.push(`list-style-type:${marker}`, "display:list-item", "margin-left:1.5em");
-      break;
-    }
+    // "li" is rendered as a native <li> by renderListItem (inside an <ol>/<ul>), not via
+    // this <div> path, so it never reaches here.
     default:
       break;
   }

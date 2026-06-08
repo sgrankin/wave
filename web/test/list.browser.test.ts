@@ -129,3 +129,45 @@ test("Numbered list: items render decimal, Enter continues numbered, and it conv
     await alice.close();
   }
 });
+
+// The render groups each consecutive run of same-marker items into one native
+// <ol>/<ul>, so the marker counter scopes per run (numbered runs count from 1, a
+// different marker starts a new container) instead of one shared document-wide counter.
+test("consecutive same-marker items group into one list; a different marker splits", async () => {
+  const alice = await client("alice@example.com", "w+listgroup");
+  try {
+    // Build: a(numbered), b(numbered), c(bullet), d(numbered).
+    await typeInto(alice, 0, "a");
+    await makeList(alice, "ol");
+    await alice.keyboard.press("Enter"); // continues numbered
+    await alice.keyboard.type("b");
+    await alice.keyboard.press("Enter"); // continues numbered
+    await alice.keyboard.type("c");
+    await makeList(alice, "li"); // convert c to bullet
+    await alice.keyboard.press("Enter"); // continues bullet
+    await alice.keyboard.type("d");
+    await makeList(alice, "ol"); // convert d to numbered
+
+    await alice.waitForFunction(
+      () => {
+        const lists = Array.from(document.querySelectorAll(".blip-doc .para-list"));
+        return lists.length === 3 && (lists[2]?.querySelectorAll("li.para").length ?? 0) === 1;
+      },
+      undefined,
+      { timeout: 8000 },
+    );
+    const structure = await alice.evaluate(() =>
+      Array.from(document.querySelectorAll(".blip-doc .para-list")).map((l) => ({
+        tag: l.tagName.toLowerCase(),
+        items: Array.from(l.querySelectorAll("li.para")).map((li) => (li.textContent ?? "").trim()),
+      })),
+    );
+    assert.deepEqual(structure, [
+      { tag: "ol", items: ["a", "b"] }, // numbered run grouped
+      { tag: "ul", items: ["c"] }, // bullet splits it
+      { tag: "ol", items: ["d"] }, // a fresh numbered run (its counter restarts at 1)
+    ]);
+  } finally {
+    await alice.close();
+  }
+});
