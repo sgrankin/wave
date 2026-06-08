@@ -67,6 +67,11 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("sqlite: init schema: %w", err)
 		}
 	}
+	// Idempotent column migrations for tables that widened after first release.
+	if err := migrateWaveletMeta(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 

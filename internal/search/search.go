@@ -14,6 +14,7 @@ import (
 
 	"github.com/sgrankin/wave/internal/cc"
 	"github.com/sgrankin/wave/internal/clock"
+	"github.com/sgrankin/wave/internal/conv"
 	"github.com/sgrankin/wave/internal/doc"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/server"
@@ -21,6 +22,30 @@ import (
 	"github.com/sgrankin/wave/internal/wavelet"
 	"github.com/sgrankin/wave/internal/waveop"
 )
+
+// snippetRunes caps the digest snippet length (matches the client list view).
+const snippetRunes = 140
+
+// metaFor projects a wavelet's current digest fields for the index: creator,
+// last-modified version + wall-clock time, and the title/snippet derived from the
+// root blip (empty when it has none). Computed once at write time so the inbox/search
+// digests need no wavelet load.
+func metaFor(w *wavelet.Data) storage.WaveletMeta {
+	m := storage.WaveletMeta{
+		Creator:             w.Creator(),
+		LastModifiedVersion: w.Version(),
+		LastModifiedTime:    w.LastModifiedTime(),
+	}
+	if blip, ok := w.Blip(conv.RootBlipID); ok {
+		if t, err := doc.Title(blip.Content()); err == nil {
+			m.Title = t
+		}
+		if s, err := doc.Snippet(blip.Content(), snippetRunes); err == nil {
+			m.Snippet = s
+		}
+	}
+	return m
+}
 
 // Index maintains the derived read index.
 type Index struct {
@@ -48,7 +73,7 @@ func (i *Index) OnCommit(name id.WaveletName, w *wavelet.Data, delta cc.Transfor
 	if err := i.store.SetWaveletParticipants(name, w.Participants()); err != nil {
 		i.logger.Warn("index: set participants failed", "wavelet", name.String(), "err", err)
 	}
-	if err := i.store.SetWaveletMeta(name, w.Creator(), w.Version()); err != nil {
+	if err := i.store.SetWaveletMeta(name, metaFor(w)); err != nil {
 		i.logger.Warn("index: set meta failed", "wavelet", name.String(), "err", err)
 	}
 	seen := map[string]bool{}
@@ -82,7 +107,7 @@ func (i *Index) indexBlip(name id.WaveletName, w *wavelet.Data, blipID string) {
 // searcher's inbox. Operators: with:<addr>, creator:<addr>, in:inbox (the
 // implicit default), orderby:modified; every other token is a free-text term
 // ANDed against blip text. limit <= 0 means no limit.
-func (i *Index) Search(participant id.ParticipantID, queryString string, limit int) ([]storage.SearchResult, error) {
+func (i *Index) Search(participant id.ParticipantID, queryString string, limit int) ([]storage.WaveDigest, error) {
 	q := storage.SearchQuery{Participant: participant, Limit: limit}
 	for _, tok := range strings.Fields(queryString) {
 		switch {
@@ -111,9 +136,15 @@ func (i *Index) Search(participant id.ParticipantID, queryString string, limit i
 	return i.store.Search(q)
 }
 
-// Inbox returns the wavelets a participant currently belongs to.
+// Inbox returns the wavelets a participant currently belongs to (names only).
 func (i *Index) Inbox(participant id.ParticipantID) ([]id.WaveletName, error) {
 	return i.store.InboxWavelets(participant)
+}
+
+// InboxDigests returns the participant's inbox as digest projections (most-recently-
+// modified first, capped at limit), served from the index without loading wavelets.
+func (i *Index) InboxDigests(participant id.ParticipantID, limit int) ([]storage.WaveDigest, error) {
+	return i.store.InboxDigests(participant, limit)
 }
 
 // CanAccess reports whether participant may access wavelet — the access-control
@@ -156,7 +187,7 @@ func Rebuild(deltas storage.DeltaStore, index storage.IndexStore, clk clock.Cloc
 			if err := index.SetWaveletParticipants(name, w.Participants()); err != nil {
 				return err
 			}
-			if err := index.SetWaveletMeta(name, w.Creator(), w.Version()); err != nil {
+			if err := index.SetWaveletMeta(name, metaFor(w)); err != nil {
 				return err
 			}
 			for _, blipID := range w.BlipIDs() {

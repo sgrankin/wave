@@ -1,8 +1,9 @@
 // Package queryapi serves the browser's read-side wave queries — the inbox and
-// search — as authenticated JSON HTTP endpoints over the existing search/index.
-// It turns the lightweight index results (a wavelet name + version) into wave
-// "digests" (title, snippet, participants) the client list renders, loading each
-// matched wavelet and reading it under the container lock.
+// search — as authenticated JSON HTTP endpoints over the derived index. The index
+// already stores each wave's digest projection (title, snippet, creator,
+// participants, version, last-modified time), so these handlers answer entirely
+// from the index: they never load a wavelet, which is what keeps a frequently
+// polled inbox from pinning every inbox wave in the in-memory cache.
 //
 // Mount Routes() behind auth.Service.Middleware so the authenticated participant
 // is bound to the request; the handlers read it via the injected identify func.
@@ -14,37 +15,27 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strconv"
 
-	"github.com/sgrankin/wave/internal/conv"
-	"github.com/sgrankin/wave/internal/doc"
 	"github.com/sgrankin/wave/internal/id"
-	"github.com/sgrankin/wave/internal/server"
 	"github.com/sgrankin/wave/internal/storage"
-	"github.com/sgrankin/wave/internal/wavelet"
 )
 
 const (
 	defaultLimit = 50
 	maxLimit     = 200
-	snippetRunes = 140
 )
 
 // Index is the read side of the search/index this API serves (satisfied by
-// *search.Index).
+// *search.Index). Both methods return digest projections straight from the index —
+// no wavelet load — already ordered (inbox: most-recently-modified first; search:
+// the index's order) and capped at limit.
 type Index interface {
-	// Inbox lists the wavelets the participant currently belongs to.
-	Inbox(participant id.ParticipantID) ([]id.WaveletName, error)
-	// Search returns wavelets matching the query string, scoped to the
-	// participant's inbox.
-	Search(participant id.ParticipantID, query string, limit int) ([]storage.SearchResult, error)
-}
-
-// Waves loads a wavelet's state for digest computation. Read must run fn under
-// the wavelet's lock (fn receives nil for a never-created wavelet).
-type Waves interface {
-	Read(name id.WaveletName, fn func(*wavelet.Data)) error
+	// InboxDigests returns the participant's inbox, newest-modified first, ≤ limit.
+	InboxDigests(participant id.ParticipantID, limit int) ([]storage.WaveDigest, error)
+	// Search returns digests matching the query string, scoped to the participant's
+	// inbox, ≤ limit.
+	Search(participant id.ParticipantID, query string, limit int) ([]storage.WaveDigest, error)
 }
 
 // ReadState is the per-participant read-progress store backing the unread
@@ -73,18 +64,16 @@ type Digest struct {
 // Handler serves /api/inbox, /api/search, and /api/read.
 type Handler struct {
 	index    Index
-	waves    Waves
 	reads    ReadState
 	identify func(*http.Request) (id.ParticipantID, bool)
 	logger   *slog.Logger
 }
 
-// New builds a Handler over the index, wave source, and read-state store.
-// identify resolves the authenticated participant from the request (e.g.
-// auth.ParticipantFrom when mounted behind auth.Service.Middleware). A nil logger
-// uses slog.Default().
-func New(index Index, waves Waves, reads ReadState, identify func(*http.Request) (id.ParticipantID, bool), logger *slog.Logger) *Handler {
-	return &Handler{index: index, waves: waves, reads: reads, identify: identify, logger: logger}
+// New builds a Handler over the index and read-state store. identify resolves the
+// authenticated participant from the request (e.g. auth.ParticipantFrom when mounted
+// behind auth.Service.Middleware). A nil logger uses slog.Default().
+func New(index Index, reads ReadState, identify func(*http.Request) (id.ParticipantID, bool), logger *slog.Logger) *Handler {
+	return &Handler{index: index, reads: reads, identify: identify, logger: logger}
 }
 
 func (h *Handler) log() *slog.Logger {
@@ -110,16 +99,12 @@ func (h *Handler) inbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	names, err := h.index.Inbox(p)
+	wds, err := h.index.InboxDigests(p, parseLimit(r))
 	if err != nil {
 		http.Error(w, "inbox: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Sort the inbox most-recently-active first (like email), then cap. The sort key
-	// is the digest's wall-clock LastModifiedTime — done in writeDigests after the
-	// digests are built (the index only stores last-modified *version*, which is not
-	// comparable across wavelets). The cap is applied post-sort so the newest survive.
-	h.writeDigests(w, p, names, parseLimit(r), true)
+	h.writeDigests(w, p, wds)
 }
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
@@ -128,17 +113,12 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	results, err := h.index.Search(p, r.URL.Query().Get("q"), parseLimit(r))
+	wds, err := h.index.Search(p, r.URL.Query().Get("q"), parseLimit(r))
 	if err != nil {
 		http.Error(w, "search: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	names := make([]id.WaveletName, len(results))
-	for i, res := range results {
-		names[i] = res.Wavelet
-	}
-	// Search keeps the index's relevance/order; it is already limited by Search().
-	h.writeDigests(w, p, names, parseLimit(r), false)
+	h.writeDigests(w, p, wds)
 }
 
 // markRead records that the participant has read a wavelet through a version
@@ -166,78 +146,36 @@ func (h *Handler) markRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeDigests builds and writes the wave digests for names. sortRecent orders them
-// most-recently-active first (for the inbox); search passes false to keep the index's
-// relevance order. limit caps the result AFTER sorting (so the newest survive).
-func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, names []id.WaveletName, limit int, sortRecent bool) {
+// writeDigests converts index digests to the JSON list shape, stamping each wave's
+// unread flag from the participant's read versions. The order and cap are the
+// index's; this layer only annotates and serializes.
+func (h *Handler) writeDigests(w http.ResponseWriter, p id.ParticipantID, wds []storage.WaveDigest) {
 	readVersions, err := h.reads.ReadVersions(p)
 	if err != nil {
 		// Degrade gracefully: show everything as read rather than failing the list.
 		h.log().Warn("queryapi: read versions", "participant", p, "err", err)
 		readVersions = map[string]uint64{}
 	}
-	digests := make([]Digest, 0, len(names))
-	for _, name := range names {
-		if d, ok := h.digest(name); ok {
-			d.Unread = d.Version > readVersions[d.Wave]
-			digests = append(digests, d)
+	digests := make([]Digest, 0, len(wds))
+	for _, wd := range wds {
+		wave := wd.Wavelet.Serialize()
+		parts := wd.Participants
+		if parts == nil {
+			parts = []string{}
 		}
-	}
-	if sortRecent {
-		// Most-recently-active first; SliceStable keeps the index's order for ties.
-		sort.SliceStable(digests, func(i, j int) bool {
-			return digests[i].LastModifiedTime > digests[j].LastModifiedTime
+		digests = append(digests, Digest{
+			Wave:             wave,
+			Title:            wd.Title,
+			Snippet:          wd.Snippet,
+			Creator:          wd.Creator,
+			Participants:     parts,
+			Version:          wd.Version,
+			LastModifiedTime: wd.LastModifiedTime,
+			Unread:           wd.Version > readVersions[wave],
 		})
-	}
-	if limit > 0 && len(digests) > limit {
-		digests = digests[:limit]
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"waves": digests})
-}
-
-// digest loads name and reads a summary under the container lock. ok is false if
-// the wavelet has not been created yet (a benign, quiet skip) or fails to load (a
-// load error is logged before skipping, so index/store drift or corruption is
-// observable rather than a silently missing list entry).
-//
-// NOTE: title/snippet are taken from the root blip only and the snippet is not
-// title-stripped; the spec (docs/specs/11-search-indexing.md) computes the snippet
-// from the most-recently-modified blip with the title prefix removed. For a
-// single-blip wave these coincide; refining it is deferred to a later batch.
-func (h *Handler) digest(name id.WaveletName) (Digest, bool) {
-	d := Digest{Wave: name.Serialize(), Participants: []string{}}
-	found := false
-	if err := h.waves.Read(name, func(wv *wavelet.Data) {
-		if wv == nil {
-			return
-		}
-		found = true
-		d.Creator = wv.Creator().Address()
-		d.Version = wv.Version()
-		d.LastModifiedTime = wv.LastModifiedTime()
-		for _, p := range wv.Participants() {
-			d.Participants = append(d.Participants, p.Address())
-		}
-		if blip, ok := wv.Blip(conv.RootBlipID); ok {
-			content := blip.Content()
-			if title, err := doc.Title(content); err == nil {
-				d.Title = title
-			}
-			if snippet, err := doc.Snippet(content, snippetRunes); err == nil {
-				d.Snippet = snippet
-			}
-		}
-	}); err != nil {
-		// The index named a wavelet the store could not materialize (corruption,
-		// replay hash mismatch, storage error). Skip it, but make the skip visible.
-		h.log().Warn("queryapi: skipping wavelet that failed to load", "wavelet", name, "err", err)
-		return Digest{}, false
-	}
-	if !found {
-		return Digest{}, false // uncreated: benign, no log
-	}
-	return d, true
 }
 
 func parseLimit(r *http.Request) int {
@@ -249,20 +187,4 @@ func parseLimit(r *http.Request) int {
 		return maxLimit
 	}
 	return n
-}
-
-// waveMapReader adapts a *server.WaveMap to Waves.
-type waveMapReader struct{ wm *server.WaveMap }
-
-// NewWaveMapReader adapts a WaveMap to the Waves interface: it loads (or returns
-// the cached) container for a name and reads its wavelet under the container lock.
-func NewWaveMapReader(wm *server.WaveMap) Waves { return waveMapReader{wm} }
-
-func (r waveMapReader) Read(name id.WaveletName, fn func(*wavelet.Data)) error {
-	c, err := r.wm.Container(name)
-	if err != nil {
-		return err
-	}
-	c.Read(fn)
-	return nil
 }

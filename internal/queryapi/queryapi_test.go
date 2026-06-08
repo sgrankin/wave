@@ -1,11 +1,8 @@
 package queryapi_test
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,9 +18,7 @@ import (
 	"github.com/sgrankin/wave/internal/queryapi"
 	"github.com/sgrankin/wave/internal/search"
 	"github.com/sgrankin/wave/internal/server"
-	"github.com/sgrankin/wave/internal/storage"
 	"github.com/sgrankin/wave/internal/storage/sqlite"
-	"github.com/sgrankin/wave/internal/wavelet"
 	"github.com/sgrankin/wave/internal/waveop"
 )
 
@@ -81,9 +76,9 @@ type digestResp struct {
 	Waves []queryapi.Digest `json:"waves"`
 }
 
-func get(t *testing.T, base, path string, who id.ParticipantID, index *search.Index, wm *server.WaveMap, reads queryapi.ReadState) digestResp {
+func get(t *testing.T, base, path string, who id.ParticipantID, index *search.Index, reads queryapi.ReadState) digestResp {
 	t.Helper()
-	h := queryapi.New(index, queryapi.NewWaveMapReader(wm), reads,
+	h := queryapi.New(index, reads,
 		func(*http.Request) (id.ParticipantID, bool) { return who, true }, nil)
 	srv := httptest.NewServer(h.Routes())
 	defer srv.Close()
@@ -121,7 +116,7 @@ func TestInboxAndSearch(t *testing.T) {
 	seedWave(t, wm, w3, bob, "Bob's private wave")
 
 	// Inbox: alice sees her two waves, not bob's.
-	inbox := get(t, "inbox", "/api/inbox", alice, idx, wm, store)
+	inbox := get(t, "inbox", "/api/inbox", alice, idx, store)
 	if len(inbox.Waves) != 2 {
 		t.Fatalf("alice inbox = %d waves, want 2: %+v", len(inbox.Waves), inbox.Waves)
 	}
@@ -140,13 +135,13 @@ func TestInboxAndSearch(t *testing.T) {
 	}
 
 	// Bob's inbox is just his wave.
-	bobInbox := get(t, "inbox", "/api/inbox", bob, idx, wm, store)
+	bobInbox := get(t, "inbox", "/api/inbox", bob, idx, store)
 	if len(bobInbox.Waves) != 1 || bobInbox.Waves[0].Title != "Bob's private wave" {
 		t.Fatalf("bob inbox = %+v, want one wave 'Bob's private wave'", bobInbox.Waves)
 	}
 
 	// Search scoped to alice: "Hello" matches only w1, with title + snippet.
-	res := get(t, "search", "/api/search?q=Hello", alice, idx, wm, store)
+	res := get(t, "search", "/api/search?q=Hello", alice, idx, store)
 	if len(res.Waves) != 1 || res.Waves[0].Title != "Hello world" {
 		t.Fatalf("search Hello = %+v, want one wave 'Hello world'", res.Waves)
 	}
@@ -155,7 +150,7 @@ func TestInboxAndSearch(t *testing.T) {
 	}
 
 	// Search never crosses inbox boundaries: alice searching bob's text finds nothing.
-	none := get(t, "search", "/api/search?q=private", alice, idx, wm, store)
+	none := get(t, "search", "/api/search?q=private", alice, idx, store)
 	if len(none.Waves) != 0 {
 		t.Errorf("alice search 'private' = %+v, want none (bob's wave is out of her inbox)", none.Waves)
 	}
@@ -168,8 +163,7 @@ func TestUnauthorized(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 	idx := search.New(store, nil)
-	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
-	h := queryapi.New(idx, queryapi.NewWaveMapReader(wm), store,
+	h := queryapi.New(idx, store,
 		func(*http.Request) (id.ParticipantID, bool) { return id.ParticipantID{}, false }, nil)
 	srv := httptest.NewServer(h.Routes())
 	defer srv.Close()
@@ -183,89 +177,9 @@ func TestUnauthorized(t *testing.T) {
 	}
 }
 
-// stubIndex / stubWaves drive the Handler without a real store, for the digest
-// edge cases (uncreated wavelet, load failure) that are awkward to provoke live.
-type stubIndex struct{ names []id.WaveletName }
-
-func (s stubIndex) Inbox(id.ParticipantID) ([]id.WaveletName, error) { return s.names, nil }
-func (s stubIndex) Search(id.ParticipantID, string, int) ([]storage.SearchResult, error) {
-	res := make([]storage.SearchResult, len(s.names))
-	for i, n := range s.names {
-		res[i] = storage.SearchResult{Wavelet: n}
-	}
-	return res, nil
-}
-
-type stubWaves struct {
-	fn func(name id.WaveletName, f func(*wavelet.Data)) error
-}
-
-func (s stubWaves) Read(name id.WaveletName, f func(*wavelet.Data)) error { return s.fn(name, f) }
-
-// stubReads is a no-op ReadState (everything read) for tests that don't exercise
-// the unread indicator.
-type stubReads struct{}
-
-func (stubReads) ReadVersions(id.ParticipantID) (map[string]uint64, error) {
-	return map[string]uint64{}, nil
-}
-func (stubReads) SetReadVersion(id.ParticipantID, id.WaveletName, uint64) error { return nil }
-
-func getJSON(t *testing.T, h *queryapi.Handler, path string) digestResp {
-	t.Helper()
-	srv := httptest.NewServer(h.Routes())
-	defer srv.Close()
-	resp, err := http.Get(srv.URL + path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("%s: status %d", path, resp.StatusCode)
-	}
-	var dr digestResp
-	if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
-		t.Fatal(err)
-	}
-	return dr
-}
-
 func alwaysAlice(t *testing.T) func(*http.Request) (id.ParticipantID, bool) {
 	a := pid(t, "alice@example.com")
 	return func(*http.Request) (id.ParticipantID, bool) { return a, true }
-}
-
-// TestDigestSkipsUncreated: a name the index returns but whose wavelet has no
-// state yet (Read yields nil) is silently omitted — not a 500, not a phantom row.
-func TestDigestSkipsUncreated(t *testing.T) {
-	name := waveName(t, "w+ghost")
-	h := queryapi.New(
-		stubIndex{names: []id.WaveletName{name}},
-		stubWaves{fn: func(_ id.WaveletName, fn func(*wavelet.Data)) error { fn(nil); return nil }},
-		stubReads{}, alwaysAlice(t), nil)
-	dr := getJSON(t, h, "/api/inbox")
-	if len(dr.Waves) != 0 {
-		t.Errorf("uncreated wavelet should be omitted, got %+v", dr.Waves)
-	}
-}
-
-// TestDigestLogsLoadFailure: a wavelet that fails to load is omitted AND logged
-// (so index/store drift or corruption is observable, not silently missing).
-func TestDigestLogsLoadFailure(t *testing.T) {
-	name := waveName(t, "w+broken")
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	h := queryapi.New(
-		stubIndex{names: []id.WaveletName{name}},
-		stubWaves{fn: func(_ id.WaveletName, _ func(*wavelet.Data)) error { return errors.New("boom") }},
-		stubReads{}, alwaysAlice(t), logger)
-	dr := getJSON(t, h, "/api/inbox")
-	if len(dr.Waves) != 0 {
-		t.Errorf("load-failed wavelet should be omitted, got %+v", dr.Waves)
-	}
-	if !strings.Contains(buf.String(), "failed to load") {
-		t.Errorf("expected a warn log about the failed load, got %q", buf.String())
-	}
 }
 
 // TestSnippetTruncation: a long root blip yields a snippet capped to the rune
@@ -281,7 +195,7 @@ func TestSnippetTruncation(t *testing.T) {
 	alice := pid(t, "alice@example.com")
 	seedWave(t, wm, waveName(t, "w+long"), alice, strings.Repeat("a", 200))
 
-	res := get(t, "inbox", "/api/inbox", alice, idx, wm, store)
+	res := get(t, "inbox", "/api/inbox", alice, idx, store)
 	if len(res.Waves) != 1 {
 		t.Fatalf("inbox = %d, want 1", len(res.Waves))
 	}
@@ -308,7 +222,7 @@ func TestUnreadAndMarkRead(t *testing.T) {
 	w := waveName(t, "w+unread")
 	seedWave(t, wm, w, alice, "hi")
 
-	h := queryapi.New(idx, queryapi.NewWaveMapReader(wm), store, alwaysAlice(t), nil)
+	h := queryapi.New(idx, store, alwaysAlice(t), nil)
 	srv := httptest.NewServer(h.Routes())
 	defer srv.Close()
 

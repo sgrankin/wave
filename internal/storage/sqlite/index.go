@@ -1,12 +1,52 @@
 package sqlite
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/storage"
 )
+
+// migrateWaveletMeta adds the digest-projection columns (last_modified_time, title,
+// snippet) to wavelet_meta when a database predates them. The index is a rebuildable
+// cache, so existing rows take the empty/zero column defaults until the next commit
+// (or a Rebuild) backfills them. Idempotent: a fresh database already has the columns
+// from indexSchema, so nothing is altered.
+func migrateWaveletMeta(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(wavelet_meta)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: inspect wavelet_meta: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("sqlite: scan table_info: %w", err)
+		}
+		have[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, c := range []struct{ name, decl string }{
+		{"last_modified_time", "INTEGER NOT NULL DEFAULT 0"},
+		{"title", "TEXT NOT NULL DEFAULT ''"},
+		{"snippet", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE wavelet_meta ADD COLUMN " + c.name + " " + c.decl); err != nil {
+			return fmt.Errorf("sqlite: add wavelet_meta.%s: %w", c.name, err)
+		}
+	}
+	return nil
+}
 
 // indexSchema is the derived read index. wave_participants is the inbox: which
 // participants belong to which wavelet (rebuildable from the delta log). Search
@@ -26,6 +66,9 @@ CREATE TABLE IF NOT EXISTS wavelet_meta (
   wavelet_id            TEXT    NOT NULL,
   creator               TEXT    NOT NULL,
   last_modified_version INTEGER NOT NULL,
+  last_modified_time    INTEGER NOT NULL DEFAULT 0,
+  title                 TEXT    NOT NULL DEFAULT '',
+  snippet               TEXT    NOT NULL DEFAULT '',
   PRIMARY KEY (wave_id, wavelet_id)
 );
 
@@ -69,12 +112,15 @@ func (s *Store) SetWaveletParticipants(name id.WaveletName, participants []id.Pa
 	return nil
 }
 
-// SetWaveletMeta records a wavelet's creator and last-modified version.
-func (s *Store) SetWaveletMeta(name id.WaveletName, creator id.ParticipantID, lastModifiedVersion uint64) error {
+// SetWaveletMeta records a wavelet's digest projection (creator, last-modified
+// version + time, precomputed title and snippet).
+func (s *Store) SetWaveletMeta(name id.WaveletName, meta storage.WaveletMeta) error {
 	if _, err := s.db.Exec(
-		`INSERT OR REPLACE INTO wavelet_meta (wave_id, wavelet_id, creator, last_modified_version)
-		 VALUES (?, ?, ?, ?)`,
-		name.Wave().Serialize(), name.Wavelet().Serialize(), creator.Address(), lastModifiedVersion); err != nil {
+		`INSERT OR REPLACE INTO wavelet_meta
+		   (wave_id, wavelet_id, creator, last_modified_version, last_modified_time, title, snippet)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name.Wave().Serialize(), name.Wavelet().Serialize(), meta.Creator.Address(),
+		meta.LastModifiedVersion, meta.LastModifiedTime, meta.Title, meta.Snippet); err != nil {
 		return fmt.Errorf("sqlite: set wavelet meta %s: %w", name, err)
 	}
 	return nil
@@ -148,13 +194,71 @@ func (s *Store) InboxWavelets(participant id.ParticipantID) ([]id.WaveletName, e
 	return out, rows.Err()
 }
 
-// Search returns wavelets matching q, always scoped to q.Participant's inbox.
-// Free-text terms are matched against the FTS5 blip index; with:/creator: filter
-// the wavelet set; results optionally order by last-modified version.
-func (s *Store) Search(q storage.SearchQuery) ([]storage.SearchResult, error) {
+// digestColumns is the SELECT list that projects an inbox-membership row (aliased
+// wp) + its LEFT-JOINed wavelet_meta (wm) into a storage.WaveDigest, including the
+// wavelet's full participant set (newline-joined; addresses never contain newlines)
+// via a correlated subquery. COALESCE covers a wavelet present in the inbox but
+// lacking a meta row yet (rebuildable index drift). Pair with scanDigests.
+const digestColumns = `wp.wave_id, wp.wavelet_id,
+	COALESCE(wm.creator, ''), COALESCE(wm.last_modified_version, 0), COALESCE(wm.last_modified_time, 0),
+	COALESCE(wm.title, ''), COALESCE(wm.snippet, ''),
+	(SELECT GROUP_CONCAT(p2.participant_id, char(10)) FROM wave_participants p2
+	 WHERE p2.wave_id = wp.wave_id AND p2.wavelet_id = wp.wavelet_id)`
+
+// scanDigests reads rows shaped by digestColumns into WaveDigests.
+func scanDigests(rows *sql.Rows) ([]storage.WaveDigest, error) {
+	var out []storage.WaveDigest
+	for rows.Next() {
+		var waveStr, waveletStr, creator, title, snippet string
+		var lmv, lmt int64
+		var parts sql.NullString
+		if err := rows.Scan(&waveStr, &waveletStr, &creator, &lmv, &lmt, &title, &snippet, &parts); err != nil {
+			return nil, fmt.Errorf("sqlite: digest scan: %w", err)
+		}
+		name, err := parseWaveletName(waveStr, waveletStr)
+		if err != nil {
+			return nil, err
+		}
+		d := storage.WaveDigest{
+			Wavelet: name, Creator: creator, Title: title, Snippet: snippet,
+			Version: uint64(lmv), LastModifiedTime: lmt, Participants: []string{},
+		}
+		if parts.Valid && parts.String != "" {
+			d.Participants = strings.Split(parts.String, "\n")
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// InboxDigests returns the participant's inbox as digest projections, most-recently-
+// modified first, capped at limit — served entirely from the index (no wavelet load).
+func (s *Store) InboxDigests(participant id.ParticipantID, limit int) ([]storage.WaveDigest, error) {
+	q := `SELECT ` + digestColumns + `
+		FROM wave_participants wp
+		LEFT JOIN wavelet_meta wm ON wm.wave_id = wp.wave_id AND wm.wavelet_id = wp.wavelet_id
+		WHERE wp.participant_id = ?
+		ORDER BY COALESCE(wm.last_modified_time, 0) DESC, wp.wave_id, wp.wavelet_id`
+	args := []any{participant.Address()}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: inbox digests %s: %w", participant, err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanDigests(rows)
+}
+
+// Search returns digest projections matching q, always scoped to q.Participant's
+// inbox. Free-text terms are matched against the FTS5 blip index; with:/creator:
+// filter the wavelet set; results optionally order by last-modified version.
+func (s *Store) Search(q storage.SearchQuery) ([]storage.WaveDigest, error) {
 	var sb strings.Builder
 	args := []any{q.Participant.Address()}
-	sb.WriteString(`SELECT DISTINCT wp.wave_id, wp.wavelet_id, COALESCE(wm.last_modified_version, 0)
+	sb.WriteString(`SELECT DISTINCT ` + digestColumns + `
 		FROM wave_participants wp
 		LEFT JOIN wavelet_meta wm ON wm.wave_id = wp.wave_id AND wm.wavelet_id = wp.wavelet_id
 		WHERE wp.participant_id = ?`)
@@ -174,7 +278,7 @@ func (s *Store) Search(q storage.SearchQuery) ([]storage.SearchResult, error) {
 		args = append(args, w.Address())
 	}
 	if q.OrderByModifiedDesc {
-		sb.WriteString(` ORDER BY COALESCE(wm.last_modified_version, 0) DESC, wp.wave_id, wp.wavelet_id`)
+		sb.WriteString(` ORDER BY COALESCE(wm.last_modified_time, 0) DESC, wp.wave_id, wp.wavelet_id`)
 	} else {
 		sb.WriteString(` ORDER BY wp.wave_id, wp.wavelet_id`)
 	}
@@ -188,20 +292,7 @@ func (s *Store) Search(q storage.SearchQuery) ([]storage.SearchResult, error) {
 		return nil, fmt.Errorf("sqlite: search: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var out []storage.SearchResult
-	for rows.Next() {
-		var waveStr, waveletStr string
-		var lmv int64
-		if err := rows.Scan(&waveStr, &waveletStr, &lmv); err != nil {
-			return nil, fmt.Errorf("sqlite: search scan: %w", err)
-		}
-		name, err := parseWaveletName(waveStr, waveletStr)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, storage.SearchResult{Wavelet: name, LastModifiedVersion: uint64(lmv)})
-	}
-	return out, rows.Err()
+	return scanDigests(rows)
 }
 
 // ftsExpr builds an FTS5 MATCH expression from free-text terms: each term is

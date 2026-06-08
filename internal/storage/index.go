@@ -11,9 +11,12 @@ import "github.com/sgrankin/wave/internal/id"
 type IndexStore interface {
 	// SetWaveletParticipants replaces the recorded participant set for a wavelet.
 	SetWaveletParticipants(name id.WaveletName, participants []id.ParticipantID) error
-	// SetWaveletMeta records a wavelet's creator and last-modified version (for
-	// creator: filtering and orderby).
-	SetWaveletMeta(name id.WaveletName, creator id.ParticipantID, lastModifiedVersion uint64) error
+	// SetWaveletMeta records a wavelet's digest projection — creator, last-modified
+	// version + wall-clock time (for filtering/ordering), and the precomputed title
+	// and snippet — so the inbox and search digests are served entirely from the
+	// index without loading the wavelet. title/snippet are derived from the root blip
+	// at write time; "" when it has none.
+	SetWaveletMeta(name id.WaveletName, meta WaveletMeta) error
 	// SetBlipText records (replacing any prior text) the searchable plain text of
 	// a blip.
 	SetBlipText(name id.WaveletName, blipID, text string) error
@@ -22,11 +25,26 @@ type IndexStore interface {
 	// InboxWavelets returns the wavelets a participant currently belongs to.
 	// Ordering is the query layer's concern.
 	InboxWavelets(participant id.ParticipantID) ([]id.WaveletName, error)
+	// InboxDigests returns digest projections for the participant's inbox, ordered
+	// most-recently-modified first and capped at limit (<= 0 ⇒ no cap). It is served
+	// entirely from the index — no wavelet is loaded — so polling the inbox never
+	// pins waves in the in-memory cache.
+	InboxDigests(participant id.ParticipantID, limit int) ([]WaveDigest, error)
 	// IsParticipant reports whether a participant currently belongs to a wavelet
 	// (the access-control predicate for reads/writes scoped to a wavelet).
 	IsParticipant(name id.WaveletName, participant id.ParticipantID) (bool, error)
-	// Search returns wavelets matching q (always scoped to q.Participant's inbox).
-	Search(q SearchQuery) ([]SearchResult, error)
+	// Search returns digest projections matching q (always scoped to q.Participant's
+	// inbox), served from the index like InboxDigests.
+	Search(q SearchQuery) ([]WaveDigest, error)
+}
+
+// WaveletMeta is the digest projection recorded per wavelet on commit.
+type WaveletMeta struct {
+	Creator             id.ParticipantID
+	LastModifiedVersion uint64
+	LastModifiedTime    int64 // wall-clock, as the wavelet reports it
+	Title               string
+	Snippet             string
 }
 
 // SearchQuery is a parsed search request, always scoped to the searcher's inbox.
@@ -39,8 +57,15 @@ type SearchQuery struct {
 	Limit               int                // max results (<= 0 = no limit)
 }
 
-// SearchResult is one matched wavelet.
-type SearchResult struct {
-	Wavelet             id.WaveletName
-	LastModifiedVersion uint64
+// WaveDigest is one wave's summary for a list view (inbox or search results),
+// projected entirely from the index. Creator and Participants are addresses (the
+// stored form); the query layer turns this into the JSON the client renders.
+type WaveDigest struct {
+	Wavelet          id.WaveletName // identity
+	Creator          string         // creator address
+	Title            string         // first non-empty line of the root blip
+	Snippet          string         // truncated plain text of the root blip
+	Participants     []string       // participant addresses
+	Version          uint64         // last-modified version
+	LastModifiedTime int64          // wall-clock, for recency ordering
 }

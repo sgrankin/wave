@@ -114,6 +114,91 @@ func createWithText(author id.ParticipantID, target version.HashedVersion, blipI
 	})
 }
 
+// createAtTime adds author (+ extras) as participants and writes a blip, stamped at
+// ts (passed in the op context; the server also stamps from its clock, which the
+// caller Sets to the same value) so last-modified ordering is deterministic.
+func createAtTime(author id.ParticipantID, target version.HashedVersion, ts int64, text string, extras ...id.ParticipantID) waveop.WaveletDelta {
+	c := waveop.Context{Creator: author, Timestamp: ts, VersionIncrement: 1}
+	ops := []waveop.Operation{waveop.AddParticipant{Ctx: c, Participant: author}}
+	for _, p := range extras {
+		ops = append(ops, waveop.AddParticipant{Ctx: c, Participant: p})
+	}
+	ops = append(ops, waveop.WaveletBlipOperation{BlipID: "b", BlipOp: waveop.BlipContentOperation{Ctx: c, ContentOp: chars(text)}})
+	return waveop.NewWaveletDelta(author, target, ops)
+}
+
+func addrSet(addrs []string) map[string]bool {
+	s := map[string]bool{}
+	for _, a := range addrs {
+		s[a] = true
+	}
+	return s
+}
+
+// TestInboxDigestsOrderingLimitAndProjection exercises the digest projection served
+// straight from the index (no wavelet load): newest-modified-first ordering, the
+// limit cap, the per-wave participant aggregation, and the creator/version columns.
+func TestInboxDigestsOrderingLimitAndProjection(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	idx := search.New(store, nil)
+	clk := clock.NewFixed(time.UnixMilli(1))
+	wm := server.NewWaveMap(store, clk, server.WithIndexer(idx))
+	alice := pid(t, "alice@example.com")
+	bob := pid(t, "bob@example.com")
+
+	submit := func(local string, ts int64, extras ...id.ParticipantID) {
+		t.Helper()
+		clk.Set(time.UnixMilli(ts)) // the server stamps this as the wavelet's last-modified time
+		name := waveletName(t, local)
+		c, _ := wm.Container(name)
+		if _, err := c.Submit(createAtTime(alice, version.Zero(name), ts, "hi", extras...)); err != nil {
+			t.Fatalf("submit %s: %v", local, err)
+		}
+	}
+	// Submit out of recency order; w+mid also has bob.
+	submit("w+old", 1000)
+	submit("w+new", 3000)
+	submit("w+mid", 2000, bob)
+
+	ds, err := idx.InboxDigests(alice, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds) != 3 {
+		t.Fatalf("digests = %d, want 3", len(ds))
+	}
+	// Newest-modified first: 3000, 2000, 1000.
+	gotTimes := []int64{ds[0].LastModifiedTime, ds[1].LastModifiedTime, ds[2].LastModifiedTime}
+	for i, want := range []int64{3000, 2000, 1000} {
+		if gotTimes[i] != want {
+			t.Errorf("order[%d] time = %d, want %d (full order %v)", i, gotTimes[i], want, gotTimes)
+		}
+	}
+	// Projection columns on the newest.
+	if ds[0].Creator != "alice@example.com" {
+		t.Errorf("creator = %q, want alice@example.com", ds[0].Creator)
+	}
+	if ds[0].Version == 0 {
+		t.Errorf("version should be > 0")
+	}
+	// Participant aggregation: the mid wave (index 1) has alice + bob.
+	if got := addrSet(ds[1].Participants); len(got) != 2 || !got["alice@example.com"] || !got["bob@example.com"] {
+		t.Errorf("mid participants = %v, want {alice, bob}", ds[1].Participants)
+	}
+	// Limit caps to the newest N.
+	limited, err := idx.InboxDigests(alice, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 || limited[0].LastModifiedTime != 3000 {
+		t.Errorf("limit 1 = %+v, want only the newest (time 3000)", limited)
+	}
+}
+
 func searchSet(t *testing.T, idx *search.Index, who id.ParticipantID, query string) map[string]bool {
 	t.Helper()
 	results, err := idx.Search(who, query, 0)
