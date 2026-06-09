@@ -51,10 +51,15 @@ type AccessChecker interface {
 	CanAccess(participant id.ParticipantID, wavelet id.WaveletName) (bool, error)
 }
 
-// Index lists an agent's waves for discovery (satisfied by *search.Index). Optional —
-// when nil, GET /agent/waves returns 501.
+// Index lists and searches an agent's waves for discovery (satisfied by
+// *search.Index). Optional — when nil, GET /agent/waves returns 501.
 type Index interface {
+	// InboxDigests returns the agent's waves as digests, newest-modified first, ≤ limit.
 	InboxDigests(participant id.ParticipantID, limit int) ([]storage.WaveDigest, error)
+	// Search returns digests matching the query (free-text terms ANDed against blip
+	// text, plus with:/creator:/orderby: operators), scoped to the agent's own waves,
+	// ≤ limit — content-based memory recall over many waves.
+	Search(participant id.ParticipantID, query string, limit int) ([]storage.WaveDigest, error)
 }
 
 // Handler serves the agent surface: the per-wave socket (GET /agent/socket) plus the
@@ -209,7 +214,11 @@ func (h *Handler) createWave(w http.ResponseWriter, r *http.Request) {
 }
 
 // listWaves (GET /agent/waves) returns the waves the agent is a participant of — its
-// memory discovery. Requires the discovery index (WithIndex); 501 otherwise.
+// memory discovery. With ?q=<query> it instead SEARCHES the agent's waves by content
+// (full-text terms ANDed against blip text, plus with:/creator:/orderby: operators) —
+// content-based recall over many memory waves rather than scanning the whole list.
+// Both forms are scoped to the agent's own waves and served from the index without a
+// wavelet load. Requires the discovery index (WithIndex); 501 otherwise.
 func (h *Handler) listWaves(w http.ResponseWriter, r *http.Request) {
 	agentID, ok := h.authenticate(r)
 	if !ok {
@@ -220,19 +229,28 @@ func (h *Handler) listWaves(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "discovery not enabled", http.StatusNotImplemented)
 		return
 	}
-	digests, err := h.index.InboxDigests(agentID, 200)
+	var (
+		digests []storage.WaveDigest
+		err     error
+	)
+	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
+		digests, err = h.index.Search(agentID, q, 200)
+	} else {
+		digests, err = h.index.InboxDigests(agentID, 200)
+	}
 	if err != nil {
 		h.log().Error("agentgw: list waves", "agent", agentID.Address(), "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	type waveInfo struct {
-		Wave  string `json:"wave"`
-		Title string `json:"title"`
+		Wave    string `json:"wave"`
+		Title   string `json:"title"`
+		Snippet string `json:"snippet"` // root-blip preview, to disambiguate matches
 	}
 	out := make([]waveInfo, 0, len(digests))
 	for _, d := range digests {
-		out = append(out, waveInfo{Wave: d.Wavelet.Serialize(), Title: d.Title})
+		out = append(out, waveInfo{Wave: d.Wavelet.Serialize(), Title: d.Title, Snippet: d.Snippet})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"waves": out})

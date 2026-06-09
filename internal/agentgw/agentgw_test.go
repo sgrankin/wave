@@ -442,6 +442,140 @@ func TestAgentWaveManagement(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestAgentWaveSearch proves an agent can recall its memory waves by CONTENT, not just
+// list them: it creates two waves, gives each distinct blip text, and GET /agent/waves?q=
+// returns only the wave whose content matches (scoped to the agent's own waves), while the
+// no-query form still returns the full list and an unauthenticated request is rejected.
+func TestAgentWaveSearch(t *testing.T) {
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "wave.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	idx := search.New(store, nil)
+	wm := server.NewWaveMap(store, clock.NewFixed(time.UnixMilli(1000)), server.WithIndexer(idx))
+	bot := pid(t, "assistant@example.com")
+	other := pid(t, "other@example.com") // a SECOND agent, to prove cross-agent isolation
+
+	h := agentgw.New(wm, agentgw.StaticAuth{"s3cret": bot, "0ther": other},
+		transport.StrictMembershipChecker{WaveMap: wm}, clock.NewFixed(time.UnixMilli(3000)), nil).WithIndex(idx)
+	hs := httptest.NewServer(h.Routes())
+	defer hs.Close()
+
+	// create mints a fresh wave (the calling agent is its sole participant) and returns its name.
+	create := func(token string) id.WaveletName {
+		t.Helper()
+		req, _ := http.NewRequest("POST", hs.URL+"/agent/waves", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("create = %d, want 200", resp.StatusCode)
+		}
+		var created struct {
+			Wave string `json:"wave"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+			t.Fatal(err)
+		}
+		name, err := id.ParseWaveletName(created.Wave)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return name
+	}
+
+	// Two of bot's memory waves with distinct content, plus a THIRD wave owned by a
+	// different agent whose content also matches "deployment" — it must never appear in
+	// bot's results.
+	nameA, nameB := create("s3cret"), create("s3cret")
+	nameC := create("0ther") // owned by `other`, not bot
+	cA, err := wm.Container(nameA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cB, err := wm.Container(nameB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cC, err := wm.Container(nameC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postAs(t, cA, bot, "deployment runbook for the staging cluster", "b+a")
+	postAs(t, cB, bot, "grocery list and weekend plans", "b+b")
+	postAs(t, cC, other, "deployment notes that belong to someone else", "b+c")
+
+	// searchWaves runs GET /agent/waves[?q=] and returns the matched wave names.
+	searchWaves := func(token, q string) []string {
+		t.Helper()
+		u := hs.URL + "/agent/waves"
+		if q != "" {
+			u += "?q=" + url.QueryEscape(q)
+		}
+		req, _ := http.NewRequest("GET", u, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("search %q = %d, want 200", q, resp.StatusCode)
+		}
+		var out struct {
+			Waves []struct {
+				Wave, Title, Snippet string
+			} `json:"waves"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(out.Waves))
+		for _, wv := range out.Waves {
+			names = append(names, wv.Wave)
+		}
+		return names
+	}
+
+	// A content term matches only the agent's OWN wave that contains it — bot's search
+	// for "deployment" returns nameA and NOT nameC (other's wave, which also matches):
+	// search is scoped to the agent's own waves.
+	if got := searchWaves("s3cret", "deployment"); len(got) != 1 || got[0] != nameA.Serialize() {
+		t.Fatalf("search 'deployment' = %v, want only [%s] (must exclude %s)", got, nameA.Serialize(), nameC.Serialize())
+	}
+	if got := searchWaves("s3cret", "grocery"); len(got) != 1 || got[0] != nameB.Serialize() {
+		t.Fatalf("search 'grocery' = %v, want [%s]", got, nameB.Serialize())
+	}
+	// The reverse direction: `other` searching the same term sees only ITS wave, never bot's.
+	if got := searchWaves("0ther", "deployment"); len(got) != 1 || got[0] != nameC.Serialize() {
+		t.Fatalf("other's search 'deployment' = %v, want only [%s]", got, nameC.Serialize())
+	}
+	// A term in none of the agent's waves matches nothing.
+	if got := searchWaves("s3cret", "nonexistentxyzzy"); len(got) != 0 {
+		t.Fatalf("search miss = %v, want []", got)
+	}
+	// No query → the full list of the agent's OWN waves (bot's two; not other's).
+	if got := searchWaves("s3cret", ""); len(got) != 2 {
+		t.Fatalf("list = %v, want bot's 2 waves", got)
+	}
+	// An unauthenticated search is rejected (the bearer auth gates search like everything else).
+	req, _ := http.NewRequest("GET", hs.URL+"/agent/waves?q=deployment", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauth search = %d, want 401", resp.StatusCode)
+	}
+}
+
 // TestAgentStateMemory proves the structured-state memory primitive end to end: an
 // agent writes state with a set.state intent, and a fresh gateway's wave.opened
 // snapshot reports it back (write → read-on-connect).
