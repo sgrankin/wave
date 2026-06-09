@@ -42,7 +42,8 @@ Status key: ✅ shipped 2026-06-08.
    key-value state: a per-wave `<state>` document + `set.state`/`delete.state` intents +
    state in the snapshot + the reactive `state.changed` event (doc 11). An agent can
    own/find/abandon its waves AND store/read/react-to machine-readable memory in them —
-   "wave as shareable agent memory" is realized. (Minor leftover: `blip.edited` debounce.)
+   "wave as shareable agent memory" is realized. (The `blip.edited` debounce is now also
+   ✅ DONE — bursts coalesce into one event; see the agent-surface section.)
 
 ## OT core (internal/op, internal/doc, web/src/wave) — overall fidelity HIGH
 Transform (all 4 sub-transforms), Compose, Invert, the asymmetric annotation algebra,
@@ -166,8 +167,14 @@ intents). Gaps, ranked for the agent-first goal:
   `op.NewAttributes`) both closed. Design: doc 11.
 - medium / missing — annotation ops/events (agent reads/writes flat text only, though the
   OT layer supports annotations); title/tag ops + change events (snapshot lacks both).
-- medium / partial — `blip.edited` fires per delta with no debounce/coalesce → floods an
-  LLM harness one event per keystroke (the design called for it; unshipped).
+- ✅ **`blip.edited` debounce/coalesce — DONE** (reviewed SHIP). A burst of per-delta
+  edits to the same blip now collapses into ONE `blip.edited` carrying the latest text
+  (a pure coalescer in `internal/agent/coalesce.go`: latest-wins by BlipID, first-seen
+  order, deadline = earlier of a 400ms quiescence window and a 2s max-age cap; a single
+  timer in the gateway Run loop). Global flush-before-immediate ordering (a non-edit event
+  flushes pending edits ahead of itself, incl. the same-delta blip.edited+mention case);
+  flush on every terminal path. Wall-clock time base (clock.Fixed would dead-lock the
+  flush); Run-local so race-free. Emission-timing only — no new event/intent kinds.
 - medium / partial — no remove-participant / remove-self intent (add-only lifecycle).
 - low — no capability/subscription filter (all-or-nothing per wave); missing event kinds
   (blip-removed, self-added, **operation-error** — a failed intent is fire-and-forget with
