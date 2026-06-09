@@ -320,7 +320,11 @@ export function deleteText(content: DocOp, from: number, to: number): Component[
   const len = content.documentLength();
   const a = clamp(from, 0, len);
   const b = clamp(to, a, len);
-  if (b === a) return [];
+  // A zero-length delete is a no-op, but it must still RETAIN the whole document: an
+  // empty op composes to identity on the client, but the server's structural validator
+  // rejects it for not covering the document ("consumed 0 of N items"). Match the no-op
+  // convention every other builder uses. (See internal/op/editor_op_validity_test.go.)
+  if (b === a) return [...retain(len)];
   const text = textBetween(content, a, b);
   return [...retain(a), { kind: "deleteCharacters", text }, ...retain(len - b)];
 }
