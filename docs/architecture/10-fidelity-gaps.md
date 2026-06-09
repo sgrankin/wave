@@ -146,9 +146,12 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
   suppressed, and compositionend reconciles the committed text into a model op (with a
   forced .blip-doc rebuild on cancel/abort to scrub native nodes). Reviewed (2 rounds; the
   cancel-divergence, stale-offset, widget-span, and double-insert paths all closed).
-- medium — font size/family; indent/outdent commands (model reads indent but can't set
-  it); text alignment; rich/semantic paste (plain-text only today); spellcheck hard-off;
-  H4; super/subscript; clear-formatting.
+- ✅ **indent/outdent — DONE** (reviewed SHIP): `setLineIndent` op builder + toolbar
+  ⇤/⇥ buttons + Tab/Shift-Tab (IME-guarded), clamped to [0,8], acting on the caret's
+  paragraph; renders the existing `margin-left` (works on list items too without breaking
+  `<ol>`/`<ul>` grouping). Unit + browser e2e through the real server + Go validator.
+- medium — font size/family; text alignment; rich/semantic paste (plain-text only today);
+  spellcheck hard-off; H4; super/subscript; clear-formatting.
 - low — read-only/permission-gated rendering (every viewer can type); find/replace;
   drag-drop; gadget insertion (needs the retired gadget server — out of scope).
 
