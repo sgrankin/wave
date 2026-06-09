@@ -150,8 +150,19 @@ comment-sheet UX, floating selection toolbar, @mention/URL decoration. Gaps (by 
   ⇤/⇥ buttons + Tab/Shift-Tab (IME-guarded), clamped to [0,8], acting on the caret's
   paragraph; renders the existing `margin-left` (works on list items too without breaking
   `<ol>`/`<ul>` grouping). Unit + browser e2e through the real server + Go validator.
+- ✅ **clear-formatting — DONE** (reviewed SHIP): a range-only toolbar button strips all
+  character annotations (bold/italic/underline/strike/highlight/color + manual link) in
+  one op. Building it EXPOSED — and fixed — a pre-existing CRITICAL bug in `setAnnotationRange`
+  (the shared set/clear builder): its close/interior logic left annotations dangling, so
+  un-bold / clear-color / clear-link and ALL cross-paragraph set/clear emitted ops that
+  the client's `compose()` accepts but `op.Validate` (the server submit path, the
+  validator above) REJECTS — a fatal NACK masked by optimistic apply. Fixed via a cut-walk
+  state machine; guarded by Go `op.Validate` reject/accept tests + single- and
+  multi-paragraph CROSS-CLIENT browser e2e (a second session must see the change → proves
+  server acceptance, not just the optimistic local DOM). The structural validator earned
+  its keep by surfacing latent breakage in already-shipped formatting paths.
 - medium — font size/family; text alignment; rich/semantic paste (plain-text only today);
-  spellcheck hard-off; H4; super/subscript; clear-formatting.
+  spellcheck hard-off; H4; super/subscript.
 - low — read-only/permission-gated rendering (every viewer can type); find/replace;
   drag-drop; gadget insertion (needs the retired gadget server — out of scope).
 
