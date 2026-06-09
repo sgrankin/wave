@@ -251,3 +251,71 @@ test("the bar shows for a caret (Bold disabled, H1/Comment usable) and hides on 
     await page.close();
   }
 });
+
+// Indent/Outdent (the toolbar buttons and Tab / Shift-Tab) change the caret paragraph's
+// indent level, which renders as a left margin on the .para div (model <line i="N"> →
+// margin-left:N*1.5em). Both the toolbar and the keyboard path are exercised.
+test("Indent/Outdent (buttons + Tab) change the paragraph indent", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-indent");
+  try {
+    await typeInto(page, 0, "indent me");
+
+    const marginLeft = () =>
+      page.evaluate(() => {
+        const para = document.querySelector<HTMLElement>(".blip-doc .para");
+        return para ? para.style.marginLeft : "";
+      });
+    const indented = (ml: string) => ml !== "" && ml !== "0px";
+
+    // The toolbar shows for the caret; Increase indent gives the paragraph a left margin.
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await page.locator('.sel-toolbar button[data-cmd="indent"]').click();
+    await page.waitForFunction(
+      () => {
+        const p = document.querySelector<HTMLElement>(".blip-doc .para");
+        return p !== null && p.style.marginLeft !== "" && p.style.marginLeft !== "0px";
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.ok(indented(await marginLeft()), "Indent button added a left margin");
+
+    // Outdent removes it.
+    await page.locator('.sel-toolbar button[data-cmd="outdent"]').click();
+    await page.waitForFunction(
+      () => {
+        const p = document.querySelector<HTMLElement>(".blip-doc .para");
+        return p !== null && (p.style.marginLeft === "" || p.style.marginLeft === "0px");
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.ok(!indented(await marginLeft()), "Outdent button removed the left margin");
+
+    // Tab indents via the keyboard; Shift-Tab outdents. Place the caret in the editor first.
+    await page.locator(".blip-doc .para").first().click();
+    await page.keyboard.press("Tab");
+    await page.waitForFunction(
+      () => {
+        const p = document.querySelector<HTMLElement>(".blip-doc .para");
+        return p !== null && p.style.marginLeft !== "" && p.style.marginLeft !== "0px";
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.ok(indented(await marginLeft()), "Tab indented the paragraph");
+
+    await page.keyboard.press("Shift+Tab");
+    await page.waitForFunction(
+      () => {
+        const p = document.querySelector<HTMLElement>(".blip-doc .para");
+        return p !== null && (p.style.marginLeft === "" || p.style.marginLeft === "0px");
+      },
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.ok(!indented(await marginLeft()), "Shift-Tab outdented the paragraph");
+  } finally {
+    await page.close();
+  }
+});

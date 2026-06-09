@@ -32,6 +32,7 @@ import {
   rangeLink,
   rangeStyle,
   replaceText,
+  setLineIndent,
   setLineMarkers,
   setLink,
   setStyleRange,
@@ -51,6 +52,10 @@ interface SavedSelection {
 // yellow). Modeled as a style/backgroundColor annotation, which spanStyle already
 // renders, so the toggle reuses the bold/italic machinery.
 const HIGHLIGHT_COLOR = "#fff3a0";
+
+// MAX_INDENT caps a line's nesting depth (the <line i="N"> level), so Tab can't run a
+// paragraph off the right edge. Rendered as margin-left:N*1.5em.
+const MAX_INDENT = 8;
 
 export class BlipView extends LitElement {
   static override properties = {
@@ -146,6 +151,17 @@ export class BlipView extends LitElement {
   // beforeinput at all — keydown is the reliable signal. We preventDefault and emit
   // an "undo" request for the host to route to the per-blip undo manager.
   private onKeydown = (e: KeyboardEvent): void => {
+    // Tab / Shift-Tab indent / outdent the caret's paragraph — the rich-text editor
+    // convention (this is a focused authoring surface; Escape/click moves focus out).
+    // Handled before the undo/redo block, which requires a Cmd/Ctrl modifier. Honor the
+    // composition guard like every other op-emitting path: some IMEs use Tab to convert
+    // candidates, and emitting an indent mid-composition would abort the commit and drop
+    // the in-flight text (onCompositionEnd aborts when this.content changed).
+    if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey && !this.composing && !e.isComposing) {
+      e.preventDefault();
+      this.toolbarIndent(e.shiftKey ? -1 : 1);
+      return;
+    }
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const k = e.key.toLowerCase();
     let redo: boolean;
@@ -492,6 +508,21 @@ export class BlipView extends LitElement {
     );
   }
 
+  // toolbarIndent changes the caret paragraph's indent by `delta` (+1 indent, -1
+  // outdent), clamped to [0, MAX_INDENT]. Like the other line commands it acts on the
+  // caret's single paragraph (a multi-paragraph selection indents the line the caret
+  // sits in). A no-op (already at the bound) does nothing.
+  private toolbarIndent(delta: number): void {
+    const para = this.caretParagraph();
+    if (para === null || para.lineOffset === null) return;
+    const newIndent = Math.max(0, Math.min(MAX_INDENT, para.indent + delta));
+    if (newIndent === para.indent) return;
+    this.tryEdit(
+      () => setLineIndent(this.content, para.lineOffset!, para.indent, newIndent),
+      this.caretOffsetForLineEdit(),
+    );
+  }
+
   // caretParagraph returns the paragraph the caret sits in (its <line> marker), or null.
   private caretParagraph(): Paragraph | null {
     const range = currentRange(this);
@@ -614,6 +645,12 @@ export class BlipView extends LitElement {
         break;
       case "plain":
         this.toolbarSetLineType(null);
+        break;
+      case "indent":
+        this.toolbarIndent(1);
+        break;
+      case "outdent":
+        this.toolbarIndent(-1);
         break;
     }
   }

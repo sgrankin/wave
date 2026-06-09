@@ -349,6 +349,8 @@ export class SelectionToolbar extends LitElement {
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}
         ${btn("li", "Bullet list", s.lineType === "li" && s.listStyle !== "decimal", "•")}
         ${btn("ol", "Numbered list", s.lineType === "li" && s.listStyle === "decimal", "1.")}
+        ${btn("outdent", "Decrease indent", false, html`<span aria-hidden="true">⇤</span>`)}
+        ${btn("indent", "Increase indent", false, html`<span aria-hidden="true">⇥</span>`)}
         <span class="sep" aria-hidden="true"></span>
         ${btn("comment", "Comment", false, html`<span class="cmt">💬 Comment</span>`)}
       </div>

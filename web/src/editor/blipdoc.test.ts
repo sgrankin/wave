@@ -17,6 +17,7 @@ import {
   rangeLink,
   rangeStyle,
   replaceText,
+  setLineIndent,
   setLineMarkers,
   setLineType,
   setLink,
@@ -407,6 +408,45 @@ test("setLineMarkers: no-op transition retains the whole doc unchanged", () => {
   const op = new DocOp(setLineMarkers(content, off, null, null, null, null));
   const next = compose(content, op); // must not throw
   assert.equal(project(next).paragraphs[0]!.lineType, null);
+});
+
+// --- indent / outdent (setLineIndent) ---
+
+test("setLineIndent: 0→1 sets the indent; 1→2 increments; 2→0 clears it", () => {
+  const content = plainDoc();
+  const off = project(content).paragraphs[0]!.lineOffset!;
+  assert.equal(project(content).paragraphs[0]!.indent, 0);
+
+  // 0 → 1 (the `i` attribute appears).
+  const i1 = compose(content, new DocOp(setLineIndent(content, off, 0, 1))); // oldValue null matches absent
+  assert.equal(project(i1).paragraphs[0]!.indent, 1);
+
+  // 1 → 2 (increment).
+  const i2 = compose(i1, new DocOp(setLineIndent(i1, off, 1, 2)));
+  assert.equal(project(i2).paragraphs[0]!.indent, 2);
+
+  // 2 → 0 (the attribute is removed again, back to absent).
+  const i0 = compose(i2, new DocOp(setLineIndent(i2, off, 2, 0)));
+  assert.equal(project(i0).paragraphs[0]!.indent, 0);
+});
+
+test("setLineIndent: no-op transition retains the whole doc unchanged", () => {
+  const content = plainDoc();
+  const off = project(content).paragraphs[0]!.lineOffset!;
+  const op = new DocOp(setLineIndent(content, off, 0, 0));
+  const next = compose(content, op); // must not throw
+  assert.equal(project(next).paragraphs[0]!.indent, 0);
+});
+
+test("setLineIndent is orthogonal to the line type (an h2 stays h2 when indented)", () => {
+  const content = structured();
+  const p1 = project(content).paragraphs[1]!;
+  const h2 = compose(content, new DocOp(setLineType(content, p1.lineOffset!, null, "h2")));
+  const off = project(h2).paragraphs[1]!.lineOffset!;
+  const indented = compose(h2, new DocOp(setLineIndent(h2, off, 0, 1)));
+  const p = project(indented).paragraphs[1]!;
+  assert.equal(p.lineType, "h2");
+  assert.equal(p.indent, 1);
 });
 
 test("lineAttributes + deleteLineMarker round-trip a numbered <line>'s attributes", () => {

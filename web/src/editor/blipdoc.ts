@@ -711,6 +711,30 @@ export function setLineMarkers(
 }
 
 /**
+ * setLineIndent changes a <line>'s indent — the `i` attribute at lineOffset — via an
+ * updateAttributes. Indent 0 is represented by the attribute being ABSENT (matching
+ * lineAttributes/parseIndent), so 0 maps to a null old/new value. A no-op transition
+ * (old===new) retains the whole doc. The caller clamps the new level to a sane range.
+ */
+export function setLineIndent(
+  content: DocOp,
+  lineOffset: number,
+  oldIndent: number,
+  newIndent: number,
+): Component[] {
+  const len = content.documentLength();
+  if (oldIndent === newIndent) return [...retain(len)];
+  const a = clamp(lineOffset, 0, len);
+  const oldValue = oldIndent > 0 ? String(oldIndent) : null;
+  const newValue = newIndent > 0 ? String(newIndent) : null;
+  return [
+    ...retain(a),
+    { kind: "updateAttributes", update: AttributesUpdate.of([{ name: "i", oldValue, newValue }]) },
+    ...retain(len - a - 1),
+  ];
+}
+
+/**
  * rangeAnnotation queries the active value of annotation key K over [from, to):
  * - Returns the value if uniform (same non-null value throughout).
  * - Returns null if the key is absent throughout.
