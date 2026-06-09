@@ -159,6 +159,12 @@ intents). Gaps, ranked for the agent-first goal:
   `GET /agent/waves` (list/discover), `POST /agent/leave` — REST endpoints behind the
   agent bearer auth (agentgw.Routes + WithIndex). An agent can own/find/abandon its own
   waves. (The socket is still one-wave; these manage the set of waves around it.)
+- ✅ **content search — DONE** (reviewed SHIP): `GET /agent/waves?q=<query>` searches the
+  agent's memory waves by content (free-text terms ANDed against blip text, plus
+  `with:`/`creator:`/`orderby:` operators) with a snippet preview — recall over many waves
+  instead of scanning the list. Reuses the participant-scoped `*search.Index.Search` (the
+  same the human `/api/search` uses); authz verified at the SQL layer (unconditional
+  `WHERE participant`, operators only narrow) and cross-agent isolation tested both ways.
 - ✅ **structured state — DONE** (reviewed SHIP): a per-wave `<state>` key/value document
   (`conv.StateDocumentID`, seeded atomically with the wave), `set.state` / `delete.state`
   intents, the `state` map in the `wave.opened` snapshot, AND the reactive `state.changed`
@@ -178,9 +184,9 @@ intents). Gaps, ranked for the agent-first goal:
 - medium / partial — no remove-participant / remove-self intent (add-only lifecycle).
 - low — no capability/subscription filter (all-or-nothing per wave); missing event kinds
   (blip-removed, self-added, **operation-error** — a failed intent is fire-and-forget with
-  no in-band failure signal for the harness to retry); no agent-token request/response
-  channel (queryapi/profileapi/playbackapi are human-cookie-auth only — bridging them to
-  agent tokens is cheap and serves discovery).
+  no in-band failure signal for the harness to retry); ✅ **search** is now bridged to
+  agent tokens (above); profileapi/playbackapi remain human-cookie-auth only (bridging
+  those to agent tokens is similarly cheap if an agent use case appears).
 
 ## Notes
 Most gaps are implementation gaps against an ALREADY-FAITHFUL spec (`docs/specs/`), so
