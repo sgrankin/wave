@@ -2,10 +2,12 @@ package transport_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sgrankin/wave/internal/conv"
+	"github.com/sgrankin/wave/internal/doc"
 	"github.com/sgrankin/wave/internal/id"
 	"github.com/sgrankin/wave/internal/op"
 	"github.com/sgrankin/wave/internal/transport"
@@ -82,13 +84,31 @@ func TestWebSocketRemovedParticipantStreamCutOff(t *testing.T) {
 		t.Fatalf("settle edit: %v", err)
 	}
 
-	// Across several reconnect+resync cycles (reconnectDelay is 100ms), all denied by
-	// the membership check, bob must never advance to v6 (the post-removal edit).
+	// Across several reconnect+resync cycles (reconnectDelay is 100ms), all denied by the
+	// membership check, bob must never receive the post-removal EDIT. We assert on its
+	// CONTENT ("secret" in the root blip), not on bob's version number: bob may legitimately
+	// receive the removal delta ITSELF (best-effort, pushed before the cut), which advances
+	// his version — but the access-control guarantee is that edits applied AFTER the removal
+	// never reach him. (Asserting on version is flaky: the removal delivery, or a denied
+	// reconnect's version bookkeeping, can advance bob's counter to the edit's version
+	// without ever delivering the edit's content.)
+	hasSecret := func() bool {
+		c, ok := b.BlipContent(conv.RootBlipID)
+		if !ok {
+			return false
+		}
+		txt, _ := doc.PlainText(c)
+		return strings.Contains(txt, "secret")
+	}
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if b.Version().Version() >= 6 {
-			t.Fatalf("removed participant received a post-removal edit (v%d) — stream not cut off", b.Version().Version())
+		if hasSecret() {
+			t.Fatalf("removed participant received the post-removal edit content — stream not cut off")
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	// Final check after the reconnect window has fully elapsed.
+	if hasSecret() {
+		t.Fatal("removed participant received the post-removal edit content")
 	}
 }

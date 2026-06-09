@@ -435,11 +435,26 @@ func (s *session) handleResync(raw []cbor.RawMessage) error {
 	if tail, sub, ok := c.OpenAt(knownVersion, knownHash); ok {
 		s.container = c
 		s.sub = sub
-		td := make([][]byte, len(tail))
-		for i, u := range tail {
+		// Honor the membership boundary IN the resync tail. The checkAccess membership
+		// read and OpenAt's tail read are separate lock acquisitions, so a removal that
+		// races between them passes the check yet lands in the tail (it is > knownVersion).
+		// If a tail delta removes this participant, deliver only up to and including it,
+		// then CUT — never start a live forward (the removal is already in the past tail,
+		// so forward's removesSelf cut would not fire on any future delta, and the removed
+		// participant would keep streaming). Mirrors forward()'s cutoff for the tail.
+		n, isCut := removalCutoff(tail, s.authParticipant)
+		send := tail[:n]
+		td := make([][]byte, len(send))
+		for i, u := range send {
 			td[i] = encodeStored(u.Delta)
 		}
 		s.push(encodeResyncResponse(resyncTail, td, nil, nil))
+		if isCut {
+			s.srv.logger().Debug("resync tail crosses this participant's removal; delivered up to it, cutting",
+				"wavelet", nameStr, "participant", s.authParticipant.Address())
+			s.shutdown()
+			return nil
+		}
 		s.srv.logger().Debug("wavelet resynced", "wavelet", nameStr, "from", knownVersion, "tail", len(td))
 		s.wg.Add(1)
 		go s.forward(sub)
@@ -451,6 +466,15 @@ func (s *session) handleResync(raw []cbor.RawMessage) error {
 	snapshotBlob, history, sub := c.Open()
 	s.container = c
 	s.sub = sub
+	// Re-check membership AFTER the snapshot read: c.Open() snapshots at HEAD, which can
+	// be past a removal that raced the earlier checkAccess (separate locks). A reset
+	// snapshot cannot be truncated at the removal boundary the way a tail can, so fail
+	// closed — if this participant is no longer a member, cut without shipping a
+	// post-removal snapshot. (Narrow window; the tail path above is the common case.)
+	if !s.checkAccess(name, nameStr, "resync") {
+		s.shutdown()
+		return nil
+	}
 	hist := make([][]byte, len(history))
 	for i, u := range history {
 		hist[i] = encodeStored(u.Delta)
@@ -510,15 +534,36 @@ func (s *session) forward(sub *server.Subscription) {
 // and the re-added participant simply reconnects — so cutting is safe, and erring
 // toward cutting keeps the membership boundary strict.
 func (s *session) removesSelf(delta cc.TransformedWaveletDelta) bool {
-	if s.authParticipant == nil {
-		return false
-	}
+	return s.authParticipant != nil && deltaRemoves(delta, *s.authParticipant)
+}
+
+// deltaRemoves reports whether delta contains a RemoveParticipant op for p.
+func deltaRemoves(delta cc.TransformedWaveletDelta, p id.ParticipantID) bool {
 	for _, o := range delta.Ops {
-		if rp, ok := o.(waveop.RemoveParticipant); ok && rp.Participant == *s.authParticipant {
+		if rp, ok := o.(waveop.RemoveParticipant); ok && rp.Participant == p {
 			return true
 		}
 	}
 	return false
+}
+
+// removalCutoff finds the membership boundary in a resync tail: it returns the number of
+// leading deltas to deliver (n) and whether the stream must then be cut. If a tail delta
+// removes p, n covers the tail UP TO AND INCLUDING that delta and cut is true (the caller
+// delivers those, then shuts the stream — a removed participant must never receive the
+// deltas applied after their removal, which can ride a resync tail when the removal raced
+// the membership check). Otherwise n == len(tail) and cut is false. A nil p (an
+// unauthenticated, boundary-less connection) delivers the whole tail.
+func removalCutoff(tail []server.WaveletUpdate, p *id.ParticipantID) (n int, cut bool) {
+	if p == nil {
+		return len(tail), false
+	}
+	for i, u := range tail {
+		if deltaRemoves(u.Delta, *p) {
+			return i + 1, true
+		}
+	}
+	return len(tail), false
 }
 
 func (s *session) handleSubmit(raw []cbor.RawMessage) error {
