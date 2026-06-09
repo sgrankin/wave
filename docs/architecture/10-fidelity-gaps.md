@@ -203,7 +203,11 @@ intents). Gaps, ranked for the agent-first goal:
   flushes pending edits ahead of itself, incl. the same-delta blip.edited+mention case);
   flush on every terminal path. Wall-clock time base (clock.Fixed would dead-lock the
   flush); Run-local so race-free. Emission-timing only — no new event/intent kinds.
-- medium / partial — no remove-participant / remove-self intent (add-only lifecycle).
+- ✅ **remove-participant / remove-self intent — DONE**: `remove.participant` (by address)
+  and `remove.self` (sugar for the agent's own address) intents emit `waveop.RemoveParticipant`,
+  the in-socket counterpart of REST `/agent/leave` — completing the agent lifecycle CRUD
+  (mirrors `add.participant`; same trusted-token authority model; removing a human triggers
+  the transport stream-cutoff). Unit + gateway e2e tested.
 - low — no capability/subscription filter (all-or-nothing per wave); missing event kinds
   (blip-removed, self-added, **operation-error** — a failed intent is fire-and-forget with
   no in-band failure signal for the harness to retry); ✅ **search** is now bridged to
