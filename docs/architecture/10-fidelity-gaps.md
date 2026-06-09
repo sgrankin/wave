@@ -104,8 +104,16 @@ were sanity-checked: **no CC-invariant violation**. Gaps:
   older acked point instead of resetting) would be a **beyond-OG improvement**, not a
   parity fix — low priority, ~300 LOC across the wire/CC/resync path (server history is
   sufficient today; no storage change). Deferred as out-of-scope for a fidelity effort.
-- medium / divergent — **removed participant keeps streaming** (#4 above). Cut the
-  subscription when a delta removes the subscriber, after delivering that delta.
+- ✅ **removed participant keeps streaming — DONE** (#4 above; live stream cut at the
+  removal boundary). The companion **resync membership-boundary TOCTOU is also CLOSED**:
+  `handleResync`'s `checkAccess` (membership read) and `OpenAt` (tail read) are separate
+  lock acquisitions, so a removal racing between them passed the check yet rode the resync
+  TAIL — bypassing the live cutoff. Now the tail is truncated at a self-removal (deliver
+  through it, then cut, never starting a live forward), and the RESET path (snapshot at
+  HEAD, untruncatable) re-checks membership and fails closed. (The earlier flaky cutoff
+  test was asserting on bob's version number — which legitimately advances when he receives
+  the removal delta itself — instead of on content; it now asserts he never receives the
+  post-removal CONTENT, the real guarantee.)
 - medium / divergent — with snapshots on, a submit/resync targeting a pre-snapshot
   version is `TooOld`/reset where OG would transform it forward (scoped to `-snapshot-every`).
 - low — committed-vs-applied separation / `UnsavedDataListener` UI signal absent (benign:
