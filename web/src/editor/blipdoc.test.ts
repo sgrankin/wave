@@ -6,6 +6,7 @@ import type { Component } from "../wave/types.ts";
 import { compose } from "../wave/compose.ts";
 import {
   caretToOffset,
+  clearFormatting,
   clearLink,
   clearStyleRange,
   deleteInlineElement,
@@ -351,6 +352,141 @@ test("rangeLink: reports null / a uniform href / mixed", () => {
   // Two different hrefs in the range → mixed.
   const doc2 = compose(doc1, new DocOp(setLink(doc1, base + 6, base + 11, "https://b.co")));
   assert.equal(rangeLink(doc2, base, base + 11), "mixed", "two different hrefs → mixed");
+});
+
+// annotationKeysBalanced walks an op and returns true iff every annotation change is
+// eventually ended — no annotation left dangling at the end. This is the structural
+// invariant the Go validator (the server submit path) enforces via annUpdate/checkFinish;
+// the client's compose() does NOT enforce it, so this guards the op BUILDERS against
+// emitting server-invalid ops (a regression where setAnnotationRange's close-at-b leaves
+// a clear's change unclosed — see internal/op/validate_annotation_clear_test.go).
+function annotationKeysBalanced(components: readonly Component[]): boolean {
+  const open = new Set<string>();
+  for (const c of components) {
+    if (c.kind !== "annotationBoundary") continue;
+    for (const ch of c.boundary.changes) open.add(ch.key);
+    for (const k of c.boundary.endKeys) open.delete(k);
+  }
+  return open.size === 0;
+}
+
+// --- annotation-op well-formedness (no dangling annotation; the server validator rejects it) ---
+
+test("clearStyleRange (un-bold) emits a balanced op — the cleared key is ended, not left open", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  const bold = compose(content, new DocOp(setStyleRange(content, base, base + 11, "fontWeight", "bold")));
+  // Un-bold the whole run: the doc is null past the run, the previously-buggy case.
+  const op = clearStyleRange(bold, base, base + 11, "fontWeight");
+  assert.ok(annotationKeysBalanced(op), "the un-bold op must end style/fontWeight, not leave it dangling");
+  // And it still composes to clean text.
+  const p = project(compose(bold, new DocOp(op))).paragraphs[0]!;
+  assert.deepEqual(p.spans[0]!.styles, {});
+});
+
+test("setStyleRange adjacent to an existing same-value run emits a balanced op", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  // Bold "world" first; then bold "hello " — the range ends where the doc is ALREADY bold
+  // (the set-adjacency case that also left the override open before the fix).
+  const w = compose(content, new DocOp(setStyleRange(content, base + 6, base + 11, "fontWeight", "bold")));
+  const op = setStyleRange(w, base, base + 6, "fontWeight", "bold");
+  assert.ok(annotationKeysBalanced(op), "bolding adjacent to existing bold must still end the key");
+  const p = project(compose(w, new DocOp(op))).paragraphs[0]!;
+  assert.deepEqual(p.spans[0]!.styles, { fontWeight: "bold" }, "the whole run is now one bold span");
+  assert.equal(p.spans[0]!.text, "hello world");
+});
+
+test("clearLink and clearFormatting emit balanced ops", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  const linked = compose(content, new DocOp(setLink(content, base, base + 11, "https://e.co")));
+  assert.ok(annotationKeysBalanced(clearLink(linked, base, base + 11)), "clearLink ends link/manual");
+
+  let doc = compose(content, new DocOp(setStyleRange(content, base, base + 11, "fontWeight", "bold")));
+  doc = compose(doc, new DocOp(setLink(doc, base, base + 11, "https://e.co")));
+  assert.ok(annotationKeysBalanced(clearFormatting(doc, base, base + 11)), "clearFormatting ends every key");
+});
+
+test("clear across a PARAGRAPH boundary (crossing a null gap) clears both runs and stays balanced", () => {
+  // structured(): <body><line h1/>Title<line/>Body text</body>. "Title" is [3,8), the
+  // second <line/> markers are [8,10) (null fontWeight), "Body text" is [10,19).
+  const content = structured();
+  let doc = compose(content, new DocOp(setStyleRange(content, 3, 8, "fontWeight", "bold")));
+  doc = compose(doc, new DocOp(setStyleRange(doc, 10, 19, "fontWeight", "bold")));
+  // A clear over [3,19) crosses the null gap between the paragraphs — the case the
+  // interior loop previously left the override open across (server-rejected). balance is
+  // necessary but NOT sufficient here (the broken op was also balanced); the authoritative
+  // guard is the Go validator (internal/op/validate_annotation_clear_test.go) + the
+  // cross-client e2e. This asserts the composed RESULT is clean in both paragraphs.
+  const op = clearStyleRange(doc, 3, 19, "fontWeight");
+  assert.ok(annotationKeysBalanced(op), "cross-paragraph clear is balanced");
+  const ps = project(compose(doc, new DocOp(op))).paragraphs;
+  assert.deepEqual(ps[0]!.spans[0]!.styles, {}, "first paragraph cleared");
+  assert.deepEqual(ps[1]!.spans[0]!.styles, {}, "second paragraph cleared");
+  assert.ok(annotationKeysBalanced(clearFormatting(doc, 3, 19)), "cross-paragraph clearFormatting is balanced");
+});
+
+// --- clear formatting (clearFormatting) ---
+
+test("clearFormatting: strips bold, color, and a link from the range in one op", () => {
+  const content = plainDoc();
+  const p0 = project(content).paragraphs[0]!;
+  const from = p0.textStart;
+  const to = p0.textStart + p0.textLength; // the whole "hello world" run
+
+  // Pile on bold + a text color + a link over the whole run.
+  let doc = compose(content, new DocOp(setStyleRange(content, from, to, "fontWeight", "bold")));
+  doc = compose(doc, new DocOp(setStyleRange(doc, from, to, "color", "#e11d48")));
+  doc = compose(doc, new DocOp(setLink(doc, from, to, "https://example.com")));
+  const styled = project(doc).paragraphs[0]!;
+  assert.deepEqual(styled.spans[0]!.styles, { fontWeight: "bold", color: "#e11d48" });
+  assert.equal(styled.spans[0]!.link, "https://example.com");
+
+  // One clearFormatting op removes every style annotation AND the link.
+  const cleared = compose(doc, new DocOp(clearFormatting(doc, from, to)));
+  const p = project(cleared).paragraphs[0]!;
+  assert.equal(p.spans.length, 1, "the run rejoins once all formatting is gone");
+  assert.deepEqual(p.spans[0]!.styles, {});
+  assert.equal(p.spans[0]!.link, undefined);
+  assert.equal(p.spans[0]!.text, "hello world");
+});
+
+test("clearFormatting clears only the selected sub-range, leaving the rest formatted", () => {
+  const content = plainDoc();
+  const base = project(content).paragraphs[0]!.textStart;
+  // Bold the whole run, then clear only "hello".
+  const bold = compose(content, new DocOp(setStyleRange(content, base, base + 11, "fontWeight", "bold")));
+  const cleared = compose(bold, new DocOp(clearFormatting(bold, base, base + 5)));
+  const p = project(cleared).paragraphs[0]!;
+  assert.equal(p.spans.length, 2);
+  assert.deepEqual(p.spans[0]!.styles, {}, "hello is cleared");
+  assert.equal(p.spans[0]!.text, "hello");
+  assert.deepEqual(p.spans[1]!.styles, { fontWeight: "bold" }, " world stays bold");
+  assert.equal(p.spans[1]!.text, " world");
+});
+
+test("clearFormatting on already-clean text is a no-op (compose accepts, text intact)", () => {
+  const content = plainDoc();
+  const p0 = project(content).paragraphs[0]!;
+  const op = new DocOp(clearFormatting(content, p0.textStart, p0.textStart + p0.textLength));
+  const next = compose(content, op); // must not throw
+  const p = project(next).paragraphs[0]!;
+  assert.equal(p.spans.length, 1);
+  assert.deepEqual(p.spans[0]!.styles, {});
+  assert.equal(p.spans[0]!.text, "hello world");
+});
+
+test("clearFormatting leaves the line type untouched (only character formatting goes)", () => {
+  const content = plainDoc();
+  const p0 = project(content).paragraphs[0]!;
+  // Make the line an h2 and bold its text, then clear formatting over the text.
+  const h2 = compose(content, new DocOp(setLineType(content, p0.lineOffset!, null, "h2")));
+  const bold = compose(h2, new DocOp(setStyleRange(h2, p0.textStart, p0.textStart + p0.textLength, "fontWeight", "bold")));
+  const cleared = compose(bold, new DocOp(clearFormatting(bold, p0.textStart, p0.textStart + p0.textLength)));
+  const p = project(cleared).paragraphs[0]!;
+  assert.equal(p.lineType, "h2", "the line stays an h2");
+  assert.deepEqual(p.spans[0]!.styles, {}, "the character bold is gone");
 });
 
 test("setLineType: plain→h1 changes lineType in projection", () => {

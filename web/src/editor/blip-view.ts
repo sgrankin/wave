@@ -25,6 +25,7 @@ import type { Component } from "../wave/types.ts";
 import {
   clearLink,
   clearStyleRange,
+  clearFormatting,
   deleteInlineElement,
   deleteLineMarker,
   lineAttributes,
@@ -600,6 +601,28 @@ export class BlipView extends LitElement {
     this.emitWithSelection(ops, lo, hi);
   }
 
+  // toolbarClearFormatting strips ALL character formatting (bold/italic/underline/strike/
+  // highlight/color and any manual link) from the selection in one op. Range-only (a
+  // no-op for a collapsed caret); line type/indent/list style are untouched.
+  private toolbarClearFormatting(): void {
+    const range = currentRange(this);
+    if (range === null || range.collapsed) return;
+    const a = this.domToOffset(range.startContainer, range.startOffset);
+    const b = this.domToOffset(range.endContainer, range.endOffset);
+    if (a === null || b === null) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    if (hi <= lo) return;
+    let ops: Component[];
+    try {
+      ops = clearFormatting(this.content, lo, hi);
+    } catch {
+      return;
+    }
+    if (ops.length === 0) return;
+    this.emitWithSelection(ops, lo, hi);
+  }
+
   // applyCommand runs a formatting command (bold/italic/h1/h2/h3/li/plain/link, or
   // "color:<css>" / "color:" to clear) against the current selection. It is the public
   // entry point for the floating <selection-toolbar>: the toolbar preventDefaults its
@@ -651,6 +674,9 @@ export class BlipView extends LitElement {
         break;
       case "outdent":
         this.toolbarIndent(-1);
+        break;
+      case "clear":
+        this.toolbarClearFormatting();
         break;
     }
   }

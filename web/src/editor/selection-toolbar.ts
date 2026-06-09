@@ -344,6 +344,7 @@ export class SelectionToolbar extends LitElement {
         )}
         ${btn("color:", "Default text color", false, html`<span class="color-swatch color-clear" aria-hidden="true">A</span>`, this.collapsed)}
         ${btn("link", "Link", s.link, html`<span aria-hidden="true">🔗</span>`, this.collapsed)}
+        ${btn("clear", "Clear formatting", false, html`<span aria-hidden="true">T✕</span>`, this.collapsed)}
         ${btn("h1", "Heading 1", s.lineType === "h1", "H1")}
         ${btn("h2", "Heading 2", s.lineType === "h2", "H2")}
         ${btn("h3", "Heading 3", s.lineType === "h3", "H3")}

@@ -319,3 +319,149 @@ test("Indent/Outdent (buttons + Tab) change the paragraph indent", async () => {
     await page.close();
   }
 });
+
+// Clear formatting: bold a selection, then the Clear button strips it (one op removes
+// every character annotation over the range).
+test("Clear formatting removes character styling from the selection", async () => {
+  const page = await client("alice@example.com", "w+seltoolbar-clear");
+  try {
+    await typeInto(page, 0, "format me");
+    await selectFirstPara(page, 0, 6); // select "format"
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+
+    // Bold it first.
+    await page.locator('.sel-toolbar button[data-cmd="bold"]').click();
+    await page.waitForFunction(
+      () => document.querySelector('.blip-doc .para span[style*="font-weight"]') !== null,
+      undefined,
+      { timeout: 5000 },
+    );
+
+    // Re-select and Clear formatting → the styled span is gone.
+    await selectFirstPara(page, 0, 6);
+    await page.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await page.locator('.sel-toolbar button[data-cmd="clear"]').click();
+    await page.waitForFunction(
+      () => document.querySelector('.blip-doc .para span[style*="font-weight"]') === null,
+      undefined,
+      { timeout: 5000 },
+    );
+    // The text itself is intact.
+    const text = await page.evaluate(() => document.querySelector(".blip-doc .para")?.textContent ?? "");
+    assert.ok(text.startsWith("format me"), `text intact after clear (got ${JSON.stringify(text)})`);
+  } finally {
+    await page.close();
+  }
+});
+
+// Clear formatting must produce a SERVER-VALID op. A single-client DOM check is
+// insufficient: the editor applies edits optimistically, so a clear op the server later
+// REJECTS still updates the local DOM (the assertion passes) while the session silently
+// dies. This test proves server acceptance the only honest way — a second client on the
+// same wave must SEE the formatting removed, which only happens if the server accepted the
+// clear op and fanned it out. (Regression guard for the dangling-annotation bug:
+// setAnnotationRange left a clear's change unclosed, which the structural validator NACKs.)
+test("Clear formatting persists on the server (a second client sees it removed)", async () => {
+  const a = await client("alice@example.com", "w+seltoolbar-clearsync");
+  const b = await client("alice@example.com", "w+seltoolbar-clearsync");
+  try {
+    const boldGone = () => document.querySelector('.blip-doc .para span[style*="font-weight"]') === null;
+    const boldThere = () => document.querySelector('.blip-doc .para span[style*="font-weight"]') !== null;
+
+    // A types and bolds "format"; both clients see the bold (server fanned it out).
+    await typeInto(a, 0, "format me");
+    await selectFirstPara(a, 0, 6);
+    await a.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await a.locator('.sel-toolbar button[data-cmd="bold"]').click();
+    await a.waitForFunction(boldThere, undefined, { timeout: 5000 });
+    await b.waitForFunction(boldThere, undefined, { timeout: 5000 });
+
+    // A clears the formatting.
+    await selectFirstPara(a, 0, 6);
+    await a.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await a.locator('.sel-toolbar button[data-cmd="clear"]').click();
+
+    // The decisive check: B (a separate session) sees the bold GONE — only possible if
+    // the server ACCEPTED the clear op. A rejected clear would be NACK'd before reaching B
+    // (A's optimistic apply would mask it locally, but B would stay bold and time out here).
+    await b.waitForFunction(boldGone, undefined, { timeout: 5000 });
+    const text = await b.evaluate(() => document.querySelector(".blip-doc .para")?.textContent ?? "");
+    assert.ok(text.startsWith("format me"), `B's text intact after clear (got ${JSON.stringify(text)})`);
+  } finally {
+    await a.close();
+    await b.close();
+  }
+});
+
+// Clear formatting across a PARAGRAPH boundary is the case that crosses a null annotation
+// gap (the <line> marker between paragraphs, where character annotations reset). The
+// op-builder must end + re-open the override across that gap; getting it wrong emits an op
+// the server rejects (the interior-skip bug). Bold each paragraph SEPARATELY (so the line
+// markers stay null), then clear across both, and confirm a second client sees both
+// cleared — proving the cross-paragraph clear op is server-valid end to end.
+test("Clear formatting across a paragraph boundary persists on the server", async () => {
+  const a = await client("alice@example.com", "w+seltoolbar-clearmulti");
+  const b = await client("alice@example.com", "w+seltoolbar-clearmulti");
+  try {
+    // Two paragraphs in blip 0: "alpha" ⏎ "beta".
+    await typeInto(a, 0, "alpha");
+    await a.keyboard.press("Enter");
+    await a.keyboard.type("beta");
+    await a.waitForFunction(() => document.querySelectorAll(".blip-doc .para").length >= 2, undefined, { timeout: 5000 });
+
+    // selectParaFull selects all of paragraph `i`'s content (re-resolved each call, since
+    // bolding wraps text in spans).
+    const selectParaFull = (page: Page, i: number) =>
+      page.evaluate((i) => {
+        const p = document.querySelectorAll(".blip-doc .para")[i];
+        if (!p) throw new Error("no para " + i);
+        const r = document.createRange();
+        r.selectNodeContents(p);
+        const s = window.getSelection()!;
+        s.removeAllRanges();
+        s.addRange(r);
+      }, i);
+    // selectAcross selects from the first paragraph's first text node to the last
+    // paragraph's last text node — a range that spans the inter-paragraph null gap.
+    const selectAcross = (page: Page) =>
+      page.evaluate(() => {
+        const paras = document.querySelectorAll(".blip-doc .para");
+        const p0 = paras[0]!;
+        const p1 = paras[paras.length - 1]!;
+        const first = document.createTreeWalker(p0, NodeFilter.SHOW_TEXT).nextNode();
+        const w = document.createTreeWalker(p1, NodeFilter.SHOW_TEXT);
+        let last: Node | null = null;
+        for (let n = w.nextNode(); n !== null; n = w.nextNode()) last = n;
+        if (first === null || last === null) throw new Error("no text nodes");
+        const r = document.createRange();
+        r.setStart(first, 0);
+        r.setEnd(last, (last as Text).length);
+        const s = window.getSelection()!;
+        s.removeAllRanges();
+        s.addRange(r);
+      });
+
+    // Bold each paragraph separately → the line markers between them stay null.
+    await selectParaFull(a, 0);
+    await a.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await a.locator('.sel-toolbar button[data-cmd="bold"]').click();
+    await selectParaFull(a, 1);
+    await a.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await a.locator('.sel-toolbar button[data-cmd="bold"]').click();
+    await a.waitForFunction(() => document.querySelectorAll('.blip-doc .para span[style*="font-weight"]').length >= 2, undefined, { timeout: 5000 });
+    await b.waitForFunction(() => document.querySelectorAll('.blip-doc .para span[style*="font-weight"]').length >= 2, undefined, { timeout: 5000 });
+
+    // Select across BOTH paragraphs and Clear formatting.
+    await selectAcross(a);
+    await a.locator(".sel-toolbar.visible").waitFor({ state: "visible", timeout: 5000 });
+    await a.locator('.sel-toolbar button[data-cmd="clear"]').click();
+
+    // B (separate session) sees BOTH paragraphs cleared — only if the server accepted the
+    // cross-paragraph clear op (the interior-skip bug would NACK it; A's optimistic apply
+    // would hide that, but B would stay bold and time out here).
+    await b.waitForFunction(() => document.querySelectorAll('.blip-doc .para span[style*="font-weight"]').length === 0, undefined, { timeout: 5000 });
+  } finally {
+    await a.close();
+    await b.close();
+  }
+});

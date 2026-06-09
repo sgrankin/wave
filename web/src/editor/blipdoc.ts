@@ -13,8 +13,9 @@
 // character is one item (counted in runes), each element start/end is one item;
 // annotation boundaries are zero-width.
 
-import { AnnotationBoundaryMap, Attributes, AttributesUpdate, runeCount } from "../wave/types.ts";
-import type { Component, DocOp } from "../wave/types.ts";
+import { AnnotationBoundaryMap, Attributes, AttributesUpdate, DocOp, runeCount } from "../wave/types.ts";
+import type { Component } from "../wave/types.ts";
+import { compose } from "../wave/compose.ts";
 
 const BODY = "body";
 const LINE = "line";
@@ -538,14 +539,14 @@ function valueAt(segments: KSegment[], pos: number): string | null {
 /**
  * setAnnotationRange returns content-op components that set annotation key K to
  * `value` (or remove it when `value` is null) over the text range [from, to).
- * Annotation oldValues match the document's actual values at each boundary, so
- * compose() accepts the op without throwing.
- *
- * For each interior segment of [from, to) where the document has a different
- * K-value, we emit a boundary that re-opens the key with the new value (with
- * the correct oldValue for that segment). At `to` we restore whatever value the
- * document had there. The generic core behind setStyleRange / clearStyleRange /
- * setLink / clearLink — value=null reproduces the clear path exactly.
+ * It opens a K override only over the maximal sub-runs of [from, to) where the
+ * document's value differs from `value` — restating the correct oldValue at each
+ * document segment boundary — and ends it over runs that already equal `value` and at
+ * `to`. So the op is BOTH compose-valid (oldValues match) AND structurally valid for the
+ * server validator (no annotation left open across a run whose old value it no longer
+ * matches — the failure mode for clears and for ranges spanning a paragraph boundary).
+ * The generic core behind setStyleRange / clearStyleRange / setLink / clearLink —
+ * value=null is the clear path.
  */
 function setAnnotationRange(
   content: DocOp,
@@ -562,61 +563,56 @@ function setAnnotationRange(
   const segments = scanAnnotationKey(content, K);
 
   const out: Component[] = [];
+  out.push(...retain(a)); // retain up to `a`
 
-  // retain up to `a`
-  out.push(...retain(a));
-
-  // open boundary at `a`: change from current K-value to `value`
-  const vAtA = valueAt(segments, a);
-  if (vAtA !== value) {
-    out.push({
-      kind: "annotationBoundary",
-      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: vAtA, newValue: value }]),
-    });
-  }
-
-  // for each segment transition point strictly inside (a, b), emit a retain + boundary
-  let prevPos = a;
+  // Walk [a, b) segment by segment. Over each retained item the op must declare the
+  // annotation transition (old = the document's value THERE, new = `value`); so we open
+  // an override only over the maximal runs where the document's value DIFFERS from
+  // `value`, restate its old value at each segment boundary, and END it wherever the
+  // document already equals `value` (e.g. the null gap at a <line> boundary when
+  // clearing) and at `b`. Leaving a change open across a run whose old value it no longer
+  // matches makes the op structurally invalid: the server validator rejects it (a
+  // dangling annotation, or a retain whose old value disagrees with the document) even
+  // though the client's permissive compose() tolerates it — a latent break of every
+  // clear path AND of clears/sets spanning a paragraph boundary. (See
+  // internal/op/validate_annotation_clear_test.go.)
+  //
+  // cuts = `a` plus every document K-value change strictly inside (a, b), de-duplicated
+  // and ascending (so no two boundaries land at the same position → no illegal adjacent
+  // boundaries).
+  const cuts: number[] = [a];
+  let lastCut = a;
   for (const seg of segments) {
-    const p = seg.start;
-    if (p <= a) continue; // before or at `a`
-    if (p >= b) break; // at or after `b`
-    // Segment transition at p inside (a, b): retain from prevPos to p, then re-set key
-    out.push(...retain(p - prevPos));
-    prevPos = p;
-    // oldValue at p is seg.value (the new value the document has here)
-    // We must only emit a boundary if the key value is not already `value`
-    if (seg.value !== value) {
-      out.push({
-        kind: "annotationBoundary",
-        boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: seg.value, newValue: value }]),
-      });
+    if (seg.start > a && seg.start < b && seg.start !== lastCut) {
+      cuts.push(seg.start);
+      lastCut = seg.start;
     }
   }
-
-  // retain from prevPos to `b`
-  out.push(...retain(b - prevPos));
-
-  // close boundary at `b`: restore the document's K-value at `b`
-  const vAtB = valueAt(segments, b);
-  if (vAtB === value) {
-    // Document already has `value` at `b`; annotation continues naturally — no close.
-  } else if (vAtB === null) {
-    // Restore to null → endKey terminates the range.
-    out.push({
-      kind: "annotationBoundary",
-      boundary: AnnotationBoundaryMap.of([K], []),
-    });
-  } else {
-    // Restore to a different non-null value.
-    out.push({
-      kind: "annotationBoundary",
-      boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: value, newValue: vAtB }]),
-    });
+  let pos = a;
+  let open = false; // is a K override currently active in the op?
+  for (const c of cuts) {
+    out.push(...retain(c - pos));
+    pos = c;
+    const docVal = valueAt(segments, c);
+    if (docVal !== value) {
+      // (Re-)assert the override with the correct old value for this run.
+      out.push({
+        kind: "annotationBoundary",
+        boundary: AnnotationBoundaryMap.of([], [{ key: K, oldValue: docVal, newValue: value }]),
+      });
+      open = true;
+    } else if (open) {
+      // Document already equals `value` here → end the override so it does not carry a
+      // stale old value across this run.
+      out.push({ kind: "annotationBoundary", boundary: AnnotationBoundaryMap.of([K], []) });
+      open = false;
+    }
   }
-
-  // retain to end
-  out.push(...retain(len - b));
+  out.push(...retain(b - pos)); // retain the final run up to `b`
+  if (open) {
+    out.push({ kind: "annotationBoundary", boundary: AnnotationBoundaryMap.of([K], []) });
+  }
+  out.push(...retain(len - b)); // retain to end
 
   return out;
 }
@@ -649,6 +645,36 @@ export function setLink(content: DocOp, from: number, to: number, url: string): 
 /** clearLink removes the manual link annotation over [from, to). */
 export function clearLink(content: DocOp, from: number, to: number): Component[] {
   return setAnnotationRange(content, from, to, LINK_KEY, null);
+}
+
+// CLEARABLE_STYLE_PROPS are the character style/<prop> annotations clear-formatting
+// strips: the toolbar's bold/italic/underline/strike/highlight + the text color. (Line
+// type/indent and list style live on the <line> element, not the text run, so they are
+// NOT character formatting and are deliberately left untouched.)
+const CLEARABLE_STYLE_PROPS = ["fontWeight", "fontStyle", "underline", "strikethrough", "backgroundColor", "color"];
+
+/**
+ * clearFormatting removes ALL character-level formatting over [from, to) — every
+ * style/<prop> annotation above and the manual link — in ONE combined op, so a single
+ * undo restores it. It composes the proven single-key clears (each computed against the
+ * running doc, so every annotation boundary carries the correct per-segment oldValue and
+ * compose() accepts the result). An empty range or already-clean text yields a whole-doc
+ * retain (a no-op).
+ */
+export function clearFormatting(content: DocOp, from: number, to: number): Component[] {
+  // Build each single-key clear against the running doc (so its boundaries carry the
+  // right oldValue), then compose them all into one change op.
+  let doc = content;
+  const ops: DocOp[] = [];
+  for (const prop of CLEARABLE_STYLE_PROPS) {
+    const op = new DocOp(clearStyleRange(doc, from, to, prop));
+    ops.push(op);
+    doc = compose(doc, op);
+  }
+  ops.push(new DocOp(clearLink(doc, from, to)));
+  let combined = ops[0]!; // always present: CLEARABLE_STYLE_PROPS is non-empty
+  for (let i = 1; i < ops.length; i++) combined = compose(combined, ops[i]!);
+  return [...combined.components];
 }
 
 /**
