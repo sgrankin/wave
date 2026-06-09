@@ -332,6 +332,47 @@ func TestTranslateAddParticipantBadAddress(t *testing.T) {
 	}
 }
 
+func TestTranslateRemoveParticipant(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentRemoveParticipant, Participant: "bob@example.com"},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	rp, ok := ops[0].(waveop.RemoveParticipant)
+	if !ok || rp.Participant != pid(t, "bob@example.com") {
+		t.Fatalf("op = %+v, want RemoveParticipant(bob)", ops[0])
+	}
+}
+
+func TestTranslateRemoveParticipantBadAddress(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	if _, err := agent.Translate(agent.Intent{Kind: agent.IntentRemoveParticipant, Participant: "not-an-address"}, alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("")); err == nil {
+		t.Error("want error for an invalid participant address")
+	}
+}
+
+func TestTranslateRemoveSelf(t *testing.T) {
+	alice := pid(t, "alice@example.com")
+	ops, err := agent.Translate(
+		agent.Intent{Kind: agent.IntentRemoveSelf},
+		alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("got %d ops, want 1", len(ops))
+	}
+	rp, ok := ops[0].(waveop.RemoveParticipant)
+	if !ok || rp.Participant != alice {
+		t.Fatalf("op = %+v, want RemoveParticipant(alice/self)", ops[0])
+	}
+}
+
 func TestTranslateUnknownIntent(t *testing.T) {
 	alice := pid(t, "alice@example.com")
 	if _, err := agent.Translate(agent.Intent{Kind: "bogus"}, alice, 1000, readerFrom(map[string]op.DocOp{}), fixedID("")); err == nil {

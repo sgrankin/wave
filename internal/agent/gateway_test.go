@@ -458,6 +458,75 @@ func TestGatewayIntentKindsAndResilience(t *testing.T) {
 	<-done
 }
 
+// TestGatewayRemoveParticipantIntent drives remove.participant over the wire: the agent
+// adds carol then removes her, and the wavelet's participant set reflects both — proving
+// the in-socket remove.participant intent (the counterpart of REST /agent/leave) applies
+// end to end.
+func TestGatewayRemoveParticipantIntent(t *testing.T) {
+	c, _ := newContainer(t)
+	alice := pid(t, "alice@example.com")
+	bot := pid(t, "assistant@example.com")
+	carol := pid(t, "carol@example.com")
+	seedOps, _ := conv.SeedConversation(alice, 1000)
+	if _, err := c.SeedIfEmpty(alice, seedOps); err != nil {
+		t.Fatal(err)
+	}
+
+	lc := agent.NewLocalClient(c, bot, clock.NewFixed(time.UnixMilli(3000)), func() string { return "b+gw" })
+	lc.Open()
+	defer lc.Close()
+
+	eventsR, eventsW := io.Pipe()
+	intentsR, intentsW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.NewGateway(lc, bot, nil).Run(ctx, eventsW, intentsR) }()
+	var snap struct{ Kind string }
+	if err := json.NewDecoder(eventsR).Decode(&snap); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = io.Copy(io.Discard, eventsR) }()
+
+	hasCarol := func() bool {
+		in := false
+		c.Read(func(w *wavelet.Data) {
+			for _, p := range w.Participants() {
+				if p == carol {
+					in = true
+				}
+			}
+		})
+		return in
+	}
+	waitUntil := func(want bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if hasCarol() == want {
+				return
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for: %s", what)
+	}
+
+	if _, err := intentsW.Write([]byte(`{"type":"intent","kind":"add.participant","participant":"carol@example.com"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(true, "carol added")
+	// Now remove carol via the in-socket intent.
+	if _, err := intentsW.Write([]byte(`{"type":"intent","kind":"remove.participant","participant":"carol@example.com"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(false, "carol removed by remove.participant intent")
+
+	cancel()
+	_ = eventsR.Close()
+	_ = intentsW.Close()
+	<-done
+}
+
 // TestGatewayReplyIntent drives the reply.blip intent over the wire (including the
 // inline flag): the harness replies to a specific blip, and the gateway turns it
 // into an OT submit that creates an inline reply thread under that blip — proving

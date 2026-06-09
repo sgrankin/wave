@@ -27,6 +27,12 @@ const (
 	IntentEditBlip IntentKind = "edit.blip"
 	// IntentAddParticipant adds a participant to the wavelet.
 	IntentAddParticipant IntentKind = "add.participant"
+	// IntentRemoveParticipant removes a participant (by address) from the wavelet — the
+	// in-socket counterpart of the REST POST /agent/leave, completing the lifecycle CRUD.
+	IntentRemoveParticipant IntentKind = "remove.participant"
+	// IntentRemoveSelf removes the acting agent itself from the wavelet (sugar for
+	// remove.participant of the agent's own address — abandon a wave it no longer needs).
+	IntentRemoveSelf IntentKind = "remove.self"
 	// IntentSetState sets a key→value entry in the wave's structured state document —
 	// the agent's shared key/value memory. The state doc is seeded with the wave, so a
 	// set normally mutates the existing doc (creating it only on a legacy wave that
@@ -160,6 +166,18 @@ func Translate(
 		}
 		ctx := waveop.Context{Creator: author, Timestamp: ts, VersionIncrement: 1}
 		return []waveop.Operation{waveop.AddParticipant{Ctx: ctx, Participant: p}}, nil
+
+	case IntentRemoveParticipant:
+		p, err := id.NewParticipantID(intent.Participant)
+		if err != nil {
+			return nil, fmt.Errorf("agent: remove.participant: %w", err)
+		}
+		ctx := waveop.Context{Creator: author, Timestamp: ts, VersionIncrement: 1}
+		return []waveop.Operation{waveop.RemoveParticipant{Ctx: ctx, Participant: p}}, nil
+
+	case IntentRemoveSelf:
+		ctx := waveop.Context{Creator: author, Timestamp: ts, VersionIncrement: 1}
+		return []waveop.Operation{waveop.RemoveParticipant{Ctx: ctx, Participant: author}}, nil
 
 	case IntentSetState:
 		if intent.Key == "" {
